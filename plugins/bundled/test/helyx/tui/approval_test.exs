@@ -21,7 +21,10 @@ defmodule Helyx.TUI.ApprovalTest do
     core = :"tui_approval_#{System.unique_integer([:positive])}"
 
     start_supervised!(
-      {Helyx.Core, name: core, plugins: [Fake, Helyx.Tool.Read, Helyx.Hook.Approval]}
+      {Helyx.Core,
+       name: core,
+       plugins: [Fake, Helyx.Tool.Read, Helyx.Hook.Approval],
+       sessions_dir: Path.join(dir, "sessions")}
     )
 
     File.write!(Path.join(dir, "a.txt"), "the file\n")

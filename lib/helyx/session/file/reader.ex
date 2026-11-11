@@ -173,7 +173,7 @@ defmodule Helyx.Session.File.Reader do
   defp add(_entry, n, _cwd, _acc),
     do: {:error, {:invalid_file, "line #{n} does not continue the chain of the entry before it"}}
 
-  # The header can change between the pick and this read under the lock.
+  # The header can change between the pick and this read.
   defp check_cwd(%{"cwd" => cwd}, cwd), do: :ok
   defp check_cwd(_header, _cwd), do: {:error, :not_found}
 

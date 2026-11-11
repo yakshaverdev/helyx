@@ -51,34 +51,36 @@ defmodule Helyx.Session do
   `:sessions_dir` the session is written to disk
   (docs/features/session-lock.md, docs/features/server-management.md).
 
-  Errors: `{:error, :invalid_cwd}`, `{:error, :invalid_parent}`,
+  `:sessions_dir` is absent (no file) or the folder of the Core. Errors:
+  `{:error, :invalid_cwd}`, `{:error, :invalid_parent}`,
   `{:error, :invalid_tools}`, `{:error, :invalid_model_context}`,
   `{:error, :invalid_provider_opts}`, `{:error, :invalid_max_output_tokens}`,
-  the model errors of `t:model_error/0`, `{:error, {:session_locked, id}}`,
-  `{:error, {:lock_failed, text}}`, `{:error, :open_timeout}`,
-  `{:error, {:create_failed, reason}}`, and `{:error, :too_many_sessions}`.
+  the model errors of `t:model_error/0`,
+  `{:error, {:invalid_option, :sessions_dir}}`, `{:error, :editing}`,
+  `{:error, :open_timeout}`, `{:error, {:create_failed, reason}}`, and
+  `{:error, :too_many_sessions}`.
   """
   @spec start(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def start(core \\ Helyx.Core, opts) do
     # The file is created only after the plugins resolve, which narrows the
     # window for an orphan file from a failed start. A crash of the session's
     # open after the create still leaves one.
-    with {:ok, cwd} <- Input.cwd_option(opts),
+    with {:ok, dir} <- Input.sessions_dir(core, opts),
+         {:ok, cwd} <- Input.cwd_option(opts),
          {:ok, provider_opts} <- Input.provider_opts(opts),
          {:ok, parent, only, model_context, limit} <- Input.start_options(core, opts),
          id = if(parent, do: Id.child(parent.session_id, parent.call_id), else: Id.new()),
          {:ok, tools, sources} <- Input.tools(core, only),
          concurrent = Helyx.Tool.concurrent(tools),
          {:ok, {ref, provider}} <- Input.model(core, Keyword.fetch!(opts, :model), limit),
-         # The folders come before the lock, whose file is in them.
-         :ok <- mkdir(opts[:sessions_dir], cwd, parent) do
+         :ok <- mkdir(dir, cwd, parent) do
       state = %State{id: id, core: core, model: ref, provider: provider, cwd: cwd}
       init = %{provider_opts: provider_opts, max_output_tokens: limit}
 
       Server.create(
         %{state | init: init, plugins: %{state.plugins | model_context: model_context}},
         {tools, concurrent, sources},
-        Server.Open.create_spec(opts[:sessions_dir], id, cwd, ModelRef.to_string(ref), parent)
+        Server.Open.create_spec(dir, id, cwd, ModelRef.to_string(ref), parent)
       )
     end
   end
@@ -88,18 +90,20 @@ defmodule Helyx.Session do
 
   @doc """
   Resumes from `:sessions_dir` the session `Helyx.Session.File.pick/3` picks:
-  the newest of the working directory, or with `:id` that session. `:cwd`, the
-  tool checks, the model ref, `:provider_opts`, the lock, the cap, and the read
-  bounds are as in `start/2`. A session that runs in this Core is attached, and
-  other `:provider_opts` give `{:error, :provider_opts_differ}`
-  (docs/features/server-management.md).
+  the newest of the working directory, or with `:id` that session. `:cwd`,
+  the tool checks, the model ref, `:provider_opts`, the cap, and the read
+  bounds are as in `start/2`. `:sessions_dir` is the folder of the Core.
+  A session that runs in this Core is attached, and other `:provider_opts`
+  give `{:error, :provider_opts_differ}` (docs/features/server-management.md).
   """
   @spec resume(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def resume(core \\ Helyx.Core, opts) do
-    dir = Keyword.fetch!(opts, :sessions_dir)
+    # The option is required; the check of the folder of the Core follows.
+    _ = Keyword.fetch!(opts, :sessions_dir)
     header? = Keyword.has_key?(opts, :id) and not Keyword.has_key?(opts, :cwd)
 
-    with {:ok, cwd} <- if(header?, do: {:ok, nil}, else: Input.cwd_option(opts)),
+    with {:ok, dir} <- Input.sessions_dir(core, opts),
+         {:ok, cwd} <- if(header?, do: {:ok, nil}, else: Input.cwd_option(opts)),
          {:ok, provider_opts} <- Input.provider_opts(opts),
          {:ok, tools, sources} <- Input.tools(core, nil),
          concurrent = Helyx.Tool.concurrent(tools),

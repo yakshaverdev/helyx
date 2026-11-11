@@ -39,7 +39,10 @@ defmodule Helyx.TUITest do
       Helyx.TUI.Test.Tool.Slow
     ]
 
-    start_supervised!({Helyx.Core, name: core, plugins: plugins})
+    dir = Path.join(System.tmp_dir!(), "helyx-#{core}")
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    start_supervised!({Helyx.Core, name: core, plugins: plugins, sessions_dir: dir})
     %{core: core}
   end
 
@@ -583,11 +586,10 @@ defmodule Helyx.TUITest do
     assert_receive {:run, {:error, {:session_down, :crashed}}}
   end
 
-  @tag :tmp_dir
   test "a resumed session shows its history, then the notice only with resumed: true", %{
-    core: core,
-    tmp_dir: dir
+    core: core
   } do
+    dir = Helyx.Core.config(core, :sessions_dir)
     call = %Message.ToolCall{id: "c1", name: "slow", arguments: %{"ms" => 0, "text" => "slept"}}
     :ok = Fake.script(core, "history", [[call], ["hello there"]])
     {:ok, session} = Session.start(core, model: "fake/history", sessions_dir: dir, cwd: dir)
@@ -599,10 +601,6 @@ defmodule Helyx.TUITest do
       DynamicSupervisor.terminate_child(Helyx.Core.session_supervisor(core), Session.pid(session))
 
     assert Session.pid(session) == nil
-
-    # The shutdown waits for perl only up to its release bound (#670).
-    [path] = Path.wildcard(Path.join([dir, "*", session.id <> ".jsonl"]))
-    Helyx.Test.SessionFile.await_lock_free(path)
 
     {:ok, resumed} = Session.resume(core, sessions_dir: dir, cwd: dir)
     %{vm: vm} = mount!(session: resumed, resumed: true)
@@ -626,16 +624,15 @@ defmodule Helyx.TUITest do
   end
 
   # #606: the notice of a loss before the subscribe reached no client.
-  @tag :tmp_dir
-  test "a session that lost its lock before the mount shows the not-saved notice", %{
-    core: core,
-    tmp_dir: dir
+  test "a session that stopped saving before the mount shows the not-saved notice", %{
+    core: core
   } do
+    dir = Helyx.Core.config(core, :sessions_dir)
     {:ok, session} = Session.start(core, model: "fake/lost", sessions_dir: dir, cwd: dir)
     %{vm: held} = mount!(session: session)
     assert ViewModel.cells(held) == []
 
-    Helyx.Test.LostLock.kill(session)
+    Helyx.Test.UnsavedSession.stop_saving(session)
 
     %{vm: vm} = mount!(session: session)
     assert ViewModel.cells(vm) == [{:notice, Helyx.Reason.text(:not_saved)}]

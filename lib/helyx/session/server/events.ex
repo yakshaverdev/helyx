@@ -78,7 +78,7 @@ defmodule Helyx.Session.Server.Events do
       turn: turn(state.phase),
       model: ModelRef.to_string(state.model),
       queue: Queue.counts(state.queue),
-      persisting: match?({:saving, _, _}, state.save),
+      persisting: match?({:saving, _}, state.save),
       usage: usage,
       context: context,
       asks: Asks.snapshot(state),

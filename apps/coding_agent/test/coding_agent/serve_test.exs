@@ -39,6 +39,11 @@ defmodule CodingAgent.ServeTest do
     %{sessions: sessions, server_file: Path.join(sessions, "server.json")}
   end
 
+  test "the data folder lock of another Core is one line" do
+    assert CodingAgent.error_text({:data_folder_locked, "/d"}) ==
+             "could not start the agent: another Helyx process holds the data folder /d"
+  end
+
   # Runs `helyx serve` with `args` in a task; its result is the status,
   # stdout, and stderr.
   defp serve(args) do
@@ -241,6 +246,8 @@ defmodule CodingAgent.ServeTest do
              # The Hub store frees the lock of its own file when it closes.
              :release,
              :stop_core,
+             # Core frees the lock of the data folder at its stop.
+             :release,
              :remove,
              :release
            ]

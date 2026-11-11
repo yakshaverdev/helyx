@@ -179,8 +179,7 @@ defmodule Helyx.Session.File do
   message. The scan and its bounds are in `Helyx.Session.File.Scan`. A session
   of the id whose header names another directory is `:not_found`. With `:id`
   and a nil `cwd`, the folder is the one that the header names.
-  `Helyx.Session.resume/2` takes the lock of this file before
-  `resume_picked/3`, which reads the header again.
+  `Helyx.Session.resume/2` reads the header again in `resume_picked/3`.
   """
   @spec pick(Path.t(), String.t() | nil, keyword()) ::
           {:ok, Path.t(), String.t()} | {:error, error() | :invalid_cwd}

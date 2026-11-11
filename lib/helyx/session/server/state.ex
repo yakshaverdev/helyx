@@ -30,11 +30,9 @@ defmodule Helyx.Session.Server.State do
     :cwd,
     :hands,
     :background_dir,
-    # The session file and its writer lock: `:never` before the session has a
-    # file; `{:saving, file, lock}` while an append goes to disk, with the
-    # port of the lock, or nil in the open before the take; `{:stopped,
-    # unsaved_from, lock}` after a failed write or a lost lock
-    # (`Records`).
+    # The session file: `:never` before the session has a file; `{:saving,
+    # file}` while each append goes to disk; `{:stopped, unsaved_from}` after
+    # a failed write (`Records`).
     {:save, :never},
     # The sync worker of the instance (`Helyx.Session.Sync`), or nil with no
     # Memory plugin. Before `Sync.open/1`, nil or `{:replay, messages}`.
@@ -66,9 +64,9 @@ defmodule Helyx.Session.Server.State do
       idle: 1_800_000
     },
     # The deadlines of the session's own steps, in ms: `prepare`, the armed
-    # kill of the prepare Task (`TurnLoop`), and `open`, the deadline of the
-    # lock take and the base of the deadline of the load, which grows with
-    # the file (docs/features/session-lock.md). A test seam.
+    # kill of the prepare Task (`TurnLoop`), and `open`, the base of the
+    # deadline of the load, which grows with the file
+    # (docs/features/session-lock.md). A test seam.
     deadline_ms: %{prepare: @prepare_ms, open: 25_000},
     # The current idle timer (`:erlang.start_timer/3`, see
     # `Connect.arm_idle/1`), or nil.
@@ -99,8 +97,8 @@ defmodule Helyx.Session.Server.State do
           background_dir: Path.t() | nil,
           save:
             :never
-            | {:saving, Helyx.Session.File.t(), port() | nil}
-            | {:stopped, non_neg_integer(), port() | nil},
+            | {:saving, Helyx.Session.File.t()}
+            | {:stopped, non_neg_integer()},
           plugins: %{
             model_context: module() | nil,
             compaction: module() | nil,
@@ -127,14 +125,6 @@ defmodule Helyx.Session.Server.State do
         }
 
   def ask(state, pid, req, key), do: ProviderRequest.ask(pid, req, state.provider_ms[key])
-
-  # The writer lock of the session file, or nil: of a saving session, and of
-  # one whose failed write still holds it. A session that never had a file,
-  # and one that lost its lock, hold none.
-  @doc false
-  def lock(%__MODULE__{save: {:saving, _file, lock}}), do: lock
-  def lock(%__MODULE__{save: {:stopped, _from, lock}}), do: lock
-  def lock(%__MODULE__{save: :never}), do: nil
 
   # The options of every plugin call of the session.
   def base_opts(state), do: [core: state.core, session_id: state.id, cwd: state.cwd]

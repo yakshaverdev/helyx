@@ -15,7 +15,9 @@ defmodule Helyx.Session.ProviderProcessTest do
 
   @done {:done, %{stop_reason: :end_turn, usage: nil}}
 
-  setup do
+  @moduletag :tmp_dir
+
+  setup %{tmp_dir: dir} do
     core = :"core_#{System.unique_integer([:positive])}"
 
     plugins = [
@@ -26,7 +28,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       Helyx.Test.Tool.Upcase
     ]
 
-    start_supervised!({Helyx.Core, name: core, plugins: plugins})
+    start_supervised!({Helyx.Core, name: core, plugins: plugins, sessions_dir: dir})
     Process.register(self(), Connected.controller(core))
     %{core: core}
   end

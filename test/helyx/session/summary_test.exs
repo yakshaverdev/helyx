@@ -10,10 +10,12 @@ defmodule Helyx.Session.SummaryTest do
   alias Helyx.Session.Server.Flow
   alias Helyx.Test.{Connected, SummaryPlugin, SummaryProvider}
 
-  setup do
+  @moduletag :tmp_dir
+
+  setup %{tmp_dir: dir} do
     core = :"core_#{System.unique_integer([:positive])}"
     plugins = [SummaryProvider, SummaryPlugin, Connected]
-    start_supervised!({Helyx.Core, name: core, plugins: plugins})
+    start_supervised!({Helyx.Core, name: core, plugins: plugins, sessions_dir: dir})
     %{core: core}
   end
 

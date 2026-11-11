@@ -7,7 +7,7 @@ defmodule Helyx.ModelContext do
   the context to send. `opts` carries
   `:core`, `:session_id`, `:turn_id`, `:cwd`, `:model` (the
   `Helyx.ModelRef` of the turn), `:session_dir` (the folder of the
-  session file, under `:sessions_dir` as the caller gave it, or nil when the
+  session file, under the `:sessions_dir` of the Core, or nil when the
   session is not saved), `:summary` (the stored `Helyx.Summary`, or nil),
   and `:deadline`. A message that the plugin adds has no id, so the
   Compaction plugin can tell it from a message of the transcript

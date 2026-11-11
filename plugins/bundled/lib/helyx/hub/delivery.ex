@@ -47,8 +47,7 @@ defmodule Helyx.Hub.Delivery do
   # The resume errors that a later try can pass; a missing file also
   # deletes the record of the session (decision 8); any other refuses.
   defp failed(:too_many_sessions), do: :wake_retry
-  defp failed({:session_locked, _id}), do: :wake_retry
-  defp failed({:lock_failed, _text}), do: :wake_retry
+  defp failed(:editing), do: :wake_retry
   defp failed(:open_timeout), do: :wake_retry
   defp failed(:not_found), do: :wake_gone
   defp failed(_reason), do: :wake_refused

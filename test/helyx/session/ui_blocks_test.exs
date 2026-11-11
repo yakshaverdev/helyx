@@ -15,11 +15,14 @@ defmodule Helyx.Session.UIBlocksTest do
 
   @outside "the tool returned a value outside its contract"
 
-  setup do
+  @moduletag :tmp_dir
+
+  setup %{tmp_dir: dir} do
     core = :"core_#{System.unique_integer([:positive])}"
 
     start_supervised!(
-      {Helyx.Core, name: core, plugins: [Connected, Result, Show, Background, Asker]}
+      {Helyx.Core,
+       name: core, plugins: [Connected, Result, Show, Background, Asker], sessions_dir: dir}
     )
 
     Process.register(self(), Connected.controller(core))

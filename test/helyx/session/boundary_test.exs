@@ -69,15 +69,15 @@ defmodule Helyx.Session.BoundaryTest do
       tmp_dir: dir
     } do
       for {module, _name, _description, _parameters, label} <- @bad_specs do
-        core = start_core([Helyx.Test.Provider, Helyx.Test.Tool.Upcase, module])
+        d = Path.join(dir, "case_#{System.unique_integer([:positive])}")
+        core = start_core([Helyx.Test.Provider, Helyx.Test.Tool.Upcase, module], sessions_dir: d)
 
         assert {:error, {:bad_tool_spec, ^label}} =
-                 Session.start(core, model: "test/ok", sessions_dir: dir)
+                 Session.start(core, model: "test/ok", sessions_dir: d)
 
         assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(core)).active == 0
+        assert File.ls!(d) == ["core.lock"]
       end
-
-      assert File.ls!(dir) == []
     end
 
     @tag :tmp_dir
@@ -92,8 +92,9 @@ defmodule Helyx.Session.BoundaryTest do
       before = File.read!(path)
 
       for {module, _name, _description, _parameters, label} <- @bad_specs do
-        bad = start_core([Helyx.Test.Provider, module])
-        assert {:error, {:bad_tool_spec, ^label}} = Session.resume(bad, sessions_dir: dir)
+        d = Path.join(dir, "case_#{System.unique_integer([:positive])}")
+        bad = start_core([Helyx.Test.Provider, module], sessions_dir: d)
+        assert {:error, {:bad_tool_spec, ^label}} = Session.resume(bad, sessions_dir: d)
         assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(bad)).active == 0
       end
 
@@ -177,13 +178,13 @@ defmodule Helyx.Session.BoundaryTest do
     @tag :tmp_dir
     test "start rejects a failed check, names the tool, and makes nothing", %{tmp_dir: dir} do
       for {module, expected} <- @cases do
-        core = start_core([Helyx.Test.Provider, Helyx.Test.Tool.Upcase, module])
-        checked(expected, fn -> Session.start(core, model: "test/ok", sessions_dir: dir) end)
+        d = Path.join(dir, "case_#{System.unique_integer([:positive])}")
+        core = start_core([Helyx.Test.Provider, Helyx.Test.Tool.Upcase, module], sessions_dir: d)
+        checked(expected, fn -> Session.start(core, model: "test/ok", sessions_dir: d) end)
 
         assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(core)).active == 0
+        assert File.ls!(d) == ["core.lock"]
       end
-
-      assert File.ls!(dir) == []
     end
 
     test "the check runs before the model ref resolves" do
@@ -205,8 +206,9 @@ defmodule Helyx.Session.BoundaryTest do
       before = File.read!(path)
 
       for {module, expected} <- @cases do
-        bad = start_core([Helyx.Test.Provider, module])
-        checked(expected, fn -> Session.resume(bad, sessions_dir: dir) end)
+        d = Path.join(dir, "case_#{System.unique_integer([:positive])}")
+        bad = start_core([Helyx.Test.Provider, module], sessions_dir: d)
+        checked(expected, fn -> Session.resume(bad, sessions_dir: d) end)
 
         assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(bad)).active == 0
       end
@@ -219,12 +221,13 @@ defmodule Helyx.Session.BoundaryTest do
     test "a resume by id rejects a failed check before it looks for the id", %{tmp_dir: dir} do
       for {module, expected} <- @cases do
         bad = :"core_#{System.unique_integer([:positive])}"
+        d = Path.join(dir, "case_#{System.unique_integer([:positive])}")
         plugins = [Helyx.Test.Provider, module]
-        start_supervised!({Helyx.Core, name: bad, plugins: plugins, sessions_dir: dir}, id: bad)
+        start_supervised!({Helyx.Core, name: bad, plugins: plugins, sessions_dir: d}, id: bad)
 
         # A find would give `:not_found`.
         checked(expected, fn -> Helyx.Sessions.resume(bad, id: Session.Id.new()) end)
-        checked(expected, fn -> Session.resume(bad, sessions_dir: dir, id: Session.Id.new()) end)
+        checked(expected, fn -> Session.resume(bad, sessions_dir: d, id: Session.Id.new()) end)
 
         assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(bad)).active == 0
       end
@@ -269,7 +272,7 @@ defmodule Helyx.Session.BoundaryTest do
                  Session.start(core, model: "test/ok", cwd: cwd, sessions_dir: dir)
       end
 
-      assert File.ls!(dir) == []
+      assert File.ls!(dir) -- ["core.lock"] == []
       assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(core)).active == 0
     end
 
@@ -280,7 +283,7 @@ defmodule Helyx.Session.BoundaryTest do
         assert {:error, :invalid_cwd} = Session.resume(core, cwd: cwd, sessions_dir: dir)
       end
 
-      assert File.ls!(dir) == []
+      assert File.ls!(dir) -- ["core.lock"] == []
       assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(core)).active == 0
     end
   end
@@ -299,7 +302,7 @@ defmodule Helyx.Session.BoundaryTest do
                  Session.resume(core, provider_opts: opts, sessions_dir: dir)
       end
 
-      assert File.ls!(dir) == []
+      assert File.ls!(dir) -- ["core.lock"] == []
       assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(core)).active == 0
     end
   end
