@@ -57,3 +57,7 @@ These rules have no fixture here; the feature doc states them, and the Elixir te
 - The `Origin` check (HTTP 403) and the 65th connection (HTTP 503), and the closes of the WebSocket server (`1000`, `1002`, `1008`, `1009`, `1011`).
 
 The feature doc lists what the prose does not pin down for an implementation that does not run on the BEAM: `docs/features/wire-protocol.md`, "Conformance fixtures".
+
+## `bounds.json`: the numbers and the error codes, once
+
+The frame, part and request bounds in bytes, the deadlines of the operations in milliseconds, and the error codes in the order of the schema. `plugins/bundled/test/helyx/transport/wire_bounds_test.exs` checks the server, the client of the TUI and the schema of the wire doc against it; `clients/rust/core/tests/bounds.rs` checks the Rust client. A client in another language reads this file in place of the tables of the doc.

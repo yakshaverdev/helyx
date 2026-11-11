@@ -89,7 +89,8 @@ pub const OPS: &[&str] = &[
     "answer",
 ];
 
-const ERROR_CODES: &[&str] = &[
+/// The error codes of the wire (`test/fixtures/wire/bounds.json`).
+pub const ERROR_CODES: &[&str] = &[
     "unknown_op",
     "bad_params",
     "busy",

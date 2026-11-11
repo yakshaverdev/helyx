@@ -24,7 +24,7 @@ defmodule Helyx.TUI.Wire.Decode do
                   start_failed invalid_utf8 invalid_origin queue_full turn_running
                   text_too_large invalid_answer not_waiting forbidden too_many_records
                   too_many_projects unknown_project unknown_token too_many_schedules
-                  unknown_schedule)a
+                  unknown_schedule too_many_event_subscriptions unknown_subscription)a
   @codes Map.new(@error_codes, &{Atom.to_string(&1), &1})
   # The codes whose text names the value: the TUI shows it.
   @texts ~w(invalid_model_ref unknown_provider start_failed)a

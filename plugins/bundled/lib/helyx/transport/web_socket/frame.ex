@@ -13,6 +13,7 @@ defmodule Helyx.Transport.WebSocket.Frame do
   @bounds %{inbound: {26_214_400, 65_536}, outbound: {1_611_661_312, 38_797_312}}
 
   def max_frame, do: @max_frame
+  def max_piece, do: @max_piece
 
   @doc "The bytes of a request of a client, its parts joined: the inbound bound."
   @spec max_request() :: pos_integer()
