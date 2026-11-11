@@ -35,6 +35,7 @@ Decisions:
 - `Helyx.Session.start/2` and `resume/2` give `{:error, :session_not_found}` when an attach meets the end of the process twice (Decisions, "Attach").
 - `Helyx.Session.start/2` and `resume/2`: a new error `:too_many_sessions` at the cap. `resume/2` of a session that runs in the same Core returns `{:ok, session}`, the running instance, in place of an error. A session that a file edit of the Core holds gives `{:error, :editing}`.
 - The session process takes one new call, `:live`, which answers its `%Helyx.Sessions.Live{}`. Since #750 the attach asks `{:attach, provider_opts}` in its place, and a running session with other `:provider_opts` answers `{:error, :provider_opts_differ}`; so a wire `resume` of a session that a product started with `:provider_opts` gives `start_failed`.
+- `watch(core, types)`, `unwatch(core)`, `dropped/1`, and `max_feed_queue/0` follow every session of a Core with no subscription to each: the session feed sends the `Live` of a session at its open and at each change of status or model, and the events of the types that the watcher names, and a watcher whose mailbox is at the bound loses notices and counts them (`docs/features/session-feed.md`). `Helyx.Sessions.list_live/1` stays, as the seed and the repair path of a watcher.
 
 ### Order of the checks
 

@@ -102,7 +102,7 @@ defmodule Helyx.Hub.LiveTest do
     assert Enum.count(answers, &(&1["error"]["code"] == "too_many_sessions")) == 1
   end
 
-  test "a resume refused at the cap moves nothing; the resume of a folder of a running session attaches",
+  test "a resume refused at the cap moves nothing; a folder resume attaches to a running session and is refused for a stopped one",
        context do
     context = serve(context, 1)
     owner = open(context.port)
@@ -110,7 +110,7 @@ defmodule Helyx.Hub.LiveTest do
     %{"ok" => true} = req(owner, "hub.records.update", %{"session" => first, "title" => "t"})
     %{"ok" => true} = req(owner, "stop", %{"session" => first})
     Events.wait_until(fn -> not Live.running?(:sys.get_state(context.hub), first) end)
-    %{"result" => %{"session" => _second}} = start(owner)
+    %{"result" => %{"session" => second}} = start(owner)
     # An old time on the row, so a touch would show: written on the
     # connection inside the handle of the store, while the Hub waits for its
     # next call.
@@ -125,11 +125,31 @@ defmodule Helyx.Hub.LiveTest do
     assert %{"error" => %{"code" => "too_many_sessions"}} = req(owner, "resume", %{"id" => first})
     assert stored_active_at(owner, first) == 1
 
-    # The resume of its folder, whose newest session it is, moves nothing either.
+    # The resume of its folder takes the newest record, the running `second`
+    # session that the feed wrote, and attaches to it: no place, no touch.
+    assert %{"result" => %{"session" => ^second}} = req(owner, "resume", %{"cwd" => File.cwd!()})
+    assert stored_active_at(owner, first) == 1
+
+    # A folder resume refused at the cap moves nothing: the newest record of
+    # the folder is a stopped session, and another session holds the place.
+    # `serve({:newest, ...})` takes the place before the touch.
+    %{"ok" => true} = req(owner, "stop", %{"session" => second})
+    Events.wait_until(fn -> not Live.running?(:sys.get_state(context.hub), second) end)
+    %{"result" => %{"session" => third}} = start(owner)
+
+    # The stopped `second` stays the newest record of the folder.
+    :ok =
+      Exqlite.Sqlite3.execute(
+        db,
+        "UPDATE records SET active_at = 9999999999 WHERE session_id = '#{second}'"
+      )
+
     assert %{"error" => %{"code" => "too_many_sessions"}} =
              req(owner, "resume", %{"cwd" => File.cwd!()})
 
-    assert stored_active_at(owner, first) == 1
+    assert stored_active_at(owner, second) == 9_999_999_999
+    assert Live.running?(:sys.get_state(context.hub), third)
+    refute Live.running?(:sys.get_state(context.hub), second)
 
     # A session that runs outside the live set, the newest of its folder.
     folder = Path.join(context.tmp_dir, "elsewhere") |> tap(&File.mkdir_p!/1)
@@ -180,15 +200,30 @@ defmodule Helyx.Hub.LiveTest do
   describe "an entry of the live set" do
     setup :state
 
-    test "of a new process of a session replaces the entry of the old one", %{state: state} do
+    test "of a new process of a session replaces the entry of the old one, and a Live of the same pid keeps the starter",
+         %{state: state} do
       old = spawn_link(fn -> Process.sleep(:infinity) end)
       new = spawn_link(fn -> Process.sleep(:infinity) end)
-      state = state |> Live.seed([{"s1", old}]) |> Live.started(self(), "s1", new, "owner")
 
-      assert Map.values(state.live) == ["s1"]
+      state =
+        state
+        |> Live.watch("s1", old)
+        |> Live.started(self(), "s1", new, "owner")
+
+      assert Map.values(state.live) == [{"s1", new}]
       {:monitors, monitors} = Process.info(self(), :monitors)
       assert {:process, new} in monitors
       refute {:process, old} in monitors
+
+      # The Live of the same process keeps the starter.
+      assert Live.starter(state, "s1") == "owner"
+      assert Live.watch(state, "s1", new) == state
+
+      # A Live of another process of the id drops it.
+      other = spawn_link(fn -> Process.sleep(:infinity) end)
+      replaced = Live.watch(state, "s1", other)
+      assert Live.starter(replaced, "s1") == nil
+      assert Map.values(replaced.live) == [{"s1", other}]
     end
   end
 

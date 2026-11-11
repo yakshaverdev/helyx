@@ -5,7 +5,7 @@ defmodule Helyx.Session.Server do
 
   alias Helyx.Reason
   alias Helyx.Session.{ApprovalChains, Turn}
-  alias Helyx.Session.Server.{Approvals, Asks, Calls, Events, Flow, Open, Records}
+  alias Helyx.Session.Server.{Approvals, Asks, Calls, Events, Feed, Flow, Open, Records}
   alias Helyx.Session.Server.Flow.Up
   alias Helyx.Session.Server.{Settle, Sources, State, Steering}
   alias Helyx.Session.Server.{Stop, Summary, ToolRuns, TurnLoop, UIBlocks, Wait}
@@ -26,15 +26,22 @@ defmodule Helyx.Session.Server do
 
   @impl true
   def handle_continue(continue, state),
-    do: Reason.no_args(fn -> Open.handle_continue(continue, state) end)
+    do: Reason.no_args(fn -> Open.handle_continue(continue, state) |> synced() end)
 
   # The calls of the client API, with their deadline (`Calls`).
   @impl true
   def handle_call(request, from, state),
-    do: Reason.no_args(fn -> Calls.handle(request, from, state) end)
+    do: Reason.no_args(fn -> Calls.handle(request, from, state) |> synced() end)
 
   @impl true
-  def handle_info(message, state), do: Reason.no_args(fn -> info(message, state) end)
+  def handle_info(message, state), do: Reason.no_args(fn -> info(message, state) |> synced() end)
+
+  # The status can change with no event, as at the end of a wait, so the feed
+  # compares at the end of each callback too. A stop sends nothing: the
+  # watcher has its `:DOWN` (docs/features/session-feed.md).
+  defp synced({:noreply, state}), do: {:noreply, Feed.sync(state)}
+  defp synced({:reply, reply, state}), do: {:reply, reply, Feed.sync(state)}
+  defp synced(stop) when elem(stop, 0) == :stop, do: stop
 
   @impl true
   def format_status(status), do: Reason.crash_status(status)

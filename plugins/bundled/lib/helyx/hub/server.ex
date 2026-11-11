@@ -8,8 +8,13 @@ defmodule Helyx.Hub.Server do
 
   alias Helyx.Hub.{Connections, Live, Records, Rules, Schedules, Subscriptions, Wake, Webhook}
 
-  # The read of the live sessions of the Core at the start (decision 14).
+  # The read of the live sessions of the Core at the start and at each repair
+  # (decision 14).
   @seed_ms 5_000
+  # The deadline of the write of a row of the feed: a write that waits for
+  # nobody, and one past this rolls back. The repair path writes the row
+  # later (decision 8).
+  @seen_ms 1_000
 
   # The caps of the operator API (Bounds).
   @max_users 64
@@ -24,7 +29,18 @@ defmodule Helyx.Hub.Server do
     with {:ok, store} <- config.store.open(path: config.path) do
       case default_owner(config.store, store, config.default_owner) do
         {:ok, owner_id} ->
-          state = Map.merge(config, %{db: store, default_owner_id: owner_id})
+          # Before the seed: a session that starts during the list sends its
+          # Live after this register.
+          {:ok, dropped} = Helyx.Sessions.watch(config.core, [])
+
+          state =
+            Map.merge(config, %{
+              db: store,
+              default_owner_id: owner_id,
+              feed: dropped,
+              feed_dropped: 0
+            })
+
           {:ok, state |> Live.init() |> Connections.init() |> Wake.init(), {:continue, :live}}
 
         {:error, _} = error ->
@@ -53,27 +69,63 @@ defmodule Helyx.Hub.Server do
     end
   end
 
-  # Every live session of the Core enters the live set once; past the
-  # deadline, or on a failed read, the set starts empty (decision 14).
+  # Every live session of the Core enters the live set once, and its row; past
+  # the deadline, or on a failed read, the set starts empty (decision 14).
   @impl true
   def handle_continue(:live, state) do
-    core = state.core
-    task = Task.Supervisor.async_nolink(state.wake.sup, fn -> live_sessions(core) end)
-
-    sessions =
-      case Task.yield(task, @seed_ms) || Task.shutdown(task, :brutal_kill) do
-        {:ok, sessions} -> sessions
-        _exit_or_nil -> []
-      end
-
     # The first poll of the wake-ups comes at the start (decision 12).
-    {:noreply, state |> Live.seed(sessions) |> Wake.poll()}
+    {:noreply, state |> seen_all(read_live(state)) |> poll()}
   end
+
+  # The live sessions of the Core, in a Task under the wake supervisor with
+  # the bound of the seed: a Core bounds neither the number of its sessions
+  # nor the time that one takes to answer.
+  defp read_live(%{core: core, wake: %{sup: sup}}) do
+    task = Task.Supervisor.async_nolink(sup, fn -> live_sessions(core) end)
+
+    case Task.yield(task, @seed_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, sessions} -> sessions
+      _exit_or_nil -> []
+    end
+  end
+
+  defp seen_all(state, sessions),
+    do: Enum.reduce(sessions, state, fn {live, pid}, state -> seen(state, live, pid) end)
 
   defp live_sessions(core) do
     for live <- Helyx.Sessions.list_live(core),
         pid = Helyx.Session.pid(%Helyx.Session{id: live.id, core: core}),
-        do: {live.id, pid}
+        is_pid(pid),
+        do: {live, pid}
+  end
+
+  # The periodic step of Hub: the repair of a dropped notice of the feed, then
+  # the poll of the wake-ups. It needs no timer of its own, because the poll
+  # already runs each 1,000 ms (decision 12).
+  defp poll(state), do: state |> repaired() |> Wake.poll()
+
+  # A notice that the feed dropped left its session out of the live set, and
+  # with no row. A count above the one that Hub last read reads the live
+  # sessions again, as the start does (decision 14). The count is read before
+  # the sessions, so a drop during the read keeps the count low and the next
+  # poll reads them again.
+  defp repaired(state) do
+    dropped = Helyx.Sessions.dropped(state.feed)
+
+    if dropped > state.feed_dropped do
+      state = seen_all(state, read_live(state))
+      %{state | feed_dropped: dropped}
+    else
+      state
+    end
+  end
+
+  # The Live of the feed, and the row that it writes: the write waits for
+  # nobody (decision 8).
+  defp seen(state, %Helyx.Sessions.Live{} = live, pid) do
+    state = Live.watch(state, live.id, pid)
+    _ = Records.seen(live, System.monotonic_time(:millisecond) + @seen_ms, state)
+    state
   end
 
   @impl true
@@ -112,13 +164,11 @@ defmodule Helyx.Hub.Server do
 
   # The session of the resume of a folder is known only here: whether it
   # runs is a Registry lookup (`Helyx.Session.pid/1`), which does not wait.
-  # A derived record has no row to touch.
   defp serve({:newest, auth, _cwd, _scanned} = request, caller, deadline, state) do
-    with {:ok, id, kind} <- Records.handle(request, deadline, state),
+    with {:ok, id} <- Records.handle(request, deadline, state),
          running? = Helyx.Session.pid(%Helyx.Session{id: id, core: state.core}) != nil,
          {:ok, state} <- place(state, auth.user, caller, id, running?) do
-      touch = if kind == :stored, do: {:touch, nil}
-      touched(Rules.touch(id, touch, deadline, state), {:ok, id}, caller, state)
+      touched(Rules.touch(id, {:touch, nil}, deadline, state), {:ok, id}, caller, state)
     else
       error -> {error, state}
     end
@@ -272,14 +322,18 @@ defmodule Helyx.Hub.Server do
   defp lost_readers(_failed, user, _id, _exists?, state),
     do: Connections.close_others(state, [user])
 
+  # A notice of the session feed.
   @impl true
+  def handle_info({:helyx_feed, pid, %Helyx.Sessions.Live{} = live}, state),
+    do: {:noreply, seen(state, live, pid)}
+
   def handle_info({:DOWN, ref, :process, pid, _reason}, state),
     do: {:noreply, state |> Live.down(ref, pid) |> Connections.down(ref) |> Wake.ended(ref)}
 
   def handle_info({:place_expired, caller, monitor}, state),
     do: {:noreply, Live.expired(state, caller, monitor)}
 
-  def handle_info(:wake_poll, state), do: {:noreply, Wake.poll(state)}
+  def handle_info(:wake_poll, state), do: {:noreply, poll(state)}
   def handle_info({:wake_kill, ref}, state), do: {:noreply, Wake.expired(state, ref)}
   # The reply of a delivery Task.
   def handle_info({ref, _result}, state) when is_reference(ref),

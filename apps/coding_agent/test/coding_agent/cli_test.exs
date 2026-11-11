@@ -301,17 +301,17 @@ defmodule CodingAgent.CLITest do
 
       # After "--" the words are arguments, and two files with one id give no
       # session: the Hub of the server has no record of the id, and the
-      # resume of the server refuses it (docs/features/hub.md, decision 7).
+      # resume of the server refuses it (docs/features/hub.md, decision 8).
+      # The id of an earlier resume here has a record, and a record outlives
+      # its session, so this id is new.
       assert error_line(["--", "--session", dash]) =~ "at most one directory"
-      copy = Path.join([s, "other", control <> ".jsonl"])
+      twice = Helyx.Session.Id.new()
+      {:ok, created} = Helyx.Session.File.create(s, twice, dir, "fake/echo")
+      copy = Path.join([s, "other", twice <> ".jsonl"])
       File.mkdir_p!(Path.dirname(copy))
+      File.cp!(created.path, copy)
 
-      File.cp!(
-        Path.join(Helyx.Session.File.Scan.project_dir(s, "/x\t\e[2J"), control <> ".jsonl"),
-        copy
-      )
-
-      assert error_line(["--session", control]) == ~s(no session "#{control}")
+      assert error_line(["--session", twice]) == ~s(no session "#{twice}")
 
       # A path in the id never reaches the filesystem: the server checks the
       # format of the id before it builds a path, and names no session.

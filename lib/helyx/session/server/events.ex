@@ -9,7 +9,7 @@ defmodule Helyx.Session.Server.Events do
 
   alias Helyx.{Event, ModelRef}
   alias Helyx.Session.{History, Queue, Ring, Snapshot, Totals, Turn}
-  alias Helyx.Session.Server.{Asks, Flow, State, UIBlocks, Wait}
+  alias Helyx.Session.Server.{Asks, Feed, Flow, State, UIBlocks, Wait}
 
   # The unacked events of one subscriber (ADR 0008 §5).
   @credits 16_384
@@ -101,6 +101,8 @@ defmodule Helyx.Session.Server.Events do
     do: emit(state, nil, type, data)
 
   def emit(state, turn_id, type, data) do
+    # A change of status goes out before the events of the new status.
+    state = Feed.sync(state)
     seq = state.ring.seq + 1
 
     event = %Event{
@@ -114,7 +116,14 @@ defmodule Helyx.Session.Server.Events do
 
     slow = for {pid, entry} <- state.subscribers, deliver(pid, entry, event) == :slow, do: pid
 
-    %{state | ring: Ring.push(state.ring, event), subscribers: Map.drop(state.subscribers, slow)}
+    state = %{
+      state
+      | ring: Ring.push(state.ring, event),
+        subscribers: Map.drop(state.subscribers, slow)
+    }
+
+    _ = Feed.event(state.core, event)
+    state
   end
 
   # Past the credits the slow subscriber ends in place of its event, and no

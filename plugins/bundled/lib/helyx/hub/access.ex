@@ -14,9 +14,6 @@ defmodule Helyx.Hub.Access do
 
   # The deadline of the find of the existence check (decision 8).
   @find_ms 5_000
-  # The bound of the `model` of a stored record (Bounds); the bound of its
-  # `cwd` is read from `Params`.
-  @max_model_bytes 256
   # The deadline of a `hub.*` operation on the wire, 6,000 ms, less 500 ms
   # for the reply: a write of the op commits before it or not at all. The
   # find of the existence check takes up to 5,000 ms of it.
@@ -153,11 +150,10 @@ defmodule Helyx.Hub.Access do
     end)
   end
 
-  # A `cwd` is any UTF-8 path of 1 to 4,096 bytes; a model a text of 1 to
-  # 256 bytes, the bound of a model ref (Bounds).
+  # The `cwd` and `model` of a record hold their bounds, else the find finds
+  # nothing (`Params.record_fields?/2`).
   defp checked(%{cwd: cwd, model: model} = found) do
-    cwd? = is_binary(cwd) and byte_size(cwd) in 1..Params.max_cwd_bytes() and String.valid?(cwd)
-    if cwd? and Params.text?(model, 1, @max_model_bytes), do: found
+    if Params.record_fields?(cwd, model), do: found
   end
 
   defp checked(nil), do: nil

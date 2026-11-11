@@ -227,4 +227,83 @@ defmodule Helyx.Hub.Store.SQLiteTest do
       held(port, seen <> data)
     end
   end
+
+  describe "the row of a session of the feed" do
+    defp record(session_id, owner, overrides \\ %{}) do
+      Map.merge(
+        %{
+          session_id: session_id,
+          owner: owner,
+          cwd: "/w",
+          model: "fake/echo",
+          prompt: "",
+          active_at: 10,
+          created_at: 10
+        },
+        overrides
+      )
+    end
+
+    test "seen_record inserts a default-owner row and moves model and active_at only" do
+      {:ok, db} = SQLite.open(path: nil)
+      :ok = SQLite.add_user(db, user("ann"), 64, :infinity)
+      :ok = SQLite.add_user(db, user("bob"), 64, :infinity)
+      ann = user("ann").id
+
+      assert :ok = SQLite.seen_record(db, record("SEENxxxxxxxx", ann), :infinity)
+      assert {:ok, row} = SQLite.record(db, "SEENxxxxxxxx")
+      assert %{owner: ^ann, cwd: "/w", model: "fake/echo", prompt: "", active_at: 10} = row
+      assert row.created_at == 10
+
+      :ok = SQLite.update_record(db, "SEENxxxxxxxx", %{title: "mine", labels: ["l"]}, :infinity)
+
+      moved =
+        record("SEENxxxxxxxx", user("bob").id, %{model: "b/two", active_at: 20, created_at: 20})
+
+      assert :ok = SQLite.seen_record(db, moved, :infinity)
+
+      assert {:ok, row} = SQLite.record(db, "SEENxxxxxxxx")
+      assert %{owner: ^ann, cwd: "/w", model: "b/two", prompt: "", active_at: 20} = row
+      assert %{title: "mine", created_at: 10} = row
+      assert SQLite.labels(db, ["SEENxxxxxxxx"]) == {:ok, %{"SEENxxxxxxxx" => ["l"]}}
+      :ok = SQLite.close(db)
+    end
+
+    test "ensure_records inserts the rows that are missing and changes no row that exists" do
+      {:ok, db} = SQLite.open(path: nil)
+      :ok = SQLite.add_user(db, user("ann"), 64, :infinity)
+      ann = user("ann").id
+      a = record("Axxxxxxxxxxx", ann, %{cwd: "/a", prompt: "pa"})
+      b = record("Bxxxxxxxxxxx", ann, %{cwd: "/b", prompt: "pb", active_at: 20, created_at: 20})
+
+      assert :ok = SQLite.ensure_records(db, [a], :infinity)
+      :ok = SQLite.update_record(db, "Axxxxxxxxxxx", %{title: "t"}, :infinity)
+
+      changed = %{a | prompt: "other", model: "b/two", active_at: 99}
+      assert :ok = SQLite.ensure_records(db, [changed, b], :infinity)
+
+      assert {:ok, row} = SQLite.record(db, "Axxxxxxxxxxx")
+      assert %{prompt: "pa", model: "fake/echo", active_at: 10, title: "t"} = row
+      assert {:ok, %{prompt: "pb", active_at: 20, cwd: "/b"}} = SQLite.record(db, "Bxxxxxxxxxxx")
+      :ok = SQLite.close(db)
+    end
+
+    test "put_record after the feed row of the same start sets the owner of the start" do
+      {:ok, db} = SQLite.open(path: nil)
+      :ok = SQLite.add_user(db, user("ann"), 64, :infinity)
+      :ok = SQLite.add_user(db, user("own"), 64, :infinity)
+      ann = user("ann").id
+      owner = user("own").id
+
+      # The feed row of the start comes first.
+      assert :ok = SQLite.seen_record(db, record("RACExxxxxxxx", owner), :infinity)
+      start = record("RACExxxxxxxx", ann, %{active_at: 20, created_at: 20})
+      assert :ok = SQLite.put_record(db, start, 10_000, :infinity)
+
+      assert {:ok, %{owner: ^ann, cwd: "/w", model: "fake/echo"}} =
+               SQLite.record(db, "RACExxxxxxxx")
+
+      :ok = SQLite.close(db)
+    end
+  end
 end

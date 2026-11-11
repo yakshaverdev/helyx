@@ -6,7 +6,7 @@ defmodule Helyx.Session.Server.Calls do
 
   alias Helyx.{Message, ModelRef}
   alias Helyx.Session.{History, Input}
-  alias Helyx.Session.Server.{Asks, Compaction, Events, Flow, Records, Sources, State}
+  alias Helyx.Session.Server.{Asks, Compaction, Events, Feed, Records, Sources, State}
   alias Helyx.Session.Server.{TurnLoop, UIBlocks}
 
   require Logger
@@ -102,17 +102,9 @@ defmodule Helyx.Session.Server.Calls do
   def handle({:attach, _provider_opts}, _from, %State{} = state),
     do: {:reply, {:error, :provider_opts_differ}, state}
 
-  def handle(:live, _from, %State{} = state) do
-    live = %Helyx.Sessions.Live{
-      id: state.id,
-      instance_id: state.instance_id,
-      cwd: state.cwd,
-      model: ModelRef.to_string(state.model),
-      status: if(Flow.idle?(state.phase), do: :idle, else: :running)
-    }
-
-    {:reply, live, state}
-  end
+  # One definition of the status, which the session feed sends too
+  # (`docs/features/session-feed.md`).
+  def handle(:live, _from, %State{} = state), do: {:reply, Feed.live(state), state}
 
   # The abort replies through `GenServer.reply/2` (`TurnLoop.abort/2`).
   def handle(:abort, from, %State{} = state), do: {:noreply, TurnLoop.abort(state, from)}
