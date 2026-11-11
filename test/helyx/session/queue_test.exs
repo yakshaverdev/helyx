@@ -175,7 +175,7 @@ defmodule Helyx.Session.QueueTest do
     assert {queue, [{:notice, "t1", "more"}]} = Queue.answer(queue, from, :ok, false)
     assert {queue, [{:notice, "t2", "again"}]} = Queue.end_turn(queue, "t2", false)
 
-    assert [%Queue.Sent{id: "s2", item: {:steer, "again"}, stage: :resolved}] = queue.sent
+    assert [%Queue.Sent{id: "s2", item: {:steer, "again"}, status: :resolved}] = queue.sent
   end
 
   test "effects keep the send order" do

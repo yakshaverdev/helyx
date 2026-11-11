@@ -1,4 +1,4 @@
-//! The server frames of protocol 9 after the handshake: `res`, `event`, and
+//! The server frames of protocol 10 after the handshake: `res`, `event`, and
 //! `session_end`, each checked by the schema of `docs/features/wire-protocol.md`.
 //! A `res` is read by the op of its request, which the caller keeps by `id`.
 
@@ -48,7 +48,8 @@ pub enum Reply {
     },
     History {
         messages: Vec<Message>,
-        more: bool,
+        /// The `before` of the page before it; `None` when older messages
+        /// exist no more (`more` of the wire).
         next: Option<String>,
     },
     Empty,
@@ -88,7 +89,8 @@ pub const OPS: &[&str] = &[
     "answer",
 ];
 
-const ERROR_CODES: &[&str] = &[
+/// The error codes of the wire (`test/fixtures/wire/bounds.json`).
+pub const ERROR_CODES: &[&str] = &[
     "unknown_op",
     "bad_params",
     "busy",
@@ -212,7 +214,6 @@ fn parse_result(op: &str, map: &Json) -> Checked<Reply> {
         },
         "history" => Reply::History {
             messages: list_of(map, "messages", "history", Message::parse)?,
-            more: boolean(map, "more", "history")?,
             next: string_or_null(map, "next", "history next")?.map(str::to_owned),
         },
         _ => Reply::Empty,

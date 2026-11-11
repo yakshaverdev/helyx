@@ -71,6 +71,10 @@ defmodule Helyx.Hub.WebhookTest do
   defp delivery_id(%Req.Response{body: body}) when is_binary(body),
     do: JSON.decode!(body)["delivery"]
 
+  # The connection inside the handle of the store, for a row that only SQL
+  # writes.
+  defp connection(%{db: %{db: db}}), do: db
+
   # The pending deliveries of a subscription, read in the Hub process, its
   # only caller of the store.
   defp pending(context, subscription) do
@@ -78,10 +82,10 @@ defmodule Helyx.Hub.WebhookTest do
       sql =
         "SELECT count(*) FROM schedules WHERE subscription_id = ?1 AND delivery_id IS NOT NULL"
 
-      {:ok, stmt} = Exqlite.Sqlite3.prepare(state.db, sql)
+      {:ok, stmt} = Exqlite.Sqlite3.prepare(connection(state), sql)
       :ok = Exqlite.Sqlite3.bind(stmt, [subscription.id])
-      {:ok, [[n]]} = Exqlite.Sqlite3.fetch_all(state.db, stmt)
-      :ok = Exqlite.Sqlite3.release(state.db, stmt)
+      {:ok, [[n]]} = Exqlite.Sqlite3.fetch_all(connection(state), stmt)
+      :ok = Exqlite.Sqlite3.release(connection(state), stmt)
       n
     end)
   end
@@ -92,7 +96,7 @@ defmodule Helyx.Hub.WebhookTest do
     in_hub(context.hub, fn state ->
       :ok =
         Exqlite.Sqlite3.execute(
-          state.db,
+          connection(state),
           "UPDATE schedules SET delivery_id = NULL, last_outcome = 'delivered' " <>
             "WHERE delivery_id = '#{delivery}'"
         )
@@ -106,10 +110,10 @@ defmodule Helyx.Hub.WebhookTest do
         "SELECT id, delivery_id, run, next_try_at, last_outcome FROM schedules " <>
           "WHERE subscription_id = ?1 ORDER BY created_at, id"
 
-      {:ok, stmt} = Exqlite.Sqlite3.prepare(state.db, sql)
+      {:ok, stmt} = Exqlite.Sqlite3.prepare(connection(state), sql)
       :ok = Exqlite.Sqlite3.bind(stmt, [subscription.id])
-      {:ok, rows} = Exqlite.Sqlite3.fetch_all(state.db, stmt)
-      :ok = Exqlite.Sqlite3.release(state.db, stmt)
+      {:ok, rows} = Exqlite.Sqlite3.fetch_all(connection(state), stmt)
+      :ok = Exqlite.Sqlite3.release(connection(state), stmt)
 
       Enum.map(rows, fn [id, delivery_id, run, next_try_at, last_outcome] ->
         %{
@@ -136,7 +140,7 @@ defmodule Helyx.Hub.WebhookTest do
     in_hub(context.hub, fn state ->
       :ok =
         Exqlite.Sqlite3.execute(
-          state.db,
+          connection(state),
           "UPDATE schedules SET run = 1, last_outcome = 'unconfirmed', delivery_id = NULL, " <>
             "due_at = NULL, next_try_at = NULL WHERE id = '#{row.id}'"
         )
@@ -181,7 +185,11 @@ defmodule Helyx.Hub.WebhookTest do
     assert hmacs() == 1
 
     in_hub(context.hub, fn state ->
-      :ok = Exqlite.Sqlite3.execute(state.db, "UPDATE subscriptions SET last_outcome = 'refused'")
+      :ok =
+        Exqlite.Sqlite3.execute(
+          connection(state),
+          "UPDATE subscriptions SET last_outcome = 'refused'"
+        )
     end)
 
     refused = post(context, path, body, [{"x-hub-signature-256", sign(secret, body)}])
@@ -271,7 +279,7 @@ defmodule Helyx.Hub.WebhookTest do
     in_hub(context.hub, fn state ->
       :ok =
         Exqlite.Sqlite3.execute(
-          state.db,
+          connection(state),
           "INSERT INTO records (session_id, owner, title, cwd, model, prompt, active_at, " <>
             "visibility, archived, created_at, updated_at) VALUES " <>
             "('#{session.id}', '#{ann}', '', '#{File.cwd!()}', 'fake/echo', '', 0, " <>
@@ -512,7 +520,7 @@ defmodule Helyx.Hub.WebhookTest do
     in_hub(context.hub, fn state ->
       :ok =
         Exqlite.Sqlite3.execute(
-          state.db,
+          connection(state),
           "INSERT INTO records (session_id, owner, title, cwd, model, prompt, active_at, " <>
             "visibility, archived, created_at, updated_at) VALUES " <>
             "('#{session.id}', '#{ann}', '', '#{File.cwd!()}', 'fake/echo', '', 0, " <>

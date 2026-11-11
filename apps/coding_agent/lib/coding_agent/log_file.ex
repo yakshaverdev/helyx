@@ -9,11 +9,6 @@ defmodule CodingAgent.LogFile do
   @filter :helyx_tui_log
   @handler :helyx_tui_log
 
-  # The key of the state of the hold: the holder and `held`. It is not in
-  # the logger config: a `:logger.remove_handler/1` writes back the
-  # primary config that it read at its start, so a change between is lost.
-  @hold {__MODULE__, :hold}
-
   # The rotation threshold of a log file: the sink of the TUI holds at this
   # size, and the sink of `server.log` starts a new file before a write
   # would pass it. One path a product writes gets one cap.
@@ -40,32 +35,12 @@ defmodule CodingAgent.LogFile do
   `path` is there and not a regular file, or does not open: then no file
   log runs, and no line reaches the terminal either. At the end the
   filter on `:default` goes, then a filter closes the file handler, also
-  when `fun` raises; the file handler stays for the next hold. A call
-  while a live process holds runs `fun` in that hold, with its result;
-  one process holds at a time. Returns the result of `fun`.
+  when `fun` raises; the file handler stays for the next hold. One process holds at a time. Returns the result of `fun`.
   """
   @spec run(Path.t(), (held() -> result)) :: result when result: term()
   def run(path, fun) do
-    case :persistent_term.get(@hold, nil) do
-      nil ->
-        hold(path, fun)
-
-      {holder, held} ->
-        if Process.alive?(holder) do
-          fun.(held)
-        else
-          # A holder that was killed left its state: the hold is over.
-          release()
-          hold(path, fun)
-        end
-    end
-  end
-
-  defp hold(path, fun) do
     held = path |> check() |> open(path) |> notice(path)
     # A call inside the hold reads the holder and `held` here.
-    :ok = :persistent_term.put(@hold, {self(), held})
-
     try do
       # From here on no new line reaches the terminal. Before, a line goes
       # to the terminal and to the file.
@@ -106,7 +81,6 @@ defmodule CodingAgent.LogFile do
   # both. The filter can be gone already.
   defp release do
     _ = :logger.remove_handler_filter(:default, @filter)
-    _ = :persistent_term.erase(@hold)
     :ok
   end
 

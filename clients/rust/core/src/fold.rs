@@ -78,7 +78,7 @@ impl State {
                     asks: snapshot.asks,
                     running: snapshot.turn.is_some(),
                     messages: snapshot.messages,
-                    more: snapshot.more,
+                    more: snapshot.older > 0,
                     partial: snapshot.turn.and_then(|turn| turn.partial),
                     notices: Vec::new(),
                     ui_blocks: snapshot.ui_blocks,

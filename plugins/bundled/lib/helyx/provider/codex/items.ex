@@ -7,15 +7,14 @@ defmodule Helyx.Provider.Codex.Items do
   # of the thread's model calls since the last `done`, nil before the
   # first (`docs/features/usage-and-limits.md`, "Per provider"): it
   # outlives a turn that ends with no `done`, and a compaction turn
-  # (`compact?`): no message holds the usage of a compaction, so it goes
-  # into the next `done` (docs/features/harness-compaction.md). `lost?` is
-  # the flag: a call since the last `done` may be in no sum, so the cost of
-  # the next `done` is nil. `info` is the config window and prices
-  # (`Helyx.ModelInfo`).
+  # (`terminal/3`, `next/3`): no message holds the usage of a compaction, so
+  # it goes into the next `done` (docs/features/harness-compaction.md).
+  # `lost?` is the flag: a call since the last `done` may be in no sum, so
+  # the cost of the next `done` is nil. `info` is the config window and
+  # prices (`Helyx.ModelInfo`).
   defstruct open: %{},
             streamed: MapSet.new(),
             usage: nil,
-            compact?: false,
             lost?: false,
             info: %Helyx.ModelInfo{}
 
@@ -119,25 +118,29 @@ defmodule Helyx.Provider.Codex.Items do
     end
   end
 
-  def terminal(%{"status" => "completed"}, %__MODULE__{compact?: true}),
+  # The terminal of the turn. A compaction turn (`compact?`) gives no
+  # usage: no message holds its call.
+  def terminal(%{"status" => "completed"}, _items, true),
     do: {:done, %{stop_reason: :end_turn, usage: nil}}
 
-  def terminal(%{"status" => "completed"}, items),
+  def terminal(%{"status" => "completed"}, items, false),
     do: {:done, %{stop_reason: :end_turn, usage: usage(items)}}
 
-  def terminal(%{"status" => status} = result, _items),
+  def terminal(%{"status" => status} = result, _items, _compact?),
     do:
       {:error,
        ProviderError.reason(Codex.id(), status, error_message(result), {:codex, status, ""})}
 
   # The items of the next turn. Only a `done` starts a new usage sum; a
-  # turn that ended `interrupted` or `failed` sets the flag.
-  def next({:done, _}, %__MODULE__{compact?: false} = items), do: %__MODULE__{info: items.info}
+  # turn that ended `interrupted` or `failed` sets the flag, and so does a
+  # compaction, whose call belongs to the next sum.
+  def next({:done, _}, items, false), do: %__MODULE__{info: items.info}
 
-  def next({:done, _}, items),
+  def next({:done, _}, items, true),
     do: %__MODULE__{usage: items.usage, lost?: items.lost?, info: items.info}
 
-  def next(_terminal, items), do: %__MODULE__{usage: items.usage, lost?: true, info: items.info}
+  def next(_terminal, items, _compact?),
+    do: %__MODULE__{usage: items.usage, lost?: true, info: items.info}
 
   # A turn that started a sub-agent: the calls of the child thread are in
   # no usage of this thread (research note), so the flag is set.

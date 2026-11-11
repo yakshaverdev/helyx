@@ -30,8 +30,7 @@ defmodule Helyx.Memory.Markdown do
   `:aborted` or `:error`.
 
   `recall/2` searches the `.md` files of the folder in name order, then the
-  time names newest first, one per hash, then the `log/` names that have no
-  time name in name order, line by line, for the words of three or more
+  time names newest first, one per hash, line by line, for the words of three or more
   characters of the query (at most #{@max_terms}), case-insensitively. It
   reads at most #{@max_files} files of at most #{@max_file_bytes} bytes each,
   and #{@max_scan_bytes} bytes in total. A line with more matched words comes
@@ -71,27 +70,14 @@ defmodule Helyx.Memory.Markdown do
     notes ++ log_files(Path.join(dir, "log"), @max_files - length(notes))
   end
 
-  # The newest time names, one per hash, and only when they are fewer than
-  # `room`, the id names with no time name (a folder of an earlier version).
+  # The newest time names, one per hash.
   defp log_files(_log, 0), do: []
 
   defp log_files(log, room) do
     time = Path.join(log, "time")
     buckets = Enum.reverse(dir_names(time, @bucket))
-    {paths, seen, left} = newest(buckets, time, {[], MapSet.new(), room})
-
-    case left do
-      0 ->
-        Enum.reverse(paths)
-
-      left ->
-        old =
-          for name <- md_names(log),
-              not MapSet.member?(seen, Path.rootname(name)),
-              do: Path.join(log, name)
-
-        Enum.reverse(paths, Enum.take(old, left))
-    end
+    {paths, _seen, _left} = newest(buckets, time, {[], MapSet.new(), room})
+    Enum.reverse(paths)
   end
 
   # `acc` is the paths newest last, the hashes taken, and the room left.

@@ -6,13 +6,22 @@ defmodule Helyx.Credo.FileLengthTest do
 
   alias Helyx.Credo.FileLength
 
-  # A module of exactly `lines` lines, with a final newline.
-  defp issues(lines, path \\ "lib/sample.ex", allowed \\ %{}) do
-    body = String.duplicate("  @a 1\n", lines - 2)
+  # A module with `code` lines of code, with a final newline.
+  defp issues(code, path \\ "lib/sample.ex", allowed \\ %{}) do
+    body = String.duplicate("  @a 1\n", code - 2)
 
     "defmodule Sample do\n#{body}end\n"
     |> to_source_file(path)
     |> run_check(FileLength, allowed: allowed)
+  end
+
+  # A module with `code` lines of code and `docs` body lines of a heredoc
+  # `@moduledoc`, with a final newline.
+  defp mixed(code, docs) do
+    doc = "  @moduledoc \"\"\"\n#{String.duplicate("  doc text\n", docs)}  \"\"\"\n"
+    body = String.duplicate("  @a 1\n", code - 2)
+
+    "defmodule Sample do\n#{doc}#{body}end\n"
   end
 
   test "a file at the limit passes, one line more fails" do
@@ -20,11 +29,68 @@ defmodule Helyx.Credo.FileLengthTest do
     assert_issue(issues(401))
   end
 
-  test "a blank line at the end counts" do
-    "defmodule Sample do\n#{String.duplicate("  @a 1\n", 398)}end\n\n"
-    |> to_source_file("lib/sample.ex")
-    |> run_check(FileLength, allowed: %{})
-    |> assert_issue()
+  test "a blank line does not count" do
+    source = "defmodule Sample do\n#{String.duplicate("  @a 1\n", 398)}end\n\n"
+
+    refute_issues(
+      source
+      |> to_source_file("lib/sample.ex")
+      |> run_check(FileLength, allowed: %{})
+    )
+  end
+
+  test "a comment line does not count" do
+    source = "defmodule Sample do\n#{String.duplicate("  @a 1\n", 398)}  # comment\nend\n"
+
+    refute_issues(
+      source
+      |> to_source_file("lib/sample.ex")
+      |> run_check(FileLength, allowed: %{})
+    )
+  end
+
+  test "a single-line @doc does not count" do
+    source = "defmodule Sample do\n  @doc \"text\"\n#{String.duplicate("  @a 1\n", 398)}end\n"
+
+    refute_issues(
+      source
+      |> to_source_file("lib/sample.ex")
+      |> run_check(FileLength, allowed: %{})
+    )
+  end
+
+  test "an interpolated @moduledoc does not count" do
+    docs =
+      "  @moduledoc \"\"\"\n" <>
+        String.duplicate("  doc text\n", 147) <> "  \#{1 + 1}\n  \"\"\"\n"
+
+    source = "defmodule Sample do\n#{docs}#{String.duplicate("  @a 1\n", 348)}end\n"
+    assert length(String.split(source, "\n")) - 1 == 500
+
+    refute_issues(
+      source
+      |> to_source_file("lib/sample.ex")
+      |> run_check(FileLength, allowed: %{})
+    )
+  end
+
+  test "500 lines with 150 lines of @moduledoc pass" do
+    source = mixed(350, 148)
+    assert length(String.split(source, "\n")) - 1 == 500
+
+    refute_issues(
+      source
+      |> to_source_file("lib/sample.ex")
+      |> run_check(FileLength, allowed: %{})
+    )
+  end
+
+  test "401 lines of code fail" do
+    assert_issue(
+      mixed(401, 148)
+      |> to_source_file("lib/sample.ex")
+      |> run_check(FileLength, allowed: %{})
+    )
   end
 
   test "a file outside lib/ is not checked" do

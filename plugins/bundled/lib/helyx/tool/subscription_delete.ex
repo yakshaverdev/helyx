@@ -9,6 +9,7 @@ defmodule Helyx.Tool.SubscriptionDelete do
   @behaviour Helyx.Tool
 
   alias Helyx.Coordinator
+  alias Helyx.Tool.Args
 
   @impl true
   def name, do: "subscription_delete"
@@ -33,16 +34,15 @@ defmodule Helyx.Tool.SubscriptionDelete do
   end
 
   @impl true
-  def run(%{"id" => id}, _cwd) do
-    with true <- Coordinator.id?(id) || {:error, "the id must be a subscription id"},
+  def run(args, _cwd) do
+    with {:ok, args} <- Args.check(args, parameters()),
+         true <- Coordinator.id?(args["id"]) || {:error, "the id must be a subscription id"},
          {:ok, env} <- Coordinator.setup(),
-         :ok <- Helyx.Hub.unsubscribe(env.hub, env.user, id) do
-      {:ok, "subscription #{id} deleted"}
+         :ok <- Helyx.Hub.unsubscribe(env.hub, env.user, args["id"]) do
+      {:ok, "subscription #{args["id"]} deleted"}
     else
       {:error, text} when is_binary(text) -> {:error, "subscription_delete: " <> text}
       {:error, reason} -> {:error, "subscription_delete: " <> Coordinator.text(reason)}
     end
   end
-
-  def run(_args, _cwd), do: {:error, "subscription_delete needs an id"}
 end

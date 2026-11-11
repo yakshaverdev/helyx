@@ -146,8 +146,8 @@ The fixed tool set of a session.
 | a result | `Helyx.Message.max_result_bytes/0`, 65,536 bytes, head and tail kept | cut by the hands, the text says so |
 | binary content in a result | not decoded; replaced by a line with its byte count | — |
 | tool name in Core | `^[A-Za-z0-9_-]{1,52}$`, fixed and source tools | fixed: `{:bad_tool_spec, label}` at start; source: that entry rejected, notice |
-| description of a source entry | 4,096 bytes, UTF-8 | the MCP plugin cuts it at a character boundary before `put_tools/2`; Core rejects a longer one, notice |
-| `parameters` of a source entry | a JSON object with `"type": "object"`, at most 16,384 bytes of JSON (`Helyx.Message.encoded_size/1`) | that entry rejected, notice |
+| description of a tool spec | 4,096 bytes, UTF-8, fixed and source tools | the MCP plugin cuts it at a character boundary before `put_tools/2`; a longer one of a source entry is rejected with a notice, and of a fixed tool as `{:bad_tool_spec, name}` at the start |
+| `parameters` of a tool spec | a JSON object of at most 16,384 bytes of JSON (`Helyx.Session.Input.json_object/2`); an entry of a source also holds `"type": "object"` | as the description: that entry is rejected with a notice, and a fixed tool as `{:bad_tool_spec, name}` at the start |
 | groups of a session | 64, all named in `announce/1`, each 1 to 64 bytes of UTF-8 | `announce/1` past the cap fills the room that earlier announces left with its first groups by name order and returns them, and its notice names the left-out groups that fit in its 2,000 bytes with the count of all, so its work is bounded by the cut; `put_tools/2` of a group that `announce/1` did not keep exits the source |
 | source entries of a session | 1,024 | the group that would pass it rejected whole, notice |
 | activated names | 32 names and 65,536 bytes of the spec JSON that the registry holds for them, checked after each `activate/1` and each `put_tools/2` | the oldest names leave first, the names of the current activation last and lowest ranked first; one `tools_change` entry and event; the search answer lists only the names kept |

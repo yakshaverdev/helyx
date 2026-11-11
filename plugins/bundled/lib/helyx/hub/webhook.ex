@@ -9,10 +9,11 @@ defmodule Helyx.Hub.Webhook do
   # missing signature, and a wrong signature all answer 404, and each pays
   # one HMAC, so a probe learns nothing about the id.
 
+  alias Helyx.Hub.Params
   alias Helyx.Hub.Schedules
 
-  # The bounds of Bounds.
-  @max_prompt_bytes 16_384
+  # The caps of a subscription, and the window of its rate (Bounds); the
+  # bound of the prompt is that of a schedule prompt, in `Params`.
   @pending 16
   @per_hour 60
   @window_s 3_600
@@ -51,7 +52,7 @@ defmodule Helyx.Hub.Webhook do
   defp deliver(row, body, deadline, %{store: mod, db: db}) do
     prompt = render(row.template, body)
 
-    if byte_size(prompt) > @max_prompt_bytes do
+    if byte_size(prompt) > Params.max_text_bytes() do
       {:ok, 413, error("text_too_large")}
     else
       now = System.os_time(:second)

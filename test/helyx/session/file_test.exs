@@ -131,18 +131,27 @@ defmodule Helyx.Session.FileTest do
             "role" => "user",
             "content" => [%{"type" => "text", "text" => "hi"}]
           },
-          extra
+          if(Map.has_key?(extra, "role"),
+            do: extra,
+            else: Map.merge(%{"origin" => %{"kind" => "user", "id" => nil}}, extra)
+          )
         )
       )
     end
 
-    test "the entry id is the message id, and a user entry with no origin reads as :unknown",
+    test "the entry id is the message id, and a user entry with no origin rejects the file",
          %{tmp_dir: dir} do
       {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
-      append_raw(file, user_entry("message00001", %{}))
 
-      assert {:ok, %{messages: [message]}} = SessionFile.resume(dir, "/repo")
-      assert %Message{id: "message00001", origin: %{kind: :unknown, id: nil}} = message
+      append_raw(
+        file,
+        user_entry("message00001", %{})
+        |> JSON.decode!()
+        |> Map.delete("origin")
+        |> JSON.encode!()
+      )
+
+      assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo")
     end
 
     test "a malformed origin, or an origin on another role, rejects the file", %{tmp_dir: dir} do
@@ -230,7 +239,8 @@ defmodule Helyx.Session.FileTest do
               "type" => "summary",
               "summary" => "s",
               "first_kept_id" => "message00001",
-              "tokens_before" => 1
+              "tokens_before" => 1,
+              "last_id" => "message00001"
             },
             extra
           )
@@ -318,10 +328,6 @@ defmodule Helyx.Session.FileTest do
         {[entry.("compaction", %{"tokens_after" => 1_000_000_001})], {"message00001", nil}},
         {[entry.("compaction", %{"tokens_after" => -1})], {"message00001", nil}},
         {[entry.("compaction", %{"tokens_after" => 4, "last_id" => nil})], nil},
-        # An entry from before #712 names no message: the one before it.
-        {[
-           ~s({"id":"old00001","type":"compaction","provider":"conn","trigger":"auto","tokens_after":4})
-         ], {"message00001", 4}},
         {[entry.("compaction", %{"tokens_after" => 4}), entry.("summary", %{})],
          {"message00001", nil}},
         {[entry.("summary", %{}), entry.("compaction", %{"tokens_after" => 4})],
@@ -334,6 +340,20 @@ defmodule Helyx.Session.FileTest do
         file = append_raw(file, user_entry("message00001", %{}))
         Enum.reduce(entries, file, &append_raw(&2, &1))
         assert {:ok, %{compacted: ^expected}} = SessionFile.resume(dir, "/repo")
+      end
+
+      # The writer always stores `last_id`: a compaction or summary entry
+      # without it is damage on the disk, not a state to repair.
+      for {type, extra} <- [
+            {"compaction", ~s(,"provider":"conn","trigger":"auto","tokens_after":4)},
+            {"summary", ~s(,"summary":"s","first_kept_id":"message00001","tokens_before":1)}
+          ] do
+        dir = Path.join(dir, "no_last_id_#{type}")
+        {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
+        file = append_raw(file, user_entry("message00001", %{}))
+        append_raw(file, ~s({"id":"old00001","type":"#{type}"#{extra}}))
+
+        assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo")
       end
     end
   end
@@ -439,9 +459,9 @@ defmodule Helyx.Session.FileTest do
     assert [_header, user, first, _codex, _assistant, _result, last] = entries
 
     assert %{
-             "type" => "harness_session",
+             "type" => "resume_id",
              "provider" => "claude-code",
-             "harness_session_id" => "first",
+             "resume_id" => "first",
              "parent_id" => parent,
              "ts" => _
            } = first
@@ -450,27 +470,14 @@ defmodule Helyx.Session.FileTest do
     assert resumed.file.leaf == last["id"]
   end
 
-  test "an entry stored as harness_session by an older writer still resumes", %{tmp_dir: dir} do
-    # The literal line pins the stored names that session files on disk hold.
-    {:ok, file} = started(dir, "old000000000", "/old", "claude-code/opus")
-
-    append_raw(
-      file,
-      ~s({"id":"h","type":"harness_session","provider":"claude-code","harness_session_id":"h1"})
-    )
-
-    assert {:ok, %{resume_ids: %{"claude-code" => {"h1", 0, nil}}}} =
-             SessionFile.resume(dir, "/old")
-  end
-
   test "a resume id entry with a bad id removes the label of its provider",
        %{tmp_dir: dir} do
     bad = [
-      ~s({"id":"x","type":"harness_session","provider":"claude-code"}),
-      ~s({"id":"x","type":"harness_session","provider":"claude-code","harness_session_id":null}),
+      ~s({"id":"x","type":"resume_id","provider":"claude-code"}),
+      ~s({"id":"x","type":"resume_id","provider":"claude-code","resume_id":null}),
       # The id is 1 to 256 bytes; 257 bytes, multibyte, and empty are bad.
-      ~s({"id":"x","type":"harness_session","provider":"claude-code","harness_session_id":"a#{String.duplicate("é", 128)}"}),
-      ~s({"id":"x","type":"harness_session","provider":"claude-code","harness_session_id":""})
+      ~s({"id":"x","type":"resume_id","provider":"claude-code","resume_id":"a#{String.duplicate("é", 128)}"}),
+      ~s({"id":"x","type":"resume_id","provider":"claude-code","resume_id":""})
     ]
 
     for {line, n} <- Enum.with_index(bad) do
@@ -490,8 +497,8 @@ defmodule Helyx.Session.FileTest do
   test "a resume id entry with no usable provider removes every label",
        %{tmp_dir: dir} do
     bad = [
-      ~s({"id":"x","type":"harness_session","harness_session_id":"a"}),
-      ~s({"id":"x","type":"harness_session","provider":1,"harness_session_id":"a"})
+      ~s({"id":"x","type":"resume_id","resume_id":"a"}),
+      ~s({"id":"x","type":"resume_id","provider":1,"resume_id":"a"})
     ]
 
     for {line, n} <- Enum.with_index(bad) do
@@ -524,7 +531,7 @@ defmodule Helyx.Session.FileTest do
   test "a valid resume id entry after one with no provider sets a label",
        %{tmp_dir: dir} do
     {:ok, file} = started(dir, "later0000000", "/later", "test/ok")
-    line = ~s({"id":"x","type":"harness_session","harness_session_id":"a"})
+    line = ~s({"id":"x","type":"resume_id","resume_id":"a"})
 
     file
     |> append_raw(line)
@@ -694,9 +701,9 @@ defmodule Helyx.Session.FileTest do
         {"a tool call id with a wrong type",
          ~s({"id":"x","type":"message","role":"tool_result","tool_call_id":42,"content":[]})},
         {"a content block with a wrong field type",
-         ~s({"id":"x","type":"message","role":"user","content":[{"type":"text","text":42}]})},
+         ~s({"id":"x","type":"message","role":"user","origin":{"kind":"user","id":null},"content":[{"type":"text","text":42}]})},
         {"an image block, removed in #634",
-         ~s({"id":"x","type":"message","role":"user","content":[{"type":"image","mime_type":"image/png","data":"aGk="}]})},
+         ~s({"id":"x","type":"message","role":"user","origin":{"kind":"user","id":null},"content":[{"type":"image","mime_type":"image/png","data":"aGk="}]})},
         {"a thinking signature, removed in #634",
          ~s({"id":"x","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"t","signature":"s"}]})},
         {"a compaction with no string provider", ~s({"id":"x","type":"compaction","provider":1})},
@@ -763,9 +770,9 @@ defmodule Helyx.Session.FileTest do
     # Hand-written lines: each parent_id is the id of the line above.
     lines = [
       ~s({"id":"h","parent_id":null,"ts":"t","type":"session","version":1,"cwd":"/repo","model":"test/ok"}),
-      ~s({"id":"message00001","parent_id":"h","ts":"t","type":"message","role":"user","content":[{"type":"text","text":"one"}]}),
+      ~s({"id":"message00001","parent_id":"h","ts":"t","type":"message","role":"user","origin":{"kind":"user","id":null},"content":[{"type":"text","text":"one"}]}),
       ~s({"id":"c","parent_id":"message00001","ts":"t","type":"model_change","model":"test/two"}),
-      ~s({"id":"message00002","parent_id":"c","ts":"t","type":"message","role":"user","content":[{"type":"text","text":"two"}]})
+      ~s({"id":"message00002","parent_id":"c","ts":"t","type":"message","role":"user","origin":{"kind":"user","id":null},"content":[{"type":"text","text":"two"}]})
     ]
 
     {:ok, file} = Session.File.create(dir, "old000000000", "/repo", "test/ok")
@@ -780,7 +787,7 @@ defmodule Helyx.Session.FileTest do
   test "an entry that does not continue the chain is rejected with its line, the file unchanged",
        %{tmp_dir: dir} do
     entry = fn id, parent ->
-      ~s({"id":#{id},"parent_id":#{parent},"type":"message","role":"user","content":[]})
+      ~s({"id":#{id},"parent_id":#{parent},"type":"message","role":"user","origin":{"kind":"user","id":null},"content":[]})
     end
 
     breaks = [

@@ -86,10 +86,10 @@ defmodule Helyx.TUI.Wire.DecodeTest do
       event(:turn_end, %{outcome: :aborted}),
       event(:turn_end, %{outcome: :error, error: "boom"}),
       event(:queue_update, @queue, nil),
-      event(:queue_dropped, %{texts: ["q1"], messages: [dropped]}, nil),
+      event(:queue_dropped, %{messages: [dropped]}, nil),
       event(:model_change, %{model: "fake/echo"}, nil),
       event(:resume_id, %{provider: "claude", resume_id: "r", lost: true, cut: 2}),
-      event(:steer_unconfirmed, %{text: "s1", message: unconfirmed}),
+      event(:steer_unconfirmed, %{message: unconfirmed}),
       event(:compaction, %{trigger: :auto, tokens_before: nil, tokens_after: 5}),
       event(:compaction, %{trigger: :manual, tokens_before: 9, tokens_after: nil}),
       event(:notice, %{text: "n"}),
@@ -103,13 +103,6 @@ defmodule Helyx.TUI.Wire.DecodeTest do
     for event <- events do
       assert Decode.event(wire(Wire.event(event))) == {:ok, event}
     end
-  end
-
-  test "a user message of a file from before #649 keeps its unknown origin" do
-    old = %Message{role: :user, id: "u0", origin: %{kind: :unknown, id: nil}, content: []}
-    event = event(:message_end, %{message: old})
-    assert %{"origin" => %{"kind" => "unknown", "id" => nil}} = wire(Wire.value(old))
-    assert Decode.event(wire(Wire.event(event))) == {:ok, event}
   end
 
   test "an unknown event type is nil, and an unknown key is ignored" do
@@ -136,8 +129,8 @@ defmodule Helyx.TUI.Wire.DecodeTest do
           %{turn_end | "data" => []},
           # A role that the fold does not take for the event.
           wire(Wire.event(event(:tool_execution_end, %{message: assistant()}))),
-          wire(Wire.event(event(:queue_dropped, %{texts: ["p"], messages: [partial()]}))),
-          wire(Wire.event(event(:steer_unconfirmed, %{text: "", message: result()}))),
+          wire(Wire.event(event(:queue_dropped, %{messages: [partial()]}))),
+          wire(Wire.event(event(:steer_unconfirmed, %{message: result()}))),
           Map.delete(turn_end, "instance_id"),
           "event"
         ] do
@@ -150,7 +143,6 @@ defmodule Helyx.TUI.Wire.DecodeTest do
       instance_id: "i1",
       seq: 3,
       messages: [user("hi"), assistant(), result()],
-      more: true,
       turn: %{id: "t1", partial: partial(), elapsed_ms: 12},
       model: "fake/echo",
       queue: @queue,
@@ -164,7 +156,6 @@ defmodule Helyx.TUI.Wire.DecodeTest do
     empty = %{
       snapshot
       | messages: [],
-        more: false,
         turn: nil,
         context: nil,
         asks: [],
@@ -317,8 +308,6 @@ defmodule Helyx.TUI.Wire.DecodeTest do
     for {message, origin, kept} <- [
           {user("hi"), %{"kind" => "product", "id" => ""}, nil},
           {user("hi"), %{"kind" => "user", "id" => "u"}, nil},
-          {user("hi"), %{"kind" => "unknown", "id" => "u"}, nil},
-          {user("hi"), %{"kind" => "unknown", "id" => nil}, %{kind: :unknown, id: nil}},
           {assistant(), %{"kind" => "user", "id" => nil}, nil},
           {result(), %{"kind" => "product", "id" => "p"}, nil}
         ] do
@@ -436,7 +425,6 @@ defmodule Helyx.TUI.Wire.DecodeTest do
       instance_id: "i1",
       seq: 0,
       messages: messages,
-      more: false,
       turn: nil,
       model: "fake/echo",
       queue: @queue,

@@ -161,10 +161,10 @@ defmodule Helyx.Transport.WebSocketSubscribeTest do
     after_ = %{"instance_id" => instance, "seq" => seq}
     assert %{"replay" => ^missed} = subscribe(late, session, %{"after" => after_})
 
-    %{"snapshot" => %{"messages" => [newest], "more" => true}} =
+    %{"snapshot" => %{"messages" => [newest]}} =
       subscribe(late, session, %{"tail" => 1})
 
-    assert %{"ok" => true, "result" => %{"messages" => [%{"role" => "user"}], "more" => false}} =
+    assert %{"ok" => true, "result" => %{"messages" => [%{"role" => "user"}]}} =
              Client.request(late, "h", "history", %{
                "session" => session,
                "instance_id" => instance,

@@ -19,7 +19,7 @@ defmodule Helyx.Session.ToolRegistry do
   # specs that a provider call gets, and each tool by name with its module,
   # for the hands, and its concurrent flag, for the tool queue.
 
-  alias Helyx.Session.Input
+  alias Helyx.Session.ToolSpecs
 
   defstruct fixed: %{},
             groups: %{},
@@ -47,8 +47,6 @@ defmodule Helyx.Session.ToolRegistry do
   @max_groups 64
   @max_group_bytes 64
   @max_entries 1_024
-  @max_description_bytes 4_096
-  @max_parameters_bytes 16_384
   @max_text_bytes 2_000
   @max_activated 32
   @max_activated_bytes 65_536
@@ -229,11 +227,11 @@ defmodule Helyx.Session.ToolRegistry do
       MapSet.member?(taken, name) ->
         "the name is taken"
 
-      not description?(description) ->
-        "a description that is not UTF-8 of at most #{@max_description_bytes} bytes"
+      spec = ToolSpecs.spec_error(description, parameters) ->
+        spec
 
-      not parameters?(parameters) ->
-        "parameters that are not a JSON object schema of at most #{@max_parameters_bytes} bytes"
+      not match?(%{"type" => "object"}, parameters) ->
+        "parameters that are not an object schema with \"type\" => \"object\""
 
       exposure not in [:direct, :deferred] ->
         "an exposure other than direct or deferred"
@@ -244,14 +242,6 @@ defmodule Helyx.Session.ToolRegistry do
   end
 
   defp entry_error(_entry, _taken), do: "not an entry"
-
-  defp description?(text),
-    do: is_binary(text) and byte_size(text) <= @max_description_bytes and String.valid?(text)
-
-  defp parameters?(%{"type" => "object"} = parameters),
-    do: Input.json_object(parameters, @max_parameters_bytes) == :ok
-
-  defp parameters?(_parameters), do: false
 
   defp label(%{name: name}), do: if(Helyx.Tool.name?(name), do: name, else: "an entry")
   defp label(_entry), do: "an entry"

@@ -71,17 +71,17 @@ pub enum Intent {
 }
 
 /// An ask whose answer this window sent, while it stays hidden: the session
-/// that it belongs to, the panel's state, the send that settles it, and
-/// whether the send failed while another session was followed.
+/// that it belongs to, the panel's state, the send that settles it, and the
+/// outcome of that send.
 #[derive(Debug, Clone)]
 struct Hidden {
     session: String,
     panel: Panel,
     send: SendId,
-    /// The send failed: the ask shows again when its session is followed.
-    failed: bool,
-    /// The send got `ok`: the mark may leave first when the map is bound.
-    settled: bool,
+    /// The outcome of its send: none until the network reports one. A failed
+    /// send shows the ask again when its session is followed, and a settled
+    /// one may leave first when the map is bound.
+    outcome: Option<SendOutcome>,
 }
 
 /// The input of the window.
@@ -157,7 +157,7 @@ impl Input {
             }
             if !(asks.iter()).any(|ask| &ask.ask_id == ask_id) {
                 ended.push(ask_id.clone());
-            } else if hidden.failed {
+            } else if matches!(hidden.outcome, Some(SendOutcome::Failed(_))) {
                 failed.push(ask_id.clone());
             }
         }
@@ -205,8 +205,7 @@ impl Input {
             {
                 match outcome {
                     SendOutcome::Pending => {}
-                    SendOutcome::Ok => hidden.settled = true,
-                    SendOutcome::Failed(_) => hidden.failed = true,
+                    outcome => hidden.outcome = Some(outcome.clone()),
                 }
             }
         }
@@ -219,8 +218,11 @@ impl Input {
     fn hide_answer(&mut self, ask_id: String, hidden: Hidden) -> Result<(), Box<Hidden>> {
         if self.hidden.len() >= MAX_HIDDEN_ANSWERS {
             let at = (self.hidden.iter())
-                .position(|(_, mark)| mark.failed)
-                .or_else(|| (self.hidden.iter()).position(|(_, mark)| mark.settled));
+                .position(|(_, mark)| matches!(mark.outcome, Some(SendOutcome::Failed(_))))
+                .or_else(|| {
+                    (self.hidden.iter())
+                        .position(|(_, mark)| matches!(mark.outcome, Some(SendOutcome::Ok)))
+                });
             let Some(at) = at else {
                 return Err(Box::new(hidden));
             };
@@ -276,8 +278,7 @@ impl Input {
             session: session.to_owned(),
             panel,
             send,
-            failed: false,
-            settled: false,
+            outcome: None,
         };
         match self.hide_answer(ask_id, hidden) {
             Ok(()) => {
@@ -1063,7 +1064,7 @@ mod tests {
             input
                 .hidden
                 .iter()
-                .filter(|(_, mark)| !mark.settled && !mark.failed)
+                .filter(|(_, mark)| mark.outcome.is_none())
                 .count(),
             MAX_HIDDEN_ANSWERS
         );

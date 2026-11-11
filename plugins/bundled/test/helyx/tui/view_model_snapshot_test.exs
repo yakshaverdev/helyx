@@ -296,7 +296,7 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
     assert length(full.messages) == 4
     assert full.older == 0
     assert tail.older == 2
-    assert tail.more
+    assert tail.older > 0
 
     vm = ViewModel.from_snapshot(tail)
     assert [{:infos, ["2 older messages"]} | cells] = ViewModel.cells(vm)

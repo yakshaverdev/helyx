@@ -9,9 +9,7 @@ defmodule Helyx.Tool.ScheduleList do
   @behaviour Helyx.Tool
 
   alias Helyx.Coordinator
-
-  # The text of the lines, under the result bound of 65,536 bytes.
-  @budget_bytes 60_000
+  alias Helyx.Tool.Args
 
   @impl true
   def name, do: "schedule_list"
@@ -42,62 +40,46 @@ defmodule Helyx.Tool.ScheduleList do
 
   @impl true
   def run(args, _cwd) do
-    id = Map.get(args, "id")
-
-    with :ok <- checked(args, id),
+    with {:ok, args} <- Args.check(args, parameters()),
+         :ok <- checked(args),
          {:ok, env} <- Coordinator.setup(),
-         {:ok, schedules} <- listed(Helyx.Hub.schedules(env.hub, env.user, id)) do
+         {:ok, schedules} <- listed(Helyx.Hub.schedules(env.hub, env.user, args["id"])) do
       {:ok, text(schedules)}
     else
       {:error, text} -> {:error, "schedule_list: " <> text}
     end
   end
 
-  defp checked(args, nil) when map_size(args) == 0, do: :ok
+  defp checked(args) do
+    cond do
+      Map.keys(args) -- ["id"] != [] ->
+        {:error, "it takes only the optional id of a session"}
 
-  defp checked(args, id) when map_size(args) == 1 and is_map_key(args, "id"),
-    do: if(Coordinator.id?(id), do: :ok, else: {:error, "the id must be a session id"})
+      args["id"] == nil ->
+        :ok
 
-  defp checked(_args, _id), do: {:error, "it takes only the optional id of a session"}
+      Coordinator.id?(args["id"]) ->
+        :ok
+
+      true ->
+        {:error, "the id must be a session id"}
+    end
+  end
 
   defp listed({:ok, schedules}), do: {:ok, schedules}
   defp listed({:error, reason}), do: {:error, Coordinator.text(reason)}
 
   defp text([]), do: "no schedules"
 
-  # 256 schedules of a user, each with a prompt of 256 bytes that
-  # `inspect` with `binaries: :as_strings` can make four times longer, pass
-  # the result bound, so the lines stop at a budget below
-  # `Helyx.Message.max_result_bytes/0` and a last line counts the rest.
-  defp text(schedules) do
-    {shown, _bytes} =
-      Enum.reduce_while(schedules, {[], 0}, fn schedule, {lines, bytes} ->
-        line = line(schedule)
-        bytes = bytes + byte_size(line) + 1
-
-        if bytes > @budget_bytes,
-          do: {:halt, {lines, bytes}},
-          else: {:cont, {[line | lines], bytes}}
-      end)
-
-    body = shown |> Enum.reverse() |> Enum.join("\n")
-
-    case length(schedules) - length(shown) do
-      0 -> body
-      rest -> body <> "\n#{rest} more not shown; list the schedules of one session"
-    end
-  end
+  defp text(schedules),
+    do: Coordinator.lines(schedules, &line/1, "list the schedules of one session")
 
   defp line(schedule) do
     every = if schedule.every, do: " each #{schedule.every} s", else: " once"
     pending = if schedule.pending, do: "pending", else: "ended"
-    prompt = Helyx.Text.cap(schedule.prompt, 256, :head)
-
-    cut =
-      if prompt == schedule.prompt, do: "", else: " (cut, #{byte_size(schedule.prompt)} bytes)"
 
     "schedule #{schedule.id}: session #{schedule.session} at #{schedule.at}#{every}, " <>
-      "#{pending}#{last(schedule)}, prompt #{inspect(prompt, binaries: :as_strings)}#{cut}"
+      "#{pending}#{last(schedule)}, prompt #{Coordinator.excerpt(schedule.prompt, 256)}"
   end
 
   defp last(%{last_outcome: nil}), do: ""

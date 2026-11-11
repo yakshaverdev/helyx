@@ -183,8 +183,8 @@ defmodule Helyx.Tool.ToolSearchTest do
       for limit <- [1, 10, nil], do: assert(check(%{"query" => "a", "limit" => limit}) == :passes)
 
       for limit <- [0, 11, -1, "5", 5.0, [5]] do
-        assert {:error, "limit is an integer from 1 to 10"} =
-                 check(%{"query" => "a", "limit" => limit})
+        assert {:error, text} = check(%{"query" => "a", "limit" => limit})
+        assert text =~ "limit must be an integer"
       end
     end
   end

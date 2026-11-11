@@ -162,18 +162,6 @@ defmodule Helyx.TUI.Link do
     end
   end
 
-  # The explicit stop of a session: a running turn aborts first, and every
-  # subscription of the session gets `session_end` (`serve.md`,
-  # decision 11). The TUI commands do not stop a session; a switch detaches
-  # (`unsubscribe/2`).
-  @spec stop(t()) :: :ok | {:error, term()}
-  def stop(%__MODULE__{conn: conn, id: id}) do
-    case Connection.stop(conn, id) do
-      {:error, reason} when wire_error?(reason) -> {:error, reason}
-      _stopped_or_gone -> :ok
-    end
-  end
-
   # The saved sessions of `cwd` for `/resume`, all of them: a scan reads at
   # most 256 files (`Scan.list/2`), and 256 is the largest page of the wire.
   @spec saved(t(), Path.t()) :: {:ok, [Scan.Summary.t()]} | {:error, atom()}

@@ -2,21 +2,16 @@ defmodule Helyx.Session.Hands.State do
   @moduledoc false
 
   alias Helyx.Session.Background
+  alias Helyx.Session.Hands.Entry
 
-  # `tools` is the tool module by name. `tasks` holds each running Task,
-  # its turn, its call id, its tool module, and its place, by monitor
-  # ref: a background Task keeps its turn for the lease and has
-  # `{:background, id}` for its call id after its start answer. The place
-  # is the id of the run from `background/0` to the end of the Task, else
-  # nil. `background` holds the ends that no turn took
-  # (`Helyx.Session.Background`); `background_dir` is the background
-  # folder. `held` holds the handles per Task pid. `unconfirmed` holds
-  # each handle that a release left unconfirmed; the log got it then.
-  # `release_ms` is the release deadline of a delivery or a cancel, and
-  # `connect_ms` the armed kill of a provider process: seams for tests.
-  # `hooks` holds the hook modules and their limits of each point, and
-  # `hook_runs` each running hook by the ref of its Task
-  # (`Helyx.Session.Hands.Hooks`).
+  # `tools` is the tool module by name. `tasks` holds each running Task as
+  # a `Helyx.Session.Hands.Entry`, by monitor ref. `background` holds the
+  # ends that no turn took (`Helyx.Session.Background`); `background_dir`
+  # is the background folder. `unconfirmed` holds each handle that a
+  # release left unconfirmed; the log got it then. `release_ms` is the
+  # release deadline of a delivery or a cancel, and `connect_ms` the armed
+  # kill of a provider process: seams for tests. `hooks` holds the hook
+  # modules and their limits of each point.
   @enforce_keys [:core, :cwd, :background_dir, :session, :tools]
 
   # The default release deadline, the one source (`Helyx.Session.Server.Stop`
@@ -32,40 +27,68 @@ defmodule Helyx.Session.Hands.State do
     :tools,
     tasks: %{},
     hooks: %{},
-    hook_runs: %{},
-    # The pid of the source process of each tool source plugin (`Sources`).
-    source_pids: %{},
     background: %Background{},
-    held: %{},
     unconfirmed: [],
     release_ms: @release_ms,
     connect_ms: 30_000
   ]
 
-  # The entry of the turn Task `pid` of a tool call, or nil: a hook Task
-  # is no tool call.
-  def tool_call(state, pid), do: find(state, pid, &is_binary/1)
+  # The ref and the entry of the Task `pid`, or nil: a Task that no longer
+  # runs.
+  def task(state, pid), do: find(state, &(&1.task.pid == pid))
 
-  # The turn Task `pid` that runs a chain, with the id that its hook Tasks
-  # stand under (`chain_id/1`), or nil: a tool call Task, the chain Task of
-  # an approval request (`Helyx.Session.Hands.Approval`), or a
-  # `before_settle` chain Task (`Helyx.Session.Hands.Settle`).
-  def chain_call(state, pid) do
-    with {_ref, {_task, turn_id, id, _module, _place}} <- find(state, pid, &chain_id?/1),
-         do: {turn_id, chain_id(id)}
+  # The ref and the entry of the tool call Task `pid`, or nil: a hook Task
+  # and a chain Task are no tool call.
+  def tool_call(state, pid), do: find(state, &(&1.task.pid == pid and call?(&1.kind)))
+
+  # The ref and the entry of the Task `pid` that can hold a handle, or nil:
+  # a Task that no longer runs, and a chain Task, which runs no plugin code,
+  # hold no handle.
+  def holding(state, pid) do
+    Enum.find(state.tasks, fn {_ref, entry} ->
+      entry.task.pid == pid and entry.tool != nil
+    end)
   end
 
-  # The id that the hook Tasks of a chain Task stand under: the call id of
-  # a tool call Task or an approval chain Task, and its own id
-  # `{:settle, ref}` for a `before_settle` chain Task.
-  def chain_id({:approval, call_id}), do: call_id
-  def chain_id(id), do: id
-
-  defp chain_id?(id), do: is_binary(id) or match?({kind, _} when kind in [:approval, :settle], id)
-
-  defp find(state, pid, id?) do
-    Enum.find(state.tasks, fn {_ref, {task, turn_id, id, _module, _place}} ->
-      task.pid == pid and turn_id != nil and id?.(id)
+  # The live background runs of the state, but the entry of `ref`: a call
+  # that took a place under `Helyx.Tool.background/0`, and a run that has
+  # one, which is the id of the run (`Helyx.Session.Background`). A second
+  # call of the Task keeps its own place, so the limit does not count it.
+  def live_runs(state, ref) do
+    Enum.count(state.tasks, fn
+      {^ref, _entry} -> false
+      {_ref, %Entry{kind: {:placed, _call_id, _place}}} -> true
+      {_ref, %Entry{kind: {:run, _id}}} -> true
+      {_ref, %Entry{}} -> false
     end)
+  end
+
+  # `entry` in place of the entry of `ref`.
+  def put(state, ref, entry), do: %{state | tasks: Map.put(state.tasks, ref, entry)}
+
+  # The turn Task `pid` that runs a chain, with the id that its hook Tasks
+  # stand under, or nil: a hook Task is no chain.
+  def chain_call(state, pid) do
+    with {_ref, entry} <- find(state, &(&1.task.pid == pid)),
+         chain_id when chain_id != nil <- chain(entry),
+         do: {entry.turn_id, chain_id}
+  end
+
+  # The id that the hook Tasks of a chain Task stand under, or nil: the call
+  # id of a tool call Task or an approval chain Task, and its own id
+  # `{:settle, ref}` for a `before_settle` chain Task. A hook Task and a
+  # Task that no turn owns run no chain.
+  def chain(%Entry{kind: {:call, call_id}}), do: call_id
+  def chain(%Entry{kind: {:placed, call_id, _place}}), do: call_id
+  def chain(%Entry{kind: {:approval, call_id}}), do: call_id
+  def chain(%Entry{kind: {:settle, ref}}), do: {:settle, ref}
+  def chain(%Entry{}), do: nil
+
+  defp call?({:call, _call_id}), do: true
+  defp call?({:placed, _call_id, _place}), do: true
+  defp call?(_kind), do: false
+
+  defp find(state, match?) do
+    Enum.find(state.tasks, fn {_ref, entry} -> match?.(entry) end)
   end
 end

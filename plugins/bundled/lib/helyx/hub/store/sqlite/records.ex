@@ -5,35 +5,19 @@ defmodule Helyx.Hub.Store.SQLite.Records do
 
   import Helyx.Hub.Store.SQLite.Query
 
-  alias Helyx.Hub.Store.SQLite.Projects
+  alias Helyx.Hub.Store.SQLite.{Projects, Tables}
 
-  @columns "session_id, owner, project_id, title, cwd, model, prompt, active_at, " <>
-             "visibility, archived, created_at, updated_at"
+  @select Tables.select_sql(:records)
 
   def record(db, session_id) do
-    case one(db, "SELECT #{@columns} FROM records WHERE session_id = ?1", [session_id]) do
+    case one(db, @select <> " WHERE session_id = ?1", [session_id]) do
       {:ok, nil} -> {:error, :not_found}
       {:ok, row} -> {:ok, row(row)}
       {:error, _} = error -> error
     end
   end
 
-  defp row([id, owner, project, title, cwd, model, prompt, active, visibility, archived, at, up]) do
-    %{
-      session_id: id,
-      owner: owner,
-      project_id: project,
-      title: title,
-      cwd: cwd,
-      model: model,
-      prompt: prompt,
-      active_at: active,
-      visibility: visibility,
-      archived: archived == 1,
-      created_at: at,
-      updated_at: up
-    }
-  end
+  defp row(values), do: Tables.row(:records, values)
 
   # The owner and the visibility of the ids that have a row; at most 256
   # ids, bound by the caller (Bounds).
@@ -185,7 +169,8 @@ defmodule Helyx.Hub.Store.SQLite.Records do
       )
 
     sql =
-      "SELECT #{@columns} FROM records WHERE #{Enum.map_join(clauses, " AND ", &elem(&1, 0))} " <>
+      @select <>
+        " WHERE #{Enum.map_join(clauses, " AND ", &elem(&1, 0))} " <>
         "ORDER BY updated_at DESC, session_id ASC LIMIT ?"
 
     args = Enum.flat_map(clauses, &elem(&1, 1)) ++ [filters.limit + 1]
@@ -228,7 +213,8 @@ defmodule Helyx.Hub.Store.SQLite.Records do
     clauses = Enum.reject([access(user, false), cwd(cwd), saved_after(cursor)], &is_nil/1)
 
     sql =
-      "SELECT #{@columns} FROM records WHERE #{Enum.map_join(clauses, " AND ", &elem(&1, 0))} " <>
+      @select <>
+        " WHERE #{Enum.map_join(clauses, " AND ", &elem(&1, 0))} " <>
         "ORDER BY active_at DESC, session_id DESC LIMIT ?"
 
     args = Enum.flat_map(clauses, &elem(&1, 1)) ++ [limit]
@@ -253,7 +239,8 @@ defmodule Helyx.Hub.Store.SQLite.Records do
   # The newest record that `owner` owns of the folder `cwd`.
   def newest(db, owner, cwd) do
     sql =
-      "SELECT #{@columns} FROM records WHERE owner = ?1 AND cwd = ?2 " <>
+      @select <>
+        " WHERE owner = ?1 AND cwd = ?2 " <>
         "ORDER BY active_at DESC, session_id DESC LIMIT 1"
 
     case one(db, sql, [owner, cwd]) do

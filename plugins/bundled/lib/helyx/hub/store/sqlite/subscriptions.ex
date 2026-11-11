@@ -7,11 +7,10 @@ defmodule Helyx.Hub.Store.SQLite.Subscriptions do
 
   import Helyx.Hub.Store.SQLite.Query
 
-  @columns ~w(id owner session_id template label secret created_at last_at last_outcome)a
+  alias Helyx.Hub.Store.SQLite.Tables
 
   @select """
-  SELECT s.id, s.owner, s.session_id, s.template, s.label, s.secret, s.created_at,
-         s.last_at, s.last_outcome,
+  SELECT #{Tables.select(:subscriptions, "s.")},
          EXISTS (
            SELECT 1 FROM schedules d
            WHERE d.subscription_id = s.id AND d.delivery_id IS NOT NULL
@@ -19,7 +18,7 @@ defmodule Helyx.Hub.Store.SQLite.Subscriptions do
   FROM subscriptions s
   """
 
-  defp row(values), do: @columns |> Enum.zip(values) |> Map.new()
+  defp row(values), do: Tables.row(:subscriptions, values)
 
   # The subscriptions of `owner`, of one session or all, oldest first, with
   # whether each holds a pending delivery.
@@ -43,7 +42,7 @@ defmodule Helyx.Hub.Store.SQLite.Subscriptions do
   end
 
   defp pending(values) do
-    {_row, [pending]} = Enum.split(values, length(@columns))
+    {_row, [pending]} = Enum.split(values, length(Tables.columns(:subscriptions)))
     Map.put(row(values), :pending, pending == 1)
   end
 
@@ -65,12 +64,10 @@ defmodule Helyx.Hub.Store.SQLite.Subscriptions do
   defp insert(_db, _subscription, false = _room), do: {:error, :too_many_event_subscriptions}
 
   defp insert(db, subscription, true) do
-    marks = Enum.map_join(1..length(@columns), ", ", &"?#{&1}")
-
     run(
       db,
-      "INSERT INTO subscriptions (#{Enum.join(@columns, ", ")}) VALUES (#{marks})",
-      Enum.map(@columns, &Map.fetch!(subscription, &1))
+      Tables.insert(:subscriptions),
+      Enum.map(Tables.columns(:subscriptions), &Map.fetch!(subscription, &1))
     )
   end
 
@@ -78,13 +75,11 @@ defmodule Helyx.Hub.Store.SQLite.Subscriptions do
     do:
       delete(db, deadline, "DELETE FROM subscriptions WHERE id = ?1 AND owner = ?2", [id, owner])
 
-  # Only a final outcome moves the delivery state; a put-back never calls
-  # this. Once `refused` is stored, no later outcome replaces it: the
-  # endpoint of the subscription stays gone until a delete (decision 17).
-  @final_outcomes ~w(delivered refused missed unconfirmed)
-
-  def subscription_sent(db, id, at, outcome, deadline)
-      when outcome in @final_outcomes do
+  # Only a final outcome moves the delivery state (`Wake.settle/5`); a
+  # put-back never calls this. Once `refused` is stored, no later outcome
+  # replaces it: the endpoint of the subscription stays gone until a delete
+  # (decision 17).
+  def subscription_sent(db, id, at, outcome, deadline) do
     transaction(db, deadline, fn ->
       run(
         db,
@@ -94,6 +89,4 @@ defmodule Helyx.Hub.Store.SQLite.Subscriptions do
       )
     end)
   end
-
-  def subscription_sent(_db, _id, _at, _outcome, _deadline), do: :ok
 end

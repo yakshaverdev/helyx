@@ -334,7 +334,14 @@ defmodule Helyx.Session.HandsTest do
     end
 
     :erlang.trace(hands, false, [:receive])
-    assert :sys.get_state(hands).held |> Map.values() |> List.flatten() |> length() >= n
+
+    handles =
+      :sys.get_state(hands).tasks
+      |> Map.values()
+      |> Enum.map(&length(&1.handles))
+      |> Enum.sum()
+
+    assert handles >= n
   end
 
   defp stop(hands),

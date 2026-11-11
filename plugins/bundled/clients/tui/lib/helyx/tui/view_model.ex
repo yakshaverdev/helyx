@@ -5,63 +5,42 @@ defmodule Helyx.TUI.ViewModel do
   The TUI holds no session state of its own. Every event goes through `apply/2` and the screen
   renders from the result, so the fold is testable with scripted event lists.
 
-  `cells` is the transcript: an Erlang `:array` of every cell, open or closed, by position,
-  oldest first; `cells/1` gives it as a list. `open` maps a call id to a queue of the positions
-  of its open tool cells, oldest first, so a result finds its cell with no scan. Each new cell
-  and each result costs O(log n) in the cell count (`docs/features/session-snapshot.md`). A
-  message in a cell keeps its first 1,024 blocks and a cut of the others
-  (`Helyx.TUI.ViewModel.Cut`). A cell is one of:
-
-    * `%Helyx.Message{}` – a completed user or assistant message
-    * `{:tool, call, line, result}` – a tool call of the assistant message
-      before it, and its line (`Helyx.TUI.CallLine.line/2`), made with the cell, so a
-      frame does not pay for the size of the call; `result` is nil until
-      the tool result message comes. The message proves that the call
-      exists, not that it runs, so an open cell shows "awaiting result".
-      A tool result with no open call is a cell `{:tool, nil, line, result}`
-    * `{:stop, reason}` – after an assistant message and its tool cells,
-      when the message stopped at the token limit (`:max_tokens`) or was
-      filtered or refused (`:refused`). The fold makes it from the message,
-      so a snapshot shows it too; it is drawn as a notice
-    * `{:notice, text}` – an aborted or failed turn, a provider that lost
-      its session or got a cut transcript, a steer that was not confirmed, a
-      notice of the session, or a command the client rejected
-      (`notice/2`), drawn as an error
-    * `{:infos, texts}` – a run of information lines, oldest first: a
-      model change of any client, a compaction of the provider's own
-      history, or a line of the client itself (`info/2`), such as a resumed
-      session. A line after an information cell joins it, so each cell is
-      one item of `Helyx.TUI.Transcript`
+  `cells` is the transcript, an Erlang `:array` of every cell, open or closed, by position,
+  oldest first; `cells/1` gives it as a list. A cell is a `Helyx.Message`,
+  `{:tool, call, line, result}` (a call of the message before it, and its line;
+  `result` nil until its result, and a result with no open call is `{:tool, nil, line, result}`),
+  `{:stop, :max_tokens | :refused}`, `{:notice, text}`, or `{:infos, texts}`
+  (`docs/features/session-snapshot.md`). A message keeps its first 1,024 blocks and a cut of
+  the others (`Helyx.TUI.ViewModel.Cut`).
 
   `reason` is why the client rejected the last input, or nil. It is client-local, like a notice:
-  `reject/2` sets it and `clear_reason/1` clears it on the next key press, paste, or mouse
-  press. A new reject replaces it. No event changes it.
+  `reject/2` sets it and `clear_reason/1` clears it on the next press or paste. A new reject
+  replaces it. No event changes it.
 
   `expanded?` is true while tool results show their full text, and false while they show four
-  lines (`toggle_expanded/1`, Ctrl+O). It is client-local, like `reason`, and a session switch
-  keeps it (`docs/features/tui-tool-output-toggle.md`).
+  lines (`toggle_expanded/1`, Ctrl+O). It is client-local, like `reason`, and a switch keeps it
+  (`docs/features/tui-tool-output-toggle.md`).
 
   `streaming` is the open assistant message as a reversed block list, newest first, or nil when
   none is streaming; a delta with no `message_start` before it starts one. Text and thinking
-  deltas join it through `Helyx.Message.add_block/2`, the session's convention. Each tool call
-  of it is an open tool cell, so a frame does not make its line; the `message_end` makes the
-  cells of the message again from the message.
+  deltas join it through `Helyx.Message.add_block/2`; each tool call of it is an open tool
+  cell, and the `message_end` makes the cells of the message again from it.
 
-  `usage` and `context` are the totals and the context state of the session that row 2 of the
-  footer shows (`Helyx.Session.Totals`). They start from the snapshot, which counts every
-  message of the transcript, and each message of the live path adds to them; a snapshot message
-  does not. A `:compaction` event changes the context state with
-  `Helyx.Session.Totals.compacted/2`.
+  `usage` and `context` are the totals and the context state of row 2 of the footer
+  (`Helyx.Session.Totals`). They start from the snapshot, which counts every message, and each
+  message of the live path adds to them; a snapshot message does not. A `:compaction` event
+  changes the context state with `Helyx.Session.Totals.compacted/2`.
 
   `asks` are the open asks of tool calls, oldest first, as the snapshot and the `:ask` and
   `:ask_end` events give them; `Helyx.TUI.Question` shows the oldest `form` or `approval`
   (`docs/features/ui-blocks.md`). `ui_blocks` are those of the `:ui_block` events of the
-  running turn (`Helyx.TUI.ViewModel.UIBlocks`, `docs/features/ui-blocks.md`).
+  running turn (`Helyx.TUI.ViewModel.UIBlocks`).
 
   `seq` is the `seq` of the snapshot or of the last event that the fold applied. The fold
   applies an event only once, by its `seq`: an event at or below it leaves the view model
-  unchanged (`docs/features/tui-attach.md`, decision 11). `Helyx.TUI` drops an event of another
-  instance, which is of a session that a switch left (`docs/features/tui-session-switch.md`).
+  unchanged (`docs/features/tui-attach.md`, decision 11). `instance_id` is the id of that
+  instance; a reconnect asks for the events after it, and `Helyx.TUI` drops an event of
+  another subscription before it reaches the fold (`docs/features/tui-session-switch.md`).
   """
 
   alias Helyx.{Event, Message}
@@ -72,6 +51,7 @@ defmodule Helyx.TUI.ViewModel do
   # the struct default breaks the opaque type for Dialyzer.
   defstruct model: nil,
             session_id: nil,
+            instance_id: nil,
             cells: nil,
             open: %{},
             streaming: nil,
@@ -96,6 +76,7 @@ defmodule Helyx.TUI.ViewModel do
   @type t :: %__MODULE__{
           model: String.t(),
           session_id: String.t() | nil,
+          instance_id: String.t() | nil,
           cells: :array.array(cell()),
           open: %{String.t() => :queue.queue(non_neg_integer())},
           streaming: [Message.block() | tool_cell()] | nil,
@@ -133,7 +114,9 @@ defmodule Helyx.TUI.ViewModel do
   """
   @spec apply(t(), Event.t()) :: t()
   def apply(%__MODULE__{seq: last} = vm, %Event{seq: seq}) when seq <= last, do: vm
-  def apply(vm, %Event{seq: seq} = event), do: %{fold(vm, event) | seq: seq}
+
+  def apply(vm, %Event{seq: seq, instance_id: instance_id} = event),
+    do: %{fold(vm, event) | seq: seq, instance_id: instance_id}
 
   defp fold(vm, %Event{type: :turn_start}), do: %{vm | running?: true}
 
@@ -204,8 +187,13 @@ defmodule Helyx.TUI.ViewModel do
   end
 
   defp fold(vm, %Event{type: :steer_unconfirmed, data: data}) do
-    %{text: text} = data
-    add_cell(vm, {:notice, "the steer was not confirmed; send it again if needed: " <> text})
+    %{message: message} = data
+
+    add_cell(
+      vm,
+      {:notice,
+       "the steer was not confirmed; send it again if needed: " <> Helyx.Message.text(message)}
+    )
   end
 
   defp fold(vm, %Event{type: :resume_id, data: data}) do
@@ -257,6 +245,7 @@ defmodule Helyx.TUI.ViewModel do
     vm = %__MODULE__{
       model: snapshot.model,
       session_id: session_id,
+      instance_id: snapshot.instance_id,
       cells: :array.new(),
       running?: turn != nil,
       queue: queue(snapshot.queue),
@@ -272,6 +261,18 @@ defmodule Helyx.TUI.ViewModel do
     vm = %{vm | streaming: streaming(turn, vm.session_id)}
     if snapshot.persisting, do: vm, else: add_cell(vm, {:notice, Helyx.Reason.text(:not_saved)})
   end
+
+  @doc "The view of a subscribe reply: a snapshot replaces the fold, a replay adds its events."
+  @spec subscribed(t() | nil, Snapshot.t() | {:replay, [Event.t()]}, String.t() | nil) :: t()
+  def subscribed(vm, reply, session_id \\ nil)
+
+  def subscribed(old, %Snapshot{} = snapshot, session_id) do
+    vm = from_snapshot(snapshot, session_id)
+    %{vm | expanded?: match?(%{expanded?: true}, old)}
+  end
+
+  def subscribed(vm, {:replay, events}, _session_id),
+    do: Enum.reduce(events, vm, &__MODULE__.apply(&2, &1))
 
   defp streaming(%{partial: %Message{role: :assistant} = partial}, session_id),
     do: Enum.reduce(partial.content, [], &add_streamed(&2, &1, session_id))
@@ -294,10 +295,9 @@ defmodule Helyx.TUI.ViewModel do
     start = position || :array.size(cells)
 
     range =
-      case direction do
-        :older -> (start - 1)..0//-1
-        :newer -> (start + 1)..(:array.size(cells) - 1)//1
-      end
+      if direction == :older,
+        do: (start - 1)..0//-1,
+        else: (start + 1)..(:array.size(cells) - 1)//1
 
     Enum.find_value(range, fn at ->
       case :array.get(at, cells) do

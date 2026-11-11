@@ -71,21 +71,18 @@ defmodule Helyx.Session.Server.TurnLoop do
   # answered as a tool result is: only for the `Live` turn with no
   # context request open (no prepare Task, no summary call for it, no
   # `{:context, ...}` without the provider's reply), not a compaction; at
-  # any other time it is a bad action. One after a context overflow builds
-  # with the trigger `:overflow` (docs/features/summary-compaction.md).
-  def handle({:need_context, id}, state), do: handle({:need_context, id, :auto}, state)
-
+  # any other time it is a bad action.
   def handle(
-        {:need_context, id, why},
+        {:need_context, id},
         %State{phase: %Live{turn: %Turn{id: id, prepare: nil, compact: nil}, pending: nil}} =
           state
       ) do
     if Summary.open?(state),
       do: stop_provider(state, {:bad_action, {:need_context, id}}),
-      else: Prepare.start(state, why)
+      else: Prepare.start(state, :auto)
   end
 
-  def handle({:need_context, turn_id, _why}, %State{phase: %{turn: %Turn{id: turn_id}}} = state),
+  def handle({:need_context, turn_id}, %State{phase: %{turn: %Turn{id: turn_id}}} = state),
     do: stop_provider(state, {:bad_action, {:need_context, turn_id}})
 
   # The answer to `{:turn, ...}`, `{:compact, ...}`, or `{:context, ...}`;
@@ -193,7 +190,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   def handle({:stream_end, _turn_id, _terminal}, state), do: state
   def handle({:provider_ready, _pid}, state), do: state
   def handle({_ref, {:prepared, _result}}, state), do: state
-  def handle({:need_context, _turn_id, _why}, state), do: state
+  def handle({:need_context, _turn_id}, state), do: state
   def handle({:provider_reply, _from, _kind, _reply}, state), do: state
   def handle({:timeout, _ref, :idle_close}, state), do: state
   def handle({:DOWN, _ref, :process, _pid, _reason}, state), do: state

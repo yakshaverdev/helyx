@@ -44,6 +44,8 @@ defmodule Helyx.Tool.Bash do
 
   @behaviour Helyx.Tool
 
+  alias Helyx.Tool.Args
+
   defmodule Out do
     @moduledoc false
     # The output of a run: the kept tail, whether its head was cut, and for
@@ -77,7 +79,7 @@ defmodule Helyx.Tool.Bash do
         "command" => %{"type" => "string"},
         "timeout" => %{"type" => "integer", "minimum" => 1, "maximum" => @max_background_s},
         "workdir" => %{"type" => "string"},
-        "background" => %{"type" => "boolean"}
+        "background" => %{"type" => "boolean", "default" => false}
       },
       "required" => ["command"]
     }
@@ -101,18 +103,16 @@ defmodule Helyx.Tool.Bash do
   # model can send one. The session checks its folder at start; the
   # watchdog enters the folder of the call, so a bad `workdir` fails there.
   @impl true
-  def run(%{"command" => command} = args, cwd) when is_binary(command) do
-    with :ok <- no_nul(command),
-         {:ok, background?} <- background(args["background"]),
-         {:ok, timeout_s} <- timeout(args["timeout"], background?),
+  def run(args, cwd) do
+    with {:ok, args} <- Args.check(args, parameters()),
+         :ok <- no_nul(args["command"]),
+         {:ok, timeout_s} <- timeout(args["timeout"], args["background"]),
          {:ok, dir} <- workdir(args["workdir"], cwd) do
-      if background?,
-        do: run_background(command, dir, timeout_s * 1000),
-        else: run_command(command, dir, timeout_s * 1000)
+      if args["background"],
+        do: run_background(args["command"], dir, timeout_s * 1000),
+        else: run_command(args["command"], dir, timeout_s * 1000)
     end
   end
-
-  def run(_args, _cwd), do: {:error, "bash needs a command"}
 
   defp no_nul(command) do
     if String.contains?(command, <<0>>),
@@ -120,34 +120,26 @@ defmodule Helyx.Tool.Bash do
       else: :ok
   end
 
-  defp background(nil), do: {:ok, false}
-  defp background(value) when is_boolean(value), do: {:ok, value}
-  defp background(_other), do: {:error, "background must be true or false"}
+  # The schema holds the most of a background run; a foreground run takes
+  # less, which only the tool can say: it depends on `background`.
+  defp timeout(nil, true), do: {:ok, @default_background_s}
+  defp timeout(nil, false), do: {:ok, @default_timeout_s}
 
-  # Missing or `null` is the default, as the read tool's `offset`.
-  defp timeout(s, false), do: timeout(s, @default_timeout_s, @max_timeout_s, "timeout")
+  defp timeout(s, false) when s > @max_timeout_s,
+    do: {:error, "timeout must be an integer from 1 to #{@max_timeout_s} (seconds)"}
 
-  defp timeout(s, true),
-    do: timeout(s, @default_background_s, @max_background_s, "a background timeout")
-
-  defp timeout(nil, default, _max, _name), do: {:ok, default}
-  defp timeout(s, _default, max, _name) when is_integer(s) and s in 1..max//1, do: {:ok, s}
-
-  defp timeout(_other, _default, max, name),
-    do: {:error, "#{name} must be an integer from 1 to #{max} (seconds)"}
+  defp timeout(s, _background), do: {:ok, s}
 
   # A NUL would cut the port argument, as in the command. The watchdog
   # enters the folder before the command runs, so a folder that is not
   # there fails the start.
   defp workdir(nil, cwd), do: {:ok, cwd}
 
-  defp workdir(path, cwd) when is_binary(path) do
+  defp workdir(path, cwd) do
     if String.contains?(path, <<0>>),
       do: {:error, @workdir_error},
       else: {:ok, Path.expand(path, cwd)}
   end
-
-  defp workdir(_other, _cwd), do: {:error, @workdir_error}
 
   @impl true
   defdelegate release(handles, mode, deadline), to: Helyx.Watchdog.Group

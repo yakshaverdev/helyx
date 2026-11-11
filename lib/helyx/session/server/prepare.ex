@@ -38,9 +38,15 @@ defmodule Helyx.Session.Server.Prepare do
     context = %Context{messages: state.transcript, tools: state.registry.specs}
     trigger = if Helyx.Provider.Loop.loop?(turn.provider), do: trigger
 
+    session_dir =
+      case state.save do
+        {:saving, file, _lock} -> Path.dirname(file.path)
+        _no_file -> nil
+      end
+
     opts =
       [turn_id: turn_id, model: turn.model, summary: state.summary, trigger: trigger] ++
-        [session_dir: if(state.file, do: Path.dirname(state.file.path))] ++
+        [session_dir: session_dir] ++
         [instructions: if(is_binary(turn.compact), do: turn.compact, else: "")] ++
         State.base_opts(state)
 

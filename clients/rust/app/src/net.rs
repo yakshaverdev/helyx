@@ -21,7 +21,6 @@ use helyx_client_core::json::object;
 use helyx_client_core::operation::{MAX_LIMIT, Operation, Saved};
 use helyx_client_core::parts::FRAME_BYTES;
 use helyx_client_core::vocabulary::head;
-use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::{SocketAddr, TcpStream};
 use std::sync::Mutex;
@@ -133,12 +132,10 @@ pub struct Shared {
     pub outcomes: Vec<(SendId, SendOutcome)>,
     /// The window asked for the saved sessions on this run.
     saved_asked: bool,
-    /// The replace-or-append mode of each `sessions.saved` request in
-    /// flight, by its id: a page appends at the `next` of the page before.
-    saved_pages: HashMap<String, bool>,
-    /// A page of saved sessions is on its way: one at a time, so two pages
-    /// cannot replace and append the list in the wrong order.
-    saved_pending: bool,
+    /// The page of saved sessions on its way: the id of its request, and
+    /// whether it appends. One at a time, so two pages cannot replace and
+    /// append the list in the wrong order.
+    saved_page: Option<(String, bool)>,
 }
 
 impl Shared {
@@ -153,8 +150,7 @@ impl Shared {
             requests: vec![],
             outcomes: vec![],
             saved_asked: false,
-            saved_pages: HashMap::new(),
-            saved_pending: false,
+            saved_page: None,
         }
     }
 
@@ -201,19 +197,17 @@ impl Shared {
         self.trim();
     }
 
-    /// The server answered the request `id`: its line takes the result, and
-    /// the op of the line comes back.
-    fn answered(
-        &mut self,
-        id: &str,
-        result: &Result<Reply, (String, String)>,
-    ) -> Option<&'static str> {
+    /// The server answered the request `id`: its line takes the result.
+    fn answered(&mut self, id: &str, result: &Result<Reply, (String, String)>) {
         // The ids of a connection count from 0, and only a request of the
         // current connection waits, so a pending line is the one.
-        let line = self
+        let Some(line) = self
             .requests
             .iter_mut()
-            .find(|line| line.id == id && line.state == RequestState::Pending)?;
+            .find(|line| line.id == id && line.state == RequestState::Pending)
+        else {
+            return;
+        };
         line.state = match result {
             Ok(_) => RequestState::Ok,
             Err((code, text)) => RequestState::Error {
@@ -221,7 +215,6 @@ impl Shared {
                 text: text.clone(),
             },
         };
-        let op = line.op;
         let send = line.send;
         self.trim();
         if let Some(send) = send {
@@ -231,7 +224,6 @@ impl Shared {
             };
             self.outcome(send, outcome);
         }
-        Some(op)
     }
 
     /// The connection ended with these requests in flight: each line is
@@ -252,8 +244,7 @@ impl Shared {
                     self.outcome(send, SendOutcome::Failed("the reply was lost".into()));
                 }
                 if op == "sessions.saved" {
-                    self.saved_pages.remove(*id);
-                    self.saved_pending = false;
+                    self.saved_page = None;
                 }
             }
         }
@@ -445,24 +436,27 @@ fn connection(
                     guard.line = format!("{op} of {session}: {code}");
                 }
                 Output::Reply { id, result } => {
-                    let op = guard.answered(&id, &result);
+                    guard.answered(&id, &result);
+                    // The reply ends the page on its way, ok or not: the mode
+                    // belongs to this request, not to the latest one.
+                    let current = (guard.saved_page.as_ref()).is_some_and(|(page, _)| page == &id);
+                    let page = match current {
+                        true => guard.saved_page.take(),
+                        false => None,
+                    };
                     match result {
                         Ok(Reply::SessionsLive(live)) => guard.live = live,
                         Ok(Reply::SessionsSaved { items, next }) => {
-                            // The mode belongs to this request, not to the
-                            // latest one: two pages can cross, and a refused
-                            // request changes nothing.
-                            let append = guard.saved_pages.remove(&id).unwrap_or(false);
-                            guard.saved_pending = false;
-                            let page = (items.into_iter())
+                            let append = page.is_some_and(|(_, append)| append);
+                            let items = (items.into_iter())
                                 .map(|mut item| {
                                     item.prompt = first_line(&item.prompt, MAX_PROMPT_BYTES);
                                     item
                                 })
                                 .collect::<Vec<_>>();
                             match append {
-                                true => guard.saved.extend(page),
-                                false => guard.saved = page,
+                                true => guard.saved.extend(items),
+                                false => guard.saved = items,
                             }
                             guard.saved_next = next;
                         }
@@ -472,10 +466,6 @@ fn connection(
                             frames.extend(follow(&mut guard, &session));
                         }
                         _ => {}
-                    }
-                    if op == Some("sessions.saved") {
-                        guard.saved_pages.remove(&id);
-                        guard.saved_pending = false;
                     }
                 }
                 _ => {}
@@ -613,7 +603,7 @@ fn record(
 /// of two pages cannot cross; the reply replaces the list, or appends at the
 /// `next` of the page before.
 fn saved(shared: &mut Shared, after: Option<String>) -> Vec<String> {
-    if shared.saved_pending {
+    if shared.saved_page.is_some() {
         shared.refused(
             "sessions.saved",
             "sessions.saved".into(),
@@ -634,8 +624,7 @@ fn saved(shared: &mut Shared, after: Option<String>) -> Vec<String> {
     match shared.client.perform(operation) {
         Ok((id, frames)) => {
             shared.sent(id.clone(), op, label, None);
-            shared.saved_pages.insert(id, append);
-            shared.saved_pending = true;
+            shared.saved_page = Some((id, append));
             frames
         }
         Err(refusal) => {

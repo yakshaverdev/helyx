@@ -32,18 +32,18 @@ defmodule Helyx.Session.Server.State do
     :hands,
     # The folder of the background output files (`Helyx.Session.Hands`).
     :background_dir,
-    :file,
-    # The port of the session file's writer lock, or nil with no file or
-    # after the lock is lost (`Helyx.Session.Lock`).
-    :lock,
+    # The session file and its writer lock, as one value: `:never` before
+    # the session has a file; `{:saving, file, lock}` while an append goes
+    # to disk, with the port of the lock, or nil in the open before the
+    # take; `{:stopped, unsaved_from, lock}` after a failed write or a lost
+    # lock, with the port that a failed write still holds, or nil after the
+    # loss, and `unsaved_from`, the index of the first transcript message
+    # that the file does not hold (`Records`).
+    {:save, :never},
     # The sync worker of the instance (`Helyx.Session.Sync`), or nil with
     # no Memory plugin. Before `Sync.open/1`, nil or `{:replay, messages}`,
     # the messages that a resume decoded (docs/features/memory.md).
     :sync,
-    # The index of the first transcript message that the file does not
-    # hold after a failed write (`Records.stop_saving/3`), else nil: every
-    # message is saved, or none when the session has no file.
-    :unsaved_from,
     # The registered ModelContext, Compaction, and Memory plugins by
     # interface, each nil for none.
     plugins: %{model_context: nil, compaction: nil, memory: nil},
@@ -115,15 +115,16 @@ defmodule Helyx.Session.Server.State do
           cwd: Path.t(),
           hands: pid() | nil,
           background_dir: Path.t() | nil,
-          file: Helyx.Session.File.t() | nil,
-          lock: port() | nil,
+          save:
+            :never
+            | {:saving, Helyx.Session.File.t(), port() | nil}
+            | {:stopped, non_neg_integer(), port() | nil},
           plugins: %{
             model_context: module() | nil,
             compaction: module() | nil,
             memory: module() | nil
           },
           sync: pid() | {:replay, [Helyx.Message.t()]} | nil,
-          unsaved_from: non_neg_integer() | nil,
           registry: Helyx.Session.ToolRegistry.t(),
           sources: %{pid() => module()},
           init: %{provider_opts: keyword(), max_output_tokens: pos_integer() | nil},
@@ -145,6 +146,14 @@ defmodule Helyx.Session.Server.State do
 
   # Sends `request` to the provider process with the bound `key` of `provider_ms`.
   def ask(state, pid, req, key), do: ProviderRequest.ask(pid, req, state.provider_ms[key])
+
+  # The writer lock of the session file, or nil: of a saving session, and
+  # of one whose failed write still holds it. A session that never had a
+  # file, and one that lost its lock, hold none.
+  @doc false
+  def lock(%__MODULE__{save: {:saving, _file, lock}}), do: lock
+  def lock(%__MODULE__{save: {:stopped, _from, lock}}), do: lock
+  def lock(%__MODULE__{save: :never}), do: nil
 
   # The options of every plugin call of the session.
   def base_opts(state), do: [core: state.core, session_id: state.id, cwd: state.cwd]

@@ -11,6 +11,7 @@ defmodule Helyx.Tool.SessionRead do
   @behaviour Helyx.Tool
 
   alias Helyx.{Coordinator, Message, Session}
+  alias Helyx.Tool.Args
 
   # The newest messages that a read takes, the most of a snapshot tail.
   @tail 1_000
@@ -42,6 +43,8 @@ defmodule Helyx.Tool.SessionRead do
         "id" => %{"type" => "string", "description" => "The id of the session"},
         "question" => %{
           "type" => "string",
+          "maxLength" => @max_question_bytes,
+          "default" => "",
           "description" => "Optional: what to find out from the transcript"
         }
       },
@@ -50,32 +53,26 @@ defmodule Helyx.Tool.SessionRead do
   end
 
   @impl true
-  def run(%{"id" => id} = args, cwd) do
-    question = Map.get(args, "question", "")
-
-    with :ok <- checked(id, question),
+  def run(args, cwd) do
+    with {:ok, args} <- Args.check(args, parameters()),
+         :ok <- checked(args["id"]),
          {:ok, env} <- Coordinator.setup(),
-         :ok <- authorized(env, id),
-         {:ok, text} <- read(Coordinator.session(env, id), budget(question)) do
-      answer(env, text, question, cwd)
+         :ok <- authorized(env, args["id"]),
+         {:ok, text} <- read(Coordinator.session(env, args["id"]), budget(args["question"])) do
+      answer(env, text, args["question"], cwd)
     else
       {:error, text} when is_binary(text) -> {:error, "session_read: " <> text}
     end
   end
 
-  def run(_args, _cwd), do: {:error, "session_read needs an id"}
-
   # The child stays held while its owner reports no stop (`Helyx.Subagent`).
   @impl true
   def release(children, _mode, deadline), do: Helyx.Subagent.release(children, deadline)
 
-  defp checked(id, question) do
-    cond do
-      not Coordinator.id?(id) -> {:error, "the id must be a session id"}
-      not is_binary(question) -> {:error, "the question must be a string"}
-      byte_size(question) > @max_question_bytes -> {:error, "the question is too long"}
-      true -> :ok
-    end
+  defp checked(id) do
+    if Coordinator.id?(id),
+      do: :ok,
+      else: {:error, "the id must be a session id"}
   end
 
   defp authorized(env, id) do
@@ -106,23 +103,12 @@ defmodule Helyx.Tool.SessionRead do
   defp answer(_env, text, "", _cwd), do: {:ok, text}
 
   defp answer(env, text, question, cwd) do
-    context = env.context
-
-    opts = [
-      model: context.model,
-      cwd: cwd,
-      provider_opts: context.provider_opts,
-      model_context: context.model_context,
-      parent: %{session_id: context.session_id, call_id: context.call_id},
-      # The child reads the text of its prompt and runs no tool.
-      tools: []
-    ]
-
     prompt =
       "Answer the question from the transcript of a session below. Give only the answer.\n\n" <>
         "Question: " <> question <> "\n\nTranscript:\n\n" <> text
 
-    case Helyx.Subagent.run(env.core, context.session_id, opts, prompt) do
+    # The child reads the text of its prompt and runs no tool.
+    case Helyx.Subagent.run(env.context, cwd, [], prompt) do
       {:error, {:start, reason}} ->
         {:error, "session_read: the helper agent did not start: " <> Coordinator.text(reason)}
 
@@ -143,7 +129,7 @@ defmodule Helyx.Tool.SessionRead do
     head = "session #{id}, #{state}\n\n"
     room = budget - byte_size(head) - byte_size(@left_out)
     {parts, cut?} = newest(Enum.reverse(snapshot.messages), room, [])
-    left_out = if cut? or snapshot.more, do: @left_out, else: ""
+    left_out = if cut? or snapshot.older > 0, do: @left_out, else: ""
     IO.iodata_to_binary([head, left_out | parts])
   end
 

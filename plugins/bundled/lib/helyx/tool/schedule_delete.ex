@@ -9,6 +9,7 @@ defmodule Helyx.Tool.ScheduleDelete do
   @behaviour Helyx.Tool
 
   alias Helyx.Coordinator
+  alias Helyx.Tool.Args
 
   @impl true
   def name, do: "schedule_delete"
@@ -33,17 +34,16 @@ defmodule Helyx.Tool.ScheduleDelete do
   end
 
   @impl true
-  def run(%{"schedule" => id}, _cwd) do
-    with true <- Coordinator.id?(id) || {:error, "the id must be a schedule id"},
+  def run(args, _cwd) do
+    with {:ok, args} <- Args.check(args, parameters()),
+         true <- Coordinator.id?(args["schedule"]) || {:error, "the id must be a schedule id"},
          {:ok, env} <- Coordinator.setup(),
-         :ok <- deleted(Helyx.Hub.delete_schedule(env.hub, env.user, id)) do
-      {:ok, "deleted schedule #{id}"}
+         :ok <- deleted(Helyx.Hub.delete_schedule(env.hub, env.user, args["schedule"])) do
+      {:ok, "deleted schedule #{args["schedule"]}"}
     else
       {:error, text} -> {:error, "schedule_delete: " <> text}
     end
   end
-
-  def run(_args, _cwd), do: {:error, "schedule_delete needs the id of a schedule"}
 
   defp deleted(:ok), do: :ok
 

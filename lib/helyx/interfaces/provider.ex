@@ -35,8 +35,6 @@ defmodule Helyx.Provider do
       owner of a call id").
   """
 
-  use Helyx.Interface, mode: :multi
-
   @type stop_reason :: Helyx.Message.stop_reason()
 
   @type stream_event ::
@@ -77,7 +75,6 @@ defmodule Helyx.Provider do
           {:event, turn_id :: String.t(), stream_event()}
           | {:reply, from(), term()}
           | {:need_context, turn_id :: String.t()}
-          | {:need_context, turn_id :: String.t(), :overflow}
 
   @doc """
   Finds the provider plugin whose id matches a model ref prefix. It reads the

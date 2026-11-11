@@ -25,11 +25,10 @@ defmodule Helyx.Provider.Codex.Approvals do
   # stream check of Core, and the provider process stops.
   def dispatch(%{"id" => rpc_id, "method" => method} = request, state)
       when is_map_key(@types, method) and (is_integer(rpc_id) or is_binary(rpc_id)) do
-    case request["params"] do
-      %{"threadId" => thread, "turnId" => turn, "itemId" => item}
-      when thread == state.thread and turn == state.turn and is_binary(turn) and
-             :erlang.map_get(method, @types) == :erlang.map_get(item, state.items.open) and
-             state.turn_id != nil ->
+    case {request["params"], state.phase} do
+      {%{"threadId" => thread, "turnId" => turn, "itemId" => item}, {:running, _id, turn, _mode}}
+      when thread == state.thread and
+             :erlang.map_get(method, @types) == :erlang.map_get(item, state.items.open) ->
         approval_id = JSON.encode!(rpc_id)
         {[{:approval, approval_id, item}], put_in(state.approvals[approval_id], rpc_id)}
 

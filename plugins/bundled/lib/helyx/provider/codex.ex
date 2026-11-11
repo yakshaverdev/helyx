@@ -23,8 +23,8 @@ defmodule Helyx.Provider.Codex do
 
   @behaviour Helyx.Provider
 
-  alias Helyx.{HarnessIO, Message, ModelInfo, ProviderError}
-  alias Helyx.Provider.Codex.{Approvals, Check, Items, Program, Replay, State, Tools}
+  alias Helyx.{HarnessIO, ModelInfo}
+  alias Helyx.Provider.Codex.{Approvals, Check, Items, Program, State, Tools, Turn}
 
   import Helyx.Provider.Codex.Wire
 
@@ -74,64 +74,60 @@ defmodule Helyx.Provider.Codex do
 
   @impl true
   def request(
-        {:turn, turn_id, %Helyx.Context{messages: messages, system: system, tools: tools}},
+        {:turn, id, %Helyx.Context{messages: messages, system: system, tools: tools}},
         from,
-        %State{turn_id: nil} = state
+        %State{phase: :idle} = state
       ) do
     {prompt, history} = HarnessIO.split_prompt(messages)
-    state = %{state | turn_id: turn_id, from: from, prompt: prompt, history: history}
+    state = %{state | phase: {:opening, id, from, prompt, history}}
     actions(thread(state, system || "", tools))
   end
 
-  # A compaction is `thread/compact/start`; its turn id comes with `turn/started` (`turn`
-  # is `:compact` until then). A fresh thread has no history yet. No instructions. It
-  # keeps the thread's prompt; a stored thread opens with the empty one.
-  def request({:compact, turn_id, _text}, from, %State{turn_id: nil} = state)
+  # A compaction is `thread/compact/start`; its phase lasts until its
+  # `turn/started`, which gives the program turn id. A fresh thread has no
+  # history yet. No instructions: it keeps the thread's prompt, and a
+  # stored thread opens with the empty one.
+  def request({:compact, id, _text}, from, %State{phase: :idle} = state)
       when state.thread == nil and state.resume == nil,
-      do: {:ok, [{:reply, from, :ok}, {:event, turn_id, HarnessIO.no_history(id())}], state}
+      do: {:ok, [{:reply, from, :ok}, {:event, id, HarnessIO.no_history(id())}], state}
 
-  def request({:compact, turn_id, _text}, from, %State{turn_id: nil} = state) do
-    state = %{state | turn_id: turn_id, from: from, turn: :compact}
+  def request({:compact, id, _text}, from, %State{phase: :idle} = state) do
+    state = %{state | phase: {:compacting, id, from}}
     actions(thread(state, state.system || "", state.tools.specs))
   end
 
   # An open command, and a child thread's work, outlive `turn/interrupt`
   # (#198, #226), so the abort stops the program instead.
-  def request({:interrupt, turn_id}, from, %State{turn_id: turn_id} = state) do
-    state =
-      cond do
-        command?(state) -> reply(state, from, {:error, :command_running})
-        agent?(state) -> reply(state, from, {:error, :agent_running})
-        true -> send_interrupt(%{state | interrupt: {:pending, from}})
-      end
-
-    actions(state)
+  def request({:interrupt, id}, from, state) do
+    if State.turn_id(state) == id,
+      do: interrupt(state, from),
+      else: actions(reply(state, from, :ok))
   end
-
-  # The turn already ended.
-  def request({:interrupt, _turn_id}, from, state), do: actions(reply(state, from, :ok))
 
   # A steer of the running turn goes out as `turn/steer`; the server checks
   # `expectedTurnId`. After `turn/completed` nothing goes out.
-  def request({:steer, turn_id, steer_id, text}, from, %State{turn_id: turn_id} = state)
-      when is_binary(state.turn) do
-    {id, state} = open(state, "turn/steer")
+  def request(
+        {:steer, id, steer_id, text},
+        from,
+        %State{phase: {:running, id, turn, _mode}} = state
+      ) do
+    {rpc_id, state} = open(state, "turn/steer")
 
     send_line(state, %{
-      id: id,
+      id: rpc_id,
       method: "turn/steer",
       params: %{
         threadId: state.thread,
-        expectedTurnId: state.turn,
+        expectedTurnId: turn,
         input: [%{type: "text", text: text}],
         clientUserMessageId: steer_id
       }
     })
 
-    actions(%{state | asked: Map.put(state.asked, id, from)})
+    actions(%{state | asked: Map.put(state.asked, rpc_id, from)})
   end
 
-  def request({:steer, _turn_id, _steer_id, _text}, from, state),
+  def request({:steer, _id, _steer_id, _text}, from, state),
     do: actions(reply(state, from, :rejected))
 
   # No tool item outlives a turn; a child thread's work belongs to the program.
@@ -168,28 +164,21 @@ defmodule Helyx.Provider.Codex do
   # Output
 
   # At `turn/completed`: the terminal, the answer to an interrupt, and the
-  # fields of a turn back to idle. A tool item still open outlives its turn
-  # (#198), whatever the status, and so does a child thread of an aborted
-  # turn, so the provider process stops instead: the release TERMs the
-  # program, which ends its commands, before a next turn starts.
-  defp end_turn(state, terminal) do
+  # phase back to idle. A tool item still open outlives its turn (#198),
+  # whatever the status, and so does a child thread of an aborted turn, so
+  # the provider process stops instead: the release TERMs the program, which
+  # ends its commands, before a next turn starts.
+  defp end_turn(%State{} = state, result) do
+    compact? = State.compaction?(state)
+
     if reason = outlives(state) do
       HarnessIO.update(state, terminal: {:error, reason})
     else
-      state = interrupted(push(state, [terminal]))
-      %{state | turn_id: nil, turn: nil, items: Items.next(terminal, state.items)}
+      terminal = Items.terminal(result, state.items, compact?)
+      state = Turn.interrupted(push(state, [terminal]))
+      %{state | phase: :idle, items: Items.next(terminal, state.items, compact?)}
     end
   end
-
-  # The interrupt ends with the turn. A later answer to a sent request is
-  # not due, and is dropped.
-  defp interrupted(%State{interrupt: {:pending, from}} = state),
-    do: reply(%{state | interrupt: nil}, from, :ok)
-
-  defp interrupted(%State{interrupt: {:sent, from, id}} = state),
-    do: reply(%{state | interrupt: nil, due: Map.delete(state.due, id)}, from, :ok)
-
-  defp interrupted(state), do: state
 
   # Why the turn's work can outlive its end, or nil.
   defp outlives(state) do
@@ -204,8 +193,8 @@ defmodule Helyx.Provider.Codex do
   defp command?(state), do: "commandExecution" in Map.values(state.items.open)
 
   # A child thread of the running turn has open work. Every turn id in
-  # `agents` is a string (`Check`), so a turn with no id has none.
-  defp agent?(state), do: state.turn in Map.values(state.agents)
+  # `agents` is a string (`Check`), so a turn with no program turn has none.
+  defp agent?(state), do: State.program(state) in Map.values(state.agents)
 
   # Puts the line's events in `out`, in order with the replies of the same
   # chunk; the events list of `HarnessIO.lines/3` stays empty.
@@ -239,7 +228,7 @@ defmodule Helyx.Provider.Codex do
   end
 
   defp dispatch(%{"method" => "thread/tokenUsage/updated"} = line, state),
-    do: {[], %{state | items: Items.usage(line, state.thread, state.turn, state.items)}}
+    do: {[], %{state | items: Items.usage(line, state.thread, State.program(state), state.items)}}
 
   # Only this program's thread counts: a sub-agent's stays in the harness.
   defp dispatch(%{"method" => method, "params" => %{"threadId" => thread} = params}, state)
@@ -251,7 +240,7 @@ defmodule Helyx.Provider.Codex do
   # A program of a prompt change has a waiting request: its thread opens now.
   defp answered("initialize", %{"result" => _}, state) do
     send_line(state, %{method: "initialized"})
-    {[], if(state.turn_id, do: Program.open_thread(state), else: state)}
+    {[], if(State.turn_id(state), do: Program.open_thread(state), else: state)}
   end
 
   # The program has no such thread: a fresh one starts on the same run.
@@ -260,10 +249,10 @@ defmodule Helyx.Provider.Codex do
 
   # The thread's digest is the session's (`HarnessIO.resumable/2`).
   defp answered("thread/resume", _response, state),
-    do: {[], opened(%{state | thread: state.resume})}
+    do: {[], Turn.opened(%{state | thread: state.resume})}
 
   defp answered("thread/start", %{"result" => %{"thread" => %{"id" => thread}}}, state),
-    do: {[], opened(%{state | thread: thread, fresh?: true})}
+    do: {[], Turn.opened(%{state | thread: thread, fresh?: true})}
 
   defp answered(method, response, state)
        when method in [
@@ -272,7 +261,7 @@ defmodule Helyx.Provider.Codex do
               "turn/interrupt",
               "thread/compact/start"
             ],
-       do: {[], answer(method, response, state)}
+       do: {[], Turn.answer(method, response, state)}
 
   # Only the exact error of a steer that crossed the turn's end confirms
   # that the program did not take it (research note). The error of a turn
@@ -289,53 +278,29 @@ defmodule Helyx.Provider.Codex do
         {[], reply(state, from, :rejected)}
 
       _error ->
-        {[], reply(state, from, {:error, failure("turn/steer", response)})}
+        {[], reply(state, from, {:error, Turn.failure("turn/steer", response)})}
     end
   end
 
   defp answered(method, response, state),
-    do: {[], HarnessIO.update(state, terminal: {:error, failure(method, response)})}
-
-  # The program's turn id comes with the answer, before `turn/started`
-  # (research note); a pending interrupt goes out then.
-  defp answer("turn/start", %{"result" => %{"turn" => %{"id" => turn}}}, state),
-    do: send_interrupt(reply(%{state | from: nil, turn: turn}, state.from, :ok))
-
-  defp answer("thread/inject_items", %{"result" => _}, state), do: start_turn(state)
-
-  defp answer("thread/compact/start", %{"result" => _}, state),
-    do: reply(%{state | from: nil}, state.from, :ok)
-
-  defp answer(
-         "turn/interrupt",
-         %{"id" => id, "error" => _} = response,
-         %{interrupt: {:sent, from, id}} = state
-       ),
-       do: reply(%{state | interrupt: nil}, from, {:error, failure("turn/interrupt", response)})
-
-  # The turn's end, not this answer, ends an interrupt. An error after the
-  # turn's end, such as `no active turn to interrupt` (research note),
-  # belongs to no interrupt, also when a later turn's interrupt is sent.
-  defp answer("turn/interrupt", _response, state), do: state
-
-  # An error answer to `turn/start` or `thread/inject_items` fails the turn,
-  # and the provider process stops.
-  defp answer(method, response, state),
-    do: reply(%{state | from: nil}, state.from, {:error, failure(method, response)})
-
-  defp failure(method, response) do
-    text = Items.error_message(response) || "unexpected response"
-    ProviderError.reason(id(), method, text, {:codex, method, ""})
-  end
+    do: {[], HarnessIO.update(state, terminal: {:error, Turn.failure(method, response)})}
 
   # Only the turn of the `turn/start` answer, which comes first.
-  defp turn_notification("turn/started", %{"turn" => %{"id" => turn}}, %{turn: turn} = state)
+  defp turn_notification(
+         "turn/started",
+         %{"turn" => %{"id" => turn}},
+         %State{phase: {:running, _id, turn, _mode}} = state
+       )
        when is_binary(turn),
        do: {[], state}
 
-  defp turn_notification("turn/started", %{"turn" => %{"id" => turn}}, %{turn: :compact} = state)
+  defp turn_notification(
+         "turn/started",
+         %{"turn" => %{"id" => turn}},
+         %State{phase: {:compacting, id, _from}} = state
+       )
        when is_binary(turn),
-       do: {[], send_interrupt(%{state | turn: turn})}
+       do: {[], Turn.send_interrupt(%{state | phase: {:running, id, turn, :compact}})}
 
   defp turn_notification("turn/started", _params, state),
     do: {[], HarnessIO.update(state, terminal: {:error, :turn_not_asked})}
@@ -343,9 +308,9 @@ defmodule Helyx.Provider.Codex do
   defp turn_notification(
          "turn/completed",
          %{"turn" => %{"id" => turn} = result},
-         %{turn: turn} = state
+         %State{phase: {:running, _id, turn, _mode}} = state
        ),
-       do: {[], end_turn(state, Items.terminal(result, state.items))}
+       do: {[], end_turn(state, result)}
 
   # The end of a turn that did not start, or that already ended.
   defp turn_notification("turn/completed", _params, state),
@@ -366,14 +331,18 @@ defmodule Helyx.Provider.Codex do
   defp turn_notification(
          method,
          %{"turnId" => turn, "item" => %{"type" => "subAgentActivity"} = item},
-         %{turn: turn} = state
+         %State{phase: {:running, _id, turn, _mode}} = state
        )
        when method in ["item/started", "item/completed"] and is_binary(turn) do
     agents = Map.put(state.agents, item["agentThreadId"], turn)
     {[], %{state | agents: agents, items: Items.sub_agent(state.items)}}
   end
 
-  defp turn_notification(method, %{"turnId" => turn} = params, %{turn: turn} = state)
+  defp turn_notification(
+         method,
+         %{"turnId" => turn} = params,
+         %State{phase: {:running, _id, turn, _mode}} = state
+       )
        when is_binary(turn),
        do: notification(method, params, state)
 
@@ -384,16 +353,15 @@ defmodule Helyx.Provider.Codex do
 
   defp turn_notification(_method, _params, state), do: {[], state}
 
-  # A pending interrupt goes out when the turn id is known.
-  defp send_interrupt(%State{interrupt: {:pending, from}, turn: turn} = state)
-       when is_binary(turn) do
-    {id, state} = open(state, "turn/interrupt")
-    params = %{threadId: state.thread, turnId: turn}
-    send_line(state, %{id: id, method: "turn/interrupt", params: params})
-    %{state | interrupt: {:sent, from, id}}
+  # The interrupt of the open turn: an open command or a child thread's work
+  # answers an error, and Core then stops the program.
+  defp interrupt(state, from) do
+    cond do
+      command?(state) -> actions(reply(state, from, {:error, :command_running}))
+      agent?(state) -> actions(reply(state, from, {:error, :agent_running}))
+      true -> actions(Turn.send_interrupt(%{state | interrupt: {:pending, from}}))
+    end
   end
-
-  defp send_interrupt(state), do: state
 
   # The program took a steer: its `userMessage` item carries the steer id. The session
   # drops an id that is not a sent steer of its turn, and a repeated one
@@ -418,64 +386,14 @@ defmodule Helyx.Provider.Codex do
   defp thread(%State{thread: nil, tools: %{specs: specs}} = state, system, specs),
     do: Program.open_thread(%{state | system: system})
 
-  defp thread(%{system: system, tools: %{specs: specs}} = state, system, specs), do: opened(state)
+  defp thread(%{system: system, tools: %{specs: specs}} = state, system, specs),
+    do: Turn.opened(state)
+
   defp thread(state, system, specs), do: Program.replace(state, system, specs)
-
-  # The thread is open: the waiting request goes on.
-  defp opened(%State{turn: :compact, fresh?: true} = state) do
-    # An interrupt of the compaction waits for its turn, and none comes.
-    state = interrupted(push(reply(state, state.from, :ok), [HarnessIO.no_history(id())]))
-    %{state | turn_id: nil, turn: nil, from: nil}
-  end
-
-  defp opened(%State{turn: :compact} = state) do
-    state = %{state | items: %{state.items | compact?: true}}
-    rpc(state, "thread/compact/start", %{threadId: state.thread})
-  end
-
-  defp opened(%State{fresh?: true} = state),
-    do: replay(state.history, %{state | fresh?: false, history: nil})
-
-  defp opened(state), do: start_turn(%{state | history: nil})
 
   defp tool_answer(state, rpc_id, status, text) do
     result = %{contentItems: [%{type: "inputText", text: text}], success: status == :ok}
     send_line(state, %{id: rpc_id, result: result})
     state
-  end
-
-  defp replay(history, state) do
-    case Replay.items(history, id()) do
-      {:error, reason} -> reply(%{state | history: nil}, state.from, {:error, reason})
-      {:ok, items, cut} -> inject(items, cut, state)
-    end
-  end
-
-  defp inject([], cut, state),
-    do: state |> push(Program.resume_events(state, cut)) |> start_turn()
-
-  defp inject(items, cut, state) do
-    state = push(state, Program.resume_events(state, cut))
-    {id, state} = open(state, "thread/inject_items")
-
-    send_line(state, [
-      ~s({"id":#{id},"method":"thread/inject_items","params":{"threadId":),
-      JSON.encode!(state.thread),
-      ~s(,"items":[),
-      Enum.intersperse(items, ","),
-      "]}}"
-    ])
-
-    state
-  end
-
-  defp start_turn(%State{prompt: prompt} = state) do
-    input =
-      for %Message{content: blocks} <- prompt,
-          %Message.Text{text: text} <- blocks,
-          text != "",
-          do: %{type: "text", text: text}
-
-    rpc(%{state | prompt: nil}, "turn/start", %{threadId: state.thread, input: input})
   end
 end

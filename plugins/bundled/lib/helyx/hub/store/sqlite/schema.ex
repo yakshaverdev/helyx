@@ -101,16 +101,4 @@ defmodule Helyx.Hub.Store.SQLite.Schema do
     CREATE INDEX schedules_subscription ON schedules (subscription_id);
     """
   end
-
-  @doc false
-  # A store of version 1: the event subscriptions (decision 17) and the
-  # one-run delivery rows of their webhooks in `schedules`.
-  def upgrade do
-    """
-    #{@subscriptions}
-    ALTER TABLE schedules ADD COLUMN subscription_id TEXT
-      REFERENCES subscriptions(id) ON DELETE CASCADE;
-    CREATE INDEX schedules_subscription ON schedules (subscription_id);
-    """
-  end
 end

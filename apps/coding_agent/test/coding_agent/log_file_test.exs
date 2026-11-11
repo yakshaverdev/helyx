@@ -55,30 +55,6 @@ defmodule CodingAgent.LogFileTest do
     refute File.read!(second) =~ "to the first"
   end
 
-  test "a call inside a hold runs in the outer hold, with its result", %{tmp_dir: dir} do
-    {:ok, default} = :logger.get_handler_config(:default)
-    outer = Path.join(dir, "tui.log")
-    inner = Path.join(dir, "inner.log")
-
-    LogFile.run(outer, fn :ok ->
-      assert LogFile.run(inner, fn held -> held end) == :ok
-      # The inner call changed nothing: the outer hold still holds.
-      assert dropping?()
-      assert {:ok, %{config: %{file: file}}} = :logger.get_handler_config(:helyx_tui_log)
-      assert file == String.to_charlist(outer)
-    end)
-
-    refute File.exists?(inner)
-
-    File.mkdir!(Path.join(dir, "folder"))
-
-    LogFile.run(Path.join(dir, "folder"), fn {:error, notice} ->
-      assert LogFile.run(outer, fn held -> held end) == {:error, notice}
-    end)
-
-    assert :logger.get_handler_config(:default) == {:ok, default}
-  end
-
   test "a holder that was killed leaves no hold", %{tmp_dir: dir} do
     kill_holder(Path.join(dir, "first.log"))
 
@@ -112,33 +88,27 @@ defmodule CodingAgent.LogFileTest do
       :ok = :logger.remove_handler(:default)
 
       on_exit(fn ->
-        _ = :persistent_term.erase({LogFile, :hold})
         _ = :logger.add_handler(:default, default.module, default)
       end)
 
       %{default: default}
     end
 
-    test "the log goes to the file, and a call inside runs in the hold", %{tmp_dir: dir} do
+    test "the log goes to the file", %{tmp_dir: dir} do
       path = Path.join(dir, "tui.log")
 
       assert LogFile.run(path, fn held ->
                assert held == :ok
-               assert marked?()
                refute closed?()
-               assert LogFile.run(Path.join(dir, "inner.log"), fn held -> held end) == :ok
                Logger.error("no default marker")
                :result
              end) == :result
 
-      refute marked?()
       assert closed?()
       assert File.read!(path) =~ "[error] no default marker"
-      refute File.exists?(Path.join(dir, "inner.log"))
       assert :logger.get_handler_config(:default) == {:error, {:not_found, :default}}
 
       assert_raise RuntimeError, fn -> LogFile.run(path, fn :ok -> raise "x" end) end
-      refute marked?()
       assert closed?()
     end
 
@@ -147,7 +117,6 @@ defmodule CodingAgent.LogFileTest do
 
       assert {:error, notice} = LogFile.run(Path.join(dir, "tui.log"), & &1)
       assert notice =~ "(is a folder)"
-      refute marked?()
     end
 
     test "a holder that was killed leaves no hold", %{tmp_dir: dir} do
@@ -156,19 +125,16 @@ defmodule CodingAgent.LogFileTest do
       second = Path.join(dir, "second.log")
 
       LogFile.run(second, fn :ok ->
-        assert marked?()
         Logger.error("to the second")
       end)
 
       assert File.read!(second) =~ "to the second"
-      refute marked?()
     end
 
     # The state of the hold is in one place, whatever `:default` does: a
     # `:default` that comes back finds the filter of the killed holder.
     test "a killed holder, then :default back", %{tmp_dir: dir, default: default} do
       kill_holder(Path.join(dir, "first.log"))
-      assert marked?()
 
       :ok = :logger.add_handler(:default, default.module, default)
 
@@ -177,7 +143,6 @@ defmodule CodingAgent.LogFileTest do
                :ran
              end) == :ran
 
-      refute marked?()
       refute dropping?()
     end
   end
@@ -461,7 +426,6 @@ defmodule CodingAgent.LogFileTest do
   end
 
   # The state of a hold, live or left by a killed holder.
-  defp marked?, do: :persistent_term.get({LogFile, :hold}, nil) != nil
 
   defp dropping? do
     {:ok, %{filters: filters}} = :logger.get_handler_config(:default)

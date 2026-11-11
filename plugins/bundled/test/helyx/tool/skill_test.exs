@@ -93,10 +93,10 @@ defmodule Helyx.Tool.SkillTest do
       assert Message.text(result) =~ "unknown skill: #{echo};"
     end
 
-    for args <- [%{}, %{"name" => 1}] do
+    for {args, text} <- [{%{}, "name is required"}, {%{"name" => 1}, "name must be a string"}] do
       result = ToolRunner.run_tool(core, call(args), dir)
       assert result.is_error
-      assert Message.text(result) == "skill needs a name"
+      assert Message.text(result) == text
     end
   end
 

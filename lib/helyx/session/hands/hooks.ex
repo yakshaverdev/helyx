@@ -3,13 +3,13 @@ defmodule Helyx.Session.Hands.Hooks do
   # The hook Tasks of `Helyx.Session.Hands` (docs/features/hooks.md): the
   # start of a hook for the call Task that runs its chain, its limit, its
   # release, the answer to the call Task, and the record to the session.
-  # `state.hook_runs` holds each running hook by the monitor ref of its
-  # Task: the caller to answer, the start of its run, and the request
-  # (`Helyx.Session.Hands.Chain`). The answer of a hook is `{:answer,
-  # answer}` or `{:failed, how}`.
+  # The run of a hook is in the kind of its entry in the state
+  # (`Helyx.Session.Hands.Entry`): the caller to answer, its start, and the
+  # request (`Helyx.Session.Hands.Chain`). The answer of a hook is
+  # `{:answer, answer}` or `{:failed, how}`.
 
   alias Helyx.Session.Hands
-  alias Helyx.Session.Hands.{Outcome, Release, Run, State}
+  alias Helyx.Session.Hands.{End, Entry, Outcome, Release, Run, State}
 
   # A hook of a call Task of a turn, of the chain Task of an approval
   # request, or of a `before_settle` chain Task (`Settle`), whose id stands
@@ -30,7 +30,7 @@ defmodule Helyx.Session.Hands.Hooks do
       answer(state, run, {:failed, Outcome.unreleased()})
     else
       {task, state} =
-        Hands.spawn_task(state, turn_id, {:hook, call_id}, request.module, fn ->
+        Hands.spawn_task(state, {:hook, call_id, run}, turn_id, request.module, fn ->
           # The kill is armed at the OTP timer server as the Task's first
           # act, so the limit holds while the hands are busy with a
           # release; a reply that came before the kill counts.
@@ -41,7 +41,8 @@ defmodule Helyx.Session.Hands.Hooks do
         end)
 
       run = Map.put(run, :started_ms, System.monotonic_time(:millisecond))
-      %{state | hook_runs: Map.put(state.hook_runs, task.ref, run)}
+      entry = Map.fetch!(state.tasks, task.ref)
+      State.put(state, task.ref, %{entry | kind: {:hook, call_id, run}})
     end
   end
 
@@ -49,16 +50,13 @@ defmodule Helyx.Session.Hands.Hooks do
   # first, so the chain goes on only after the release. A kill at the limit
   # releases with `:cancel`.
   def deliver(state, ref, result) do
-    {{task, _turn_id, _id, module, _place}, tasks} = Map.pop!(state.tasks, ref)
-    {run, runs} = Map.pop!(state.hook_runs, ref)
+    %Entry{task: task, kind: {:hook, _call_id, run}} = Map.fetch!(state.tasks, ref)
     result = limit(result, run)
     mode = if result == :limit, do: :cancel, else: :deliver
-    {handles, held} = Map.pop(state.held, task.pid, [])
-    left = Release.run(%{module => handles}, mode, state.release_ms, state.core)
+    {left, state} = End.finish(state, [ref], mode, state.release_ms, false)
     outcome = if Release.error(left), do: unreleased(), else: outcome(result, run)
     run = Map.put(run, :pid, task.pid)
-    state = answer(%{state | tasks: tasks, held: held, hook_runs: runs}, run, outcome)
-    Hands.keep_unconfirmed(state, left)
+    answer(state, run, outcome)
   end
 
   # A kill at or after the limit is the armed kill.
@@ -110,32 +108,14 @@ defmodule Helyx.Session.Hands.Hooks do
   defp recorded?(:before_settle, {:answer, :settle}), do: false
   defp recorded?(_point, _outcome), do: true
 
-  # The runs of the Tasks that a cancel killed: no answer, their callers
-  # were killed with them.
-  def drop(state),
-    do: %{
-      state
-      | hook_runs: Map.filter(state.hook_runs, fn {ref, _} -> is_map_key(state.tasks, ref) end)
-    }
-
   # The call Task of `call_id` ended while its hook ran, such as by a
   # linked process: the hook is killed and its handles released with
   # `:cancel` before the call delivers. Its caller is gone: no answer.
   def orphans(state, turn_id, call_id) do
-    {gone, kept} =
-      Map.split_with(state.tasks, fn {_ref, {_task, turn, id, _module, _place}} ->
-        turn == turn_id and id == {:hook, call_id}
-      end)
+    refs =
+      for {ref, %Entry{turn_id: ^turn_id, kind: {:hook, ^call_id, _run}}} <- state.tasks, do: ref
 
-    Enum.each(gone, fn {_ref, {task, _, _, _, _}} -> Task.shutdown(task, :brutal_kill) end)
-    {taken, held} = Map.split(state.held, for({_ref, {task, _, _, _, _}} <- gone, do: task.pid))
-
-    by_module =
-      Enum.reduce(gone, %{}, fn {_ref, {task, _, _, module, _}}, acc ->
-        Release.add(acc, %{module => Map.get(taken, task.pid, [])})
-      end)
-
-    left = Release.run(by_module, :cancel, state.release_ms, state.core)
-    Hands.keep_unconfirmed(drop(%{state | tasks: kept, held: held}), left)
+    {_left, state} = End.finish(state, refs, :cancel, state.release_ms, true)
+    state
   end
 end

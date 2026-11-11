@@ -45,9 +45,9 @@ defmodule Helyx.Session.File do
     provider: the id and the number of assistant messages before its entry, and the
     number at the last compaction of that provider after it, if any
     (`Helyx.Session.Transcript.label/0`). `summary` is the last `Helyx.Summary`, or
-    nil. `compacted` is the last compaction or summary: the id of the message before
-    it that its entry names (for an entry with no `last_id`, the message before the
-    entry), and its `tokens_after`, or nil (`Helyx.Session.Totals.of/2`).
+    nil. `compacted` is the last compaction or summary: the id of the
+    message before it that its entry names, and its `tokens_after`, or nil
+    (`Helyx.Session.Totals.of/2`).
     `activated` holds the names of the last `tools_change` entry (`mcp-client.md`).
     """
     @enforce_keys [:file, :model, :messages]
@@ -269,12 +269,10 @@ defmodule Helyx.Session.File do
   @spec append_resume_id(t(), String.t(), String.t()) :: t()
   def append_resume_id(%__MODULE__{} = file, provider_id, id)
       when is_binary(provider_id) and is_binary(id) do
-    # "harness_session" and "harness_session_id" are stored names: session
-    # files on disk hold them, so they stay.
     append(file, %{
-      "type" => "harness_session",
+      "type" => "resume_id",
       "provider" => provider_id,
-      "harness_session_id" => id
+      "resume_id" => id
     })
   end
 

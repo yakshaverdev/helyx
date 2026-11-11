@@ -9,8 +9,9 @@ defmodule Helyx.TUI.Wire.Connection do
 
   The process that calls `open/1` owns the connection, which ends with it; `take/1` makes another
   process the owner. The owner gets the events of its subscriptions as a client in the node gets
-  them from `Helyx.Session.subscribe/2`: `{:helyx_event, event}` for each event, then
-  `{:helyx_end, sub, reason}` at the end of the session, with `reason` `:stopped` or `:crashed`.
+  them from `Helyx.Session.subscribe/2`, with the sub that sent each: `{:helyx_event, sub, event}`
+  for each event, then `{:helyx_end, sub, reason}` at the end of the session, with `reason`
+  `:stopped` or `:crashed`.
   It passes each event that it applied to `ack/3`. The connection ends with `{:shutdown,
   :broken}` at a frame that the contract does not allow, and with `{:shutdown, {:closed, code}}`
   when the server closes it, `code` nil for a close with no code: a close of TCP, a close frame
@@ -122,10 +123,6 @@ defmodule Helyx.TUI.Wire.Connection do
   @spec abort(pid(), String.t()) :: :ok | {:error, error()}
   def abort(conn, session), do: request(conn, "abort", %{"session" => session})
 
-  @doc "Stops `session` after an abort of its turn, as `Helyx.Sessions.stop/1`."
-  @spec stop(pid(), String.t()) :: :ok | {:error, error()}
-  def stop(conn, session), do: request(conn, "stop", %{"session" => session})
-
   @doc "Ends the subscription `sub`; the session runs on (decision 18)."
   @spec unsubscribe(pid(), String.t()) :: :ok | {:error, error()}
   def unsubscribe(conn, sub), do: call(conn, {:unsubscribe, sub})
@@ -158,8 +155,7 @@ defmodule Helyx.TUI.Wire.Connection do
   @impl true
   def init({owner, socket, ws}) do
     # `waiting` maps the id of a request to its op and `{from, timer}`, or
-    # `:late` after the timer, or `{:unsubscribe, sub}` for the end of a sub
-    # that a late reply made; `replays` holds the id of each `subscribe`
+    # `:late` after the timer; `replays` holds the id of each `subscribe`
     # with `after`. `subs` holds the subscriptions
     # (`Helyx.TUI.Wire.Subscriptions`), `unwritten` counts the request
     # frames that wait for the writer, and `control` and `pong` hold the
@@ -251,9 +247,7 @@ defmodule Helyx.TUI.Wire.Connection do
       else: {:noreply, state}
   end
 
-  def handle_info(:written, state) do
-    Subscriptions.flush(%{state | unwritten: state.unwritten - 1}, @max_waiting, &write_request/4)
-  end
+  def handle_info(:written, state), do: {:noreply, %{state | unwritten: state.unwritten - 1}}
 
   def handle_info(:sent, state), do: control(%{state | control: :idle})
 
@@ -330,9 +324,6 @@ defmodule Helyx.TUI.Wire.Connection do
 
       {ended, subs} when ended in [:detached, :dropped] ->
         {:noreply, %{state | subs: subs}}
-
-      {:late_subscribe, sub, subs} ->
-        Subscriptions.late_subscribe(%{state | subs: subs}, sub, @max_waiting, &write_request/4)
 
       :broken ->
         broken(state)

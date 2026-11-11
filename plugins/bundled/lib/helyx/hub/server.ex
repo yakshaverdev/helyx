@@ -45,7 +45,7 @@ defmodule Helyx.Hub.Server do
   end
 
   defp insert_user(mod, store, name, deadline) do
-    user = %{id: new_id(), name: name, created_at: System.os_time(:second)}
+    user = %{id: Schedules.new_id(), name: name, created_at: System.os_time(:second)}
 
     case mod.add_user(store, user, @max_users, deadline) do
       :ok -> {:ok, user.id}
@@ -56,26 +56,17 @@ defmodule Helyx.Hub.Server do
 
   # Every live session of the Core enters the live set once, read with a
   # deadline; past it, or on a failed read, the set starts empty (decision
-  # 14). The read runs in a process with a monitor and no link, and gives its
-  # answer as its exit reason: the Hub, which traps exits, gets one `:DOWN`
-  # and no `:EXIT`, and a read past its deadline is killed and its `:DOWN`
-  # taken here, so no message of the read comes after the start.
+  # 14). The read is a Task with no link; a read past its deadline is
+  # killed, and its messages are flushed.
   @impl true
   def handle_continue(:live, state) do
     core = state.core
-    {pid, ref} = spawn_monitor(fn -> exit({:live, live_sessions(core)}) end)
+    task = Task.Supervisor.async_nolink(state.wake.sup, fn -> live_sessions(core) end)
 
     sessions =
-      receive do
-        {:DOWN, ^ref, :process, ^pid, {:live, sessions}} -> sessions
-        {:DOWN, ^ref, :process, ^pid, _reason} -> []
-      after
-        @seed_ms ->
-          Process.exit(pid, :kill)
-
-          receive do
-            {:DOWN, ^ref, :process, ^pid, _reason} -> []
-          end
+      case Task.yield(task, @seed_ms) || Task.shutdown(task, :brutal_kill) do
+        {:ok, sessions} -> sessions
+        _exit_or_nil -> []
       end
 
     # The first poll of the wake-ups comes at the start (decision 12).
@@ -354,7 +345,7 @@ defmodule Helyx.Hub.Server do
   end
 
   defp handle({:create_token, user_id, name}, deadline, %{store: mod, db: db}) do
-    id = new_id()
+    id = Schedules.new_id()
     text = id <> "." <> Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
 
     token = %{
@@ -377,8 +368,4 @@ defmodule Helyx.Hub.Server do
 
   # The calls of the authority (`Helyx.Hub.Access`).
   defp handle(request, deadline, state), do: Rules.handle(request, deadline, state)
-
-  # The shape of a session id, the base64url of 9 random bytes (decisions 1
-  # and 2). Helyx.Session.Id is internal to Core, which Hub does not call.
-  defp new_id, do: Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
 end

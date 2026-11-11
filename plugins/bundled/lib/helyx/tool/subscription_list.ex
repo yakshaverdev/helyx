@@ -10,9 +10,8 @@ defmodule Helyx.Tool.SubscriptionList do
   @behaviour Helyx.Tool
 
   alias Helyx.Coordinator
+  alias Helyx.Tool.Args
 
-  # The text of the lines, under the result bound of 65,536 bytes.
-  @budget_bytes 60_000
   # The template bytes of one line, before `inspect` escapes them.
   @template_bytes 256
 
@@ -39,11 +38,12 @@ defmodule Helyx.Tool.SubscriptionList do
   end
 
   @impl true
-  def run(args, _cwd) when is_map(args) do
-    with true <- only_id?(args) || {:error, "subscription_list takes only an id"},
-         {:ok, session} <- session(args),
+  def run(args, _cwd) do
+    with {:ok, args} <- Args.check(args, parameters()),
+         :ok <- checked(args),
          {:ok, env} <- Coordinator.setup(),
-         {:ok, subscriptions} <- listed(Helyx.Hub.subscriptions(env.hub, env.user, session)) do
+         {:ok, subscriptions} <-
+           listed(Helyx.Hub.subscriptions(env.hub, env.user, args["id"])) do
       {:ok, text(subscriptions)}
     else
       {:error, text} when is_binary(text) -> {:error, "subscription_list: " <> text}
@@ -51,43 +51,22 @@ defmodule Helyx.Tool.SubscriptionList do
     end
   end
 
-  def run(_args, _cwd), do: {:error, "subscription_list takes an optional id"}
-
-  defp only_id?(args), do: Map.keys(args) -- ["id"] == []
-
-  defp session(%{"id" => id}) do
-    if Coordinator.id?(id), do: {:ok, id}, else: {:error, "the id must be a session id"}
+  defp checked(args) do
+    cond do
+      Map.keys(args) -- ["id"] != [] -> {:error, "subscription_list takes only an id"}
+      args["id"] == nil -> :ok
+      Coordinator.id?(args["id"]) -> :ok
+      true -> {:error, "the id must be a session id"}
+    end
   end
-
-  defp session(%{}), do: {:ok, nil}
 
   defp listed({:ok, subscriptions}), do: {:ok, subscriptions}
   defp listed({:error, reason}), do: {:error, reason}
 
   defp text([]), do: "no event subscriptions"
 
-  # 256 subscriptions of a user, each with a template of 256 bytes that
-  # `inspect` with `binaries: :as_strings` can make four times longer, pass
-  # the result bound, so the lines stop at a budget below
-  # `Helyx.Message.max_result_bytes/0` and a last line counts the rest.
-  defp text(subscriptions) do
-    {shown, _bytes} =
-      Enum.reduce_while(subscriptions, {[], 0}, fn subscription, {lines, bytes} ->
-        line = line(subscription)
-        bytes = bytes + byte_size(line) + 1
-
-        if bytes > @budget_bytes,
-          do: {:halt, {lines, bytes}},
-          else: {:cont, {[line | lines], bytes}}
-      end)
-
-    body = shown |> Enum.reverse() |> Enum.join("\n")
-
-    case length(subscriptions) - length(shown) do
-      0 -> body
-      rest -> body <> "\n#{rest} more not shown; list the subscriptions of one session"
-    end
-  end
+  defp text(subscriptions),
+    do: Coordinator.lines(subscriptions, &line/1, "list the subscriptions of one session")
 
   defp line(subscription) do
     label =
@@ -102,16 +81,9 @@ defmodule Helyx.Tool.SubscriptionList do
         outcome -> "last delivery " <> outcome
       end
 
-    prompt = Helyx.Text.cap(subscription.template, @template_bytes, :head)
-
-    cut =
-      if prompt == subscription.template,
-        do: "",
-        else: " (cut, #{byte_size(subscription.template)} bytes)"
-
     "subscription #{subscription.id}: session #{subscription.session}#{label}, " <>
       "pending #{subscription.pending}, #{outcome}\n" <>
       "  endpoint: #{Helyx.Hub.Subscriptions.path(subscription)}\n" <>
-      "  prompt: #{inspect(prompt, binaries: :as_strings)}#{cut}"
+      "  prompt: #{Coordinator.excerpt(subscription.template, @template_bytes)}"
   end
 end

@@ -11,6 +11,7 @@ defmodule Helyx.Tool.Skill do
   @behaviour Helyx.Tool
 
   alias Helyx.Skills
+  alias Helyx.Tool.Args
 
   # The bytes of an unknown name that its error echoes.
   @max_echo_bytes 64
@@ -36,19 +37,22 @@ defmodule Helyx.Tool.Skill do
   end
 
   @impl true
-  def run(%{"name" => name}, cwd) when is_binary(name) do
-    case Skills.find(Skills.scan(cwd), name) do
-      nil ->
-        {:error,
-         "unknown skill: #{Helyx.Text.cap(name, @max_echo_bytes, :head)}; " <>
-           "the skills are listed in the system prompt"}
-
-      skill ->
-        if Skills.loaded?(Helyx.Tool.transcript(), name),
-          do: {:ok, Skills.note(skill)},
-          else: {:ok, Skills.text(skill)}
+  def run(args, cwd) do
+    with {:ok, args} <- Args.check(args, parameters()) do
+      name = args["name"]
+      found(Skills.find(Skills.scan(cwd), name), name)
     end
   end
 
-  def run(_args, _cwd), do: {:error, "skill needs a name"}
+  defp found(nil, name) do
+    {:error,
+     "unknown skill: #{Helyx.Text.cap(name, @max_echo_bytes, :head)}; " <>
+       "the skills are listed in the system prompt"}
+  end
+
+  defp found(skill, name) do
+    if Skills.loaded?(Helyx.Tool.transcript(), name),
+      do: {:ok, Skills.note(skill)},
+      else: {:ok, Skills.text(skill)}
+  end
 end

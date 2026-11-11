@@ -54,7 +54,7 @@ defmodule Helyx.TUI.ApprovalTest do
     if done?.(state) do
       state
     else
-      assert_receive {:helyx_event, %Event{}} = message, 5_000
+      assert_receive {:helyx_event, _sub, %Event{}} = message, 5_000
       {:noreply, state} = TUI.handle_info(message, state)
       until(state, done?)
     end

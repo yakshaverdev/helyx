@@ -28,7 +28,7 @@ defmodule Helyx.Provider.ClaudeCode do
   @steer_wait_ms 5_000
 
   alias Helyx.{HarnessIO, Message, ModelInfo, ProviderError}
-  alias Helyx.Provider.ClaudeCode.{Mcp, Meter, Program, Replay, State, Turn, Turn.Interrupt}
+  alias Helyx.Provider.ClaudeCode.{Mcp, Meter, Program, Replay, State, Turn}
 
   import Turn, only: [started?: 1]
   import Program, only: [uuid: 0]
@@ -69,7 +69,7 @@ defmodule Helyx.Provider.ClaudeCode do
   # queues the turn's line after it, and drops its lines as before a start.
   @impl true
   def request({kind, id, arg}, from, %State{turn: turn} = state)
-      when kind in [:turn, :compact] and (turn == nil or turn.program?) do
+      when kind in [:turn, :compact] and (turn.phase == :idle or turn.phase == :program) do
     case program(state, kind, arg) do
       %State{stream: %{terminal: nil}} = state ->
         case write_turn(%{state | turn: Turn.new(kind, id, uuid(), arg)}) do
@@ -90,17 +90,10 @@ defmodule Helyx.Provider.ClaudeCode do
     steer = Replay.user_line(uuid, Replay.user_content(Message.user(text)))
 
     # A steer during a held replay goes out after the turn's line.
-    chunks =
-      case turn.chunks do
-        [] ->
-          HarnessIO.write(state, steer)
-          []
+    {write?, turn} = Turn.steer(turn, steer)
+    if write?, do: HarnessIO.write(state, steer)
 
-        chunks ->
-          List.update_at(chunks, -1, &[&1, steer])
-      end
-
-    turn = %{turn | chunks: chunks, steers: Map.put(turn.steers, uuid, steer_id)}
+    turn = %{turn | steers: Map.put(turn.steers, uuid, steer_id)}
     {:ok, [{:reply, from, :ok}], %{state | turn: turn}}
   end
 
@@ -111,8 +104,7 @@ defmodule Helyx.Provider.ClaudeCode do
   # A `result` that the turn holds for an unresolved steer counts as the
   # turn's `result` for the interrupt, until a steer starts.
   def request({:interrupt, id}, from, %State{turn: %Turn{id: id} = turn} = state) do
-    interrupt = %Interrupt{from: from, result?: turn.wait != nil}
-    {actions, state} = interrupt(%{state | turn: %{turn | interrupt: interrupt}})
+    {actions, state} = interrupt(%{state | turn: Turn.interrupt(turn, from)})
     {:ok, actions, state}
   end
 
@@ -122,8 +114,9 @@ defmodule Helyx.Provider.ClaudeCode do
   def request({:tool_result, _id, call_id, {status, text}}, from, state),
     do: {:ok, [{:reply, from, :ok}], Mcp.result(state, call_id, status, text)}
 
-  def request(:idle_close, from, %State{tasks: [], notified?: false, turn: nil} = state),
-    do: request(:close, from, state)
+  def request(:idle_close, from, %State{tasks: [], notified?: false, turn: turn} = state)
+      when turn.phase == :idle,
+      do: request(:close, from, state)
 
   # A program turn starts 100 to 150 ms after the `task_notification`, with
   # `tasks` already empty (research note): one `:busy` waits for it. A
@@ -140,7 +133,7 @@ defmodule Helyx.Provider.ClaudeCode do
   # Helyx does not know whether the program will start the steer, so the
   # program stops.
   @impl true
-  def info({:timeout, ref, :steer_wait}, %State{turn: %Turn{wait: ref}} = state),
+  def info({:timeout, ref, :steer_wait}, %State{turn: %Turn{phase: {:steer_wait, ref}}} = state),
     do: {:stop, :steer_not_started, state}
 
   def info(message, state) do
@@ -176,14 +169,14 @@ defmodule Helyx.Provider.ClaudeCode do
   # to it with the replay. The steers are dropped, not written again, and each
   # gets a notice; the new session starts a meter with the window of config.
   defp relaunch(actions, state) do
-    turn = state.turn && %{state.turn | steers: %{}}
+    turn = %{state.turn | steers: %{}}
     fresh = Program.replace(state, turn: turn, meter: Meter.start(nil, state.meter.config_window))
 
     case Program.start(fresh, state.system) do
       %State{stream: %{terminal: {:error, reason}}} = state ->
         {:stop, reason, actions, state}
 
-      %State{turn: nil} = state ->
+      %State{turn: %Turn{phase: :idle}} = state ->
         {:ok, actions, state}
 
       state ->
@@ -196,13 +189,13 @@ defmodule Helyx.Provider.ClaudeCode do
 
   # A compaction with no program of its own (`program/3`) fails and writes nothing.
   defp write_turn(%State{turn: %Turn{compact: :asked}, commands?: false} = state),
-    do: {:ok, [{:event, state.turn.id, Program.no_compaction(state)}], %{state | turn: nil}}
+    do: {:ok, [{:event, state.turn.id, Program.no_compaction(state)}], %{state | turn: %Turn{}}}
 
   # The prompt is the user messages at the end of the transcript; a resumed
   # harness session, or one that took a turn, has the rest. An open turn over
   # the replay bound fails the turn with a typed error, not a silent cut.
-  defp write_turn(%State{turn: turn} = state) do
-    {prompt, history} = HarnessIO.split_prompt(turn.messages)
+  defp write_turn(%State{turn: %Turn{phase: {:queued, messages, _, _}} = turn} = state) do
+    {prompt, history} = HarnessIO.split_prompt(messages)
     content = Enum.flat_map(prompt, &Replay.user_content/1)
     prompt_line = Replay.user_line(turn.uuid, content)
 
@@ -212,7 +205,7 @@ defmodule Helyx.Provider.ClaudeCode do
     else
       with {:ok, [first | chunks], cut, replay?} <- Replay.chunks(history, prompt_line, id()) do
         HarnessIO.write(state, first)
-        turn = %{turn | replay?: replay?, chunks: chunks}
+        turn = %{turn | phase: {:queued, messages, chunks, replay?}}
         {:ok, Program.resume_events(state, turn.id, cut), %{state | sent?: true, turn: turn}}
       end
     end
@@ -232,9 +225,9 @@ defmodule Helyx.Provider.ClaudeCode do
   # waits for the start of the turn's line, which comes after the replay
   # results (research note for one replay line; inferred for more).
   defp interrupt(%State{init?: false} = state), do: {[], state}
-  defp interrupt(%State{turn: %Turn{replay?: true}} = state), do: {[], state}
+  defp interrupt(%State{turn: %Turn{phase: {:queued, _, _, true}}} = state), do: {[], state}
 
-  defp interrupt(%State{turn: %Turn{interrupt: interrupt} = turn} = state) do
+  defp interrupt(%State{turn: %Turn{interrupt: {:pending, from, seen}} = turn} = state) do
     id = "interrupt_" <> turn.uuid
     request = %{subtype: "interrupt", cancel_queued: true}
 
@@ -243,7 +236,7 @@ defmodule Helyx.Provider.ClaudeCode do
       Replay.line(%{type: "control_request", request_id: id, request: request})
     )
 
-    {[], %{state | turn: %{turn | interrupt: %{interrupt | request_id: id}}}}
+    {[], %{state | turn: %{turn | interrupt: {:sent, from, id, seen}}}}
   end
 
   # The interrupt is done when both its control response and the turn's
@@ -251,25 +244,23 @@ defmodule Helyx.Provider.ClaudeCode do
   # interrupt gives its `result` first. A response that cancelled the
   # turn's line is the end of the turn: no `result` comes for a cancelled
   # line (research note).
-  defp interrupt_progress(%State{turn: %Turn{interrupt: interrupt} = turn} = state, key) do
-    state = %{state | turn: %{turn | interrupt: struct!(interrupt, [{key, true}])}}
+  defp interrupt_progress(%State{turn: turn} = state, key) do
+    turn = Turn.interrupt_seen(turn, key)
 
     # A turn that ended before Helyx wrote the interrupt gets no interrupt.
-    case state.turn.interrupt do
-      %Interrupt{request_id: nil, result?: true} -> answer_interrupt(state, :ok)
-      %Interrupt{response?: true, result?: true} -> answer_interrupt(state, :ok)
-      _ -> {[], state}
-    end
+    if Turn.interrupt_done?(turn),
+      do: answer_interrupt(%{state | turn: turn}, :ok),
+      else: {[], %{state | turn: turn}}
   end
 
   # A pending interrupt that waited for the `init` line or the start.
-  defp resume_interrupt(%State{turn: %Turn{interrupt: %Interrupt{request_id: nil}}} = state),
+  defp resume_interrupt(%State{turn: %Turn{interrupt: {:pending, _from, _seen}}} = state),
     do: interrupt(state)
 
   defp resume_interrupt(state), do: {[], state}
 
   defp answer_interrupt(%State{turn: turn} = state, answer),
-    do: {[{:reply, turn.interrupt.from, answer}], %{state | turn: nil}}
+    do: {[{:reply, Turn.interrupt_from(turn), answer}], %{state | turn: %Turn{}}}
 
   # Output
 
@@ -299,9 +290,9 @@ defmodule Helyx.Provider.ClaudeCode do
       missing != [] ->
         {[], HarnessIO.update(state, terminal: {:error, {:missing_capabilities, missing}})}
 
-      state.turn == nil ->
+      state.turn.phase == :idle ->
         id = uuid()
-        turn = %Turn{id: id, uuid: id, messages: nil, program?: true}
+        turn = %Turn{id: id, uuid: id, phase: :program}
         {[{:event, id, :turn_start}], %{state | turn: turn}}
 
       true ->
@@ -313,7 +304,7 @@ defmodule Helyx.Provider.ClaudeCode do
          %{"type" => "command_lifecycle", "state" => "started", "command_uuid" => uuid},
          %State{turn: %Turn{uuid: uuid} = turn} = state
        ),
-       do: resume_interrupt(%{state | turn: %{turn | messages: nil, replay?: false}})
+       do: resume_interrupt(%{state | turn: Turn.start(turn)})
 
   # The program took a steer: in the running model call after a tool
   # result, or as a program turn of its own after a `result`. That turn
@@ -345,7 +336,7 @@ defmodule Helyx.Provider.ClaudeCode do
 
   defp translate(
          %{"type" => "control_response", "response" => %{"request_id" => id} = response},
-         %State{turn: %Turn{uuid: uuid, interrupt: %Interrupt{request_id: id}}} = state
+         %State{turn: %Turn{uuid: uuid, interrupt: {:sent, _from, id, _seen}}} = state
        )
        when is_binary(id) do
     # Only `still_queued` exactly `[]` confirms that no queued work
@@ -355,7 +346,7 @@ defmodule Helyx.Provider.ClaudeCode do
       %{"subtype" => "success", "response" => %{"still_queued" => []} = body} ->
         if :lists.member(uuid, body["cancelled"]),
           do: answer_interrupt(state, :ok),
-          else: interrupt_progress(state, :response?)
+          else: interrupt_progress(state, :response)
 
       %{"subtype" => "success"} ->
         answer_interrupt(state, {:error, :still_queued})
@@ -402,7 +393,7 @@ defmodule Helyx.Provider.ClaudeCode do
 
     cond do
       lost?(result, state) -> {[], HarnessIO.update(state, terminal: :lost)}
-      state.turn == nil -> {[], state}
+      state.turn.phase == :idle -> {[], state}
       started?(state.turn) -> turn_result(result, state)
       true -> release(result, state)
     end
@@ -411,7 +402,7 @@ defmodule Helyx.Provider.ClaudeCode do
   # The model lines before `started` of the turn's line belong to no Helyx
   # turn, as between turns: a program turn has no `command_lifecycle`. The
   # meter still reads them: their calls are in the program's totals.
-  defp translate(object, %State{turn: turn} = state) when turn == nil or not started?(turn),
+  defp translate(object, %State{turn: turn} = state) when not started?(turn),
     do: {[], %{state | meter: Meter.line(state.meter, object)}}
 
   # Compaction lines; a compaction turn's model lines stay in the program.
@@ -449,9 +440,12 @@ defmodule Helyx.Provider.ClaudeCode do
   # goes out. Only a result with `num_turns` exactly 0 can be one: a
   # replayed line makes no model call, and a program turn makes one
   # (research note, "Program turns").
-  defp release(%{"num_turns" => 0}, %State{turn: %Turn{chunks: [next | chunks]} = turn} = state) do
+  defp release(
+         %{"num_turns" => 0},
+         %State{turn: %Turn{phase: {:queued, messages, [next | chunks], replay?}} = turn} = state
+       ) do
     HarnessIO.write(state, next)
-    {[], %{state | turn: %{turn | chunks: chunks}}}
+    {[], %{state | turn: %{turn | phase: {:queued, messages, chunks, replay?}}}}
   end
 
   defp release(_result, state), do: {[], state}
@@ -469,9 +463,10 @@ defmodule Helyx.Provider.ClaudeCode do
 
   defp turn_result(
          %{"queued_turn_count" => 0},
-         %State{turn: %Turn{interrupt: %Interrupt{}}} = state
-       ),
-       do: interrupt_progress(state, :result?)
+         %State{turn: %Turn{interrupt: interrupt}} = state
+       )
+       when is_tuple(interrupt),
+       do: interrupt_progress(state, :result)
 
   # An unresolved steer keeps the turn: `claude` reads a line that came
   # before this `result` after it and runs it as a turn of its own
@@ -479,17 +474,22 @@ defmodule Helyx.Provider.ClaudeCode do
   # then for the next `result`.
   defp turn_result(
          %{"queued_turn_count" => 0},
-         %State{turn: %Turn{steers: steers} = turn} = state
+         %State{turn: %Turn{steers: steers, phase: phase} = turn} = state
        )
        when map_size(steers) > 0 do
-    wait = turn.wait || :erlang.start_timer(@steer_wait_ms, self(), :steer_wait)
-    {[], %{state | turn: %{turn | wait: wait}}}
+    phase =
+      case phase do
+        {:steer_wait, _ref} -> phase
+        _ -> {:steer_wait, :erlang.start_timer(@steer_wait_ms, self(), :steer_wait)}
+      end
+
+    {[], %{state | turn: %{turn | phase: phase}}}
   end
 
   # The session closes the open assistant message at the terminal.
   defp turn_result(%{"queued_turn_count" => 0} = result, state) do
     {terminal, meter} = Turn.terminal(result, state.turn, state.meter)
-    {[{:event, state.turn.id, terminal}], %{state | turn: nil, meter: meter}}
+    {[{:event, state.turn.id, terminal}], %{state | turn: %Turn{}, meter: meter}}
   end
 
   defp turn_result(_result, state),

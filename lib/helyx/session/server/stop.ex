@@ -57,7 +57,7 @@ defmodule Helyx.Session.Server.Stop do
     File.rm_rf(state.background_dir)
     # Last, so no process of the session writes to the file once another
     # OS process can take the lock.
-    Lock.release(state.lock)
+    Lock.release(State.lock(state))
     if left == [], do: :ok, else: {:error, {:not_released, left}}
   end
 

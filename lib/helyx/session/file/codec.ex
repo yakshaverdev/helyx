@@ -95,11 +95,8 @@ defmodule Helyx.Session.File.Codec do
 
   defp cut_text(block, _role), do: block
 
-  # A user entry from before #649 has no origin: it reads as `:unknown`,
-  # never as `:user`. A present origin passes `Message.origin?/1`, and only
-  # a user entry has one; a present null is malformed.
-  defp decode_origin(:user, :error), do: %{kind: :unknown, id: nil}
-
+  # A user entry has an origin that passes `Message.origin?/1`; no other
+  # entry has one.
   defp decode_origin(:user, {:ok, %{"kind" => kind, "id" => id} = object})
        when map_size(object) == 2 do
     origin = %{kind: decode_origin_kind(kind), id: id}
@@ -107,7 +104,7 @@ defmodule Helyx.Session.File.Codec do
     origin
   end
 
-  defp decode_origin(_role, :error), do: nil
+  defp decode_origin(role, :error) when role != :user, do: nil
 
   # Literal atoms, so a fresh VM that has loaded no other module decodes them.
   defp decode_origin_kind("user"), do: :user

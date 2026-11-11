@@ -4,6 +4,10 @@ defmodule Helyx.Hub.Store.SQLite.Query do
   # `{:error, :failed}`, a held lock `{:error, :busy}`, and a transaction
   # that reaches its commit at or past the deadline of its Hub call rolls
   # back with `{:error, :timeout}` (`docs/features/hub.md`, decision 5).
+  #
+  # The handle of a file store also holds the port of the lock of its file; a
+  # query runs on its connection, which the first clause of `exec/2`,
+  # `all/3`, and `changed/1` takes.
 
   alias Exqlite.Sqlite3
 
@@ -13,6 +17,8 @@ defmodule Helyx.Hub.Store.SQLite.Query do
       with :ok <- run(db, sql, args), do: changed(db)
     end)
   end
+
+  def changed(%{db: db}), do: changed(db)
 
   def changed(db) do
     case Sqlite3.changes(db) do
@@ -53,6 +59,8 @@ defmodule Helyx.Hub.Store.SQLite.Query do
     result
   end
 
+  def exec(%{db: db}, sql), do: exec(db, sql)
+
   def exec(db, sql) do
     case Sqlite3.execute(db, sql) do
       :ok -> :ok
@@ -67,6 +75,8 @@ defmodule Helyx.Hub.Store.SQLite.Query do
   def one(db, sql, args) do
     with {:ok, rows} <- all(db, sql, args), do: {:ok, List.first(rows)}
   end
+
+  def all(%{db: db}, sql, args), do: all(db, sql, args)
 
   def all(db, sql, args) do
     case Sqlite3.prepare(db, sql) do

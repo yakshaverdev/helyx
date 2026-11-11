@@ -1,6 +1,6 @@
 # Wire conformance fixtures
 
-Fixtures of the wire protocol 9 (`docs/features/wire-protocol.md`) as plain JSON, for a client or a server in any language. They describe protocol 9 as it is, for a server with no authority; a server under a Hub (`docs/features/hub.md`) has no case here (see "Rules in prose only"). Each file names its `protocol`; a protocol change fails the Elixir tests until the fixtures follow it.
+Fixtures of the wire protocol 10 (`docs/features/wire-protocol.md`) as plain JSON, for a client or a server in any language. They describe protocol 10 as it is, for a server with no authority; a server under a Hub (`docs/features/hub.md`) has no case here (see "Rules in prose only"). Each file names its `protocol`; a protocol change fails the Elixir tests until the fixtures follow it.
 
 The Elixir code runs every case: `plugins/bundled/test/helyx/transport/web_socket_fixtures_test.exs` runs `client_frames.json` against the server, and `plugins/bundled/test/helyx/tui/wire_fixtures_test.exs` runs `server_frames.json` against the client of the TUI and `folds.json` against its view model. The runners are in the bundled project and read this folder by its path in the repository.
 
@@ -57,3 +57,7 @@ These rules have no fixture here; the feature doc states them, and the Elixir te
 - The `Origin` check (HTTP 403) and the 65th connection (HTTP 503), and the closes of the WebSocket server (`1000`, `1002`, `1008`, `1009`, `1011`).
 
 The feature doc lists what the prose does not pin down for an implementation that does not run on the BEAM: `docs/features/wire-protocol.md`, "Conformance fixtures".
+
+## `bounds.json`: the numbers and the error codes, once
+
+The bounds of a frame, a part, a request and a server frame, the waits and the caps of a connection, the deadlines of the operations in milliseconds, and the error codes in the order of the schema. The server and the client of the TUI read this file at compile time (`Helyx.Transport.WebSocket.Bounds`), so they hold no copy. `clients/rust/core/tests/bounds.rs` checks the constants of the Rust client against it. `docs/features/wire-protocol.md`, "Bounds", gives the reason of each number.

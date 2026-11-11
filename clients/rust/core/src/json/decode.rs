@@ -1,8 +1,18 @@
 //! The decoder of the JSON of a server frame, within the bounds of
-//! `Limits` (`docs/features/client-kit.md`, "Bounds").
+//! `Limits` (`docs/features/client-kit.md`, the `json` bullet of "Slices" and
+//! the table "Bounds"), on `serde_json`: the grammar, the string escapes, the
+//! text of a number, and the span of a container are its. This module keeps
+//! the rules of the wire that its own value type does not: the first of two
+//! equal keys, the bounds, and a container past `Limits::depth` kept as its
+//! text.
 
 use super::{Json, Limits, WIRE};
 use crate::check::{Broken, Checked};
+use serde::Deserialize;
+use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
+use serde_json::value::RawValue;
+use std::cell::Cell;
+use std::fmt;
 
 /// Decodes the text of one server frame within the bounds of `WIRE`. A text
 /// over a bound, or that is not JSON, is a break of the server.
@@ -15,284 +25,154 @@ pub fn decode_within(text: &str, limits: Limits) -> Checked<Json> {
     if text.len() > limits.frame_bytes {
         return Err(Broken("frame size"));
     }
-    let mut parser = Parser {
-        text,
-        at: 0,
-        values: 0,
-        limits,
+    let state = State {
+        values: Cell::new(0),
+        caught: Cell::new(None),
     };
-    parser.space();
-    let value = parser.value(0)?;
-    parser.space();
-    (parser.at == text.len())
-        .then_some(value)
-        .ok_or(Broken("json"))
-}
-
-/// `at` is always at a character boundary of `text`: it moves past ASCII
-/// bytes only, and over a run of a string that ends at an ASCII byte.
-struct Parser<'a> {
-    text: &'a str,
-    at: usize,
-    values: usize,
-    limits: Limits,
-}
-
-const BAD: Broken = Broken("json");
-
-impl Parser<'_> {
-    fn peek(&self) -> Option<u8> {
-        self.text.as_bytes().get(self.at).copied()
+    let mut de = serde_json::Deserializer::from_str(text);
+    let seed = Seed {
+        limits,
+        state: &state,
+        depth: 0,
+    };
+    let Ok(value) = seed.deserialize(&mut de) else {
+        return Err(Broken(state.caught.get().unwrap_or("json")));
+    };
+    if de.end().is_err() {
+        return Err(Broken("json"));
     }
+    Ok(value)
+}
 
-    fn space(&mut self) {
-        while matches!(self.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
-            self.at += 1;
+/// The values counted so far, and the bound that the parse broke, if it did.
+struct State {
+    values: Cell<usize>,
+    caught: Cell<Option<&'static str>>,
+}
+
+impl State {
+    /// Counts one value, as the server counts it: each value and each object
+    /// key.
+    fn count<E: de::Error>(&self, limits: Limits) -> Result<(), E> {
+        let values = self.values.get() + 1;
+        self.values.set(values);
+        if values > limits.values {
+            return Err(self.fault("json values"));
         }
+        Ok(())
     }
 
-    fn count(&mut self) -> Checked<()> {
-        self.values += 1;
-        (self.values <= self.limits.values)
-            .then_some(())
-            .ok_or(Broken("json values"))
+    /// The error of a bound, kept for `decode_within`, which answers a
+    /// `Broken`.
+    fn fault<E: de::Error>(&self, what: &'static str) -> E {
+        self.caught.set(Some(what));
+        E::custom(what)
     }
+}
 
-    /// The next byte, taken.
-    fn next(&mut self) -> Checked<u8> {
-        let byte = self.peek().ok_or(BAD)?;
-        self.at += 1;
-        Ok(byte)
-    }
+/// One value at `depth` containers. The value is read first as its text
+/// (`serde_json::value::RawValue`), so a number keeps every digit and an
+/// object keeps every key; a container past `Limits::depth` is kept as that
+/// text, with no stack for its nesting.
+#[derive(Clone, Copy)]
+struct Seed<'a> {
+    limits: Limits,
+    state: &'a State,
+    depth: usize,
+}
 
-    fn eat(&mut self, byte: u8) -> Checked<()> {
-        (self.peek() == Some(byte)).then(|| self.at += 1).ok_or(BAD)
-    }
+impl<'de> DeserializeSeed<'de> for Seed<'_> {
+    type Value = Json;
 
-    fn literal(&mut self, word: &str, value: Json) -> Checked<Json> {
-        word.bytes().try_for_each(|byte| self.eat(byte))?;
+    fn deserialize<D>(self, deserializer: D) -> Result<Json, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        self.state.count(self.limits)?;
+        let raw = <&RawValue>::deserialize(deserializer)?;
+        let text = raw.get();
+        let container = matches!(text.as_bytes().first(), Some(b'[' | b'{'));
+        if container && self.depth >= self.limits.depth {
+            return Ok(Json::Deep(text.to_owned()));
+        }
+        if !container {
+            return self.scalar(text);
+        }
+        let mut de = serde_json::Deserializer::from_str(text);
+        let value = de
+            .deserialize_any(Container { seed: self })
+            .map_err(de::Error::custom)?;
+        de.end().map_err(de::Error::custom)?;
         Ok(value)
     }
+}
 
-    fn value(&mut self, depth: usize) -> Checked<Json> {
-        self.count()?;
-        match self.peek().ok_or(BAD)? {
-            b'[' | b'{' if depth >= self.limits.depth => self.deep(),
-            b'[' => self.items(b']', |p| p.value(depth + 1)).map(Json::Array),
-            b'{' => self.items(b'}', |p| p.pair(depth + 1)).map(Json::Object),
-            _ => self.scalar(),
+impl Seed<'_> {
+    /// A value that is not an array or an object, by its text.
+    fn scalar<E: de::Error>(self, text: &str) -> Result<Json, E> {
+        match text {
+            "null" => Ok(Json::Null),
+            "true" => Ok(Json::Bool(true)),
+            "false" => Ok(Json::Bool(false)),
+            _ if text.starts_with('"') => serde_json::from_str::<String>(text)
+                .map(Json::String)
+                .map_err(E::custom),
+            _ => self.number(text),
         }
     }
 
-    /// A value that is not an array or an object.
-    fn scalar(&mut self) -> Checked<Json> {
-        match self.peek().ok_or(BAD)? {
-            b'n' => self.literal("null", Json::Null),
-            b't' => self.literal("true", Json::Bool(true)),
-            b'f' => self.literal("false", Json::Bool(false)),
-            b'"' => self.string().map(Json::String),
-            b'-' | b'0'..=b'9' => self.number(),
-            _ => Err(BAD),
-        }
-    }
-
-    /// The items of an array or the pairs of an object, up to `close`.
-    fn items<T>(
-        &mut self,
-        close: u8,
-        mut item: impl FnMut(&mut Self) -> Checked<T>,
-    ) -> Checked<Vec<T>> {
-        self.at += 1;
-        self.space();
-        let mut items = Vec::new();
-        if self.eat(close).is_ok() {
-            return Ok(items);
-        }
-        loop {
-            self.space();
-            items.push(item(self)?);
-            self.space();
-            match self.next()? {
-                b',' => {}
-                byte if byte == close => return Ok(items),
-                _ => return Err(BAD),
+    /// A number, at its text. An integer has at most `Limits::integer_chars`
+    /// characters with the sign; a float is finite.
+    fn number<E: de::Error>(self, text: &str) -> Result<Json, E> {
+        let integer = !text.bytes().any(|b| matches!(b, b'.' | b'e' | b'E'));
+        if integer {
+            if text.len() > self.limits.integer_chars {
+                return Err(self.state.fault("json integer"));
             }
-        }
-    }
-
-    /// A container past the depth: checked by the same grammar and bounds,
-    /// with a stack of its open containers on the heap, and kept as its
-    /// text. `value` counted the container itself.
-    fn deep(&mut self) -> Checked<Json> {
-        let start = self.at;
-        let mut closes: Vec<u8> = Vec::new();
-        let mut at_value = self.open(&mut closes)?;
-        loop {
-            if at_value {
-                self.count()?;
-                at_value = match self.peek().ok_or(BAD)? {
-                    b'[' | b'{' => self.open(&mut closes)?,
-                    _ => {
-                        self.scalar()?;
-                        false
-                    }
-                };
-                continue;
-            }
-            let Some(&close) = closes.last() else {
-                return Ok(Json::Deep(self.text[start..self.at].to_owned()));
-            };
-            self.space();
-            match self.next()? {
-                b',' => {
-                    self.space();
-                    if close == b'}' {
-                        self.key()?;
-                    }
-                    at_value = true;
-                }
-                byte if byte == close => drop(closes.pop()),
-                _ => return Err(BAD),
-            }
-        }
-    }
-
-    /// The `[` or `{` of a container in `deep`, and the key of a first pair;
-    /// `true` when a value follows, `false` for an empty container.
-    fn open(&mut self, closes: &mut Vec<u8>) -> Checked<bool> {
-        let close = if self.next()? == b'[' { b']' } else { b'}' };
-        self.space();
-        if self.eat(close).is_ok() {
-            return Ok(false);
-        }
-        closes.push(close);
-        if close == b'}' {
-            self.key()?;
-        }
-        Ok(true)
-    }
-
-    /// A key of an object, counted as a value, then its `:`.
-    fn key(&mut self) -> Checked<String> {
-        self.count()?;
-        let key = self.string()?;
-        self.space();
-        self.eat(b':')?;
-        self.space();
-        Ok(key)
-    }
-
-    /// A key of an object, counted as a value, and its value.
-    fn pair(&mut self, depth: usize) -> Checked<(String, Json)> {
-        let key = self.key()?;
-        Ok((key, self.value(depth)?))
-    }
-
-    fn digits(&mut self) -> usize {
-        let start = self.at;
-        while matches!(self.peek(), Some(b'0'..=b'9')) {
-            self.at += 1;
-        }
-        self.at - start
-    }
-
-    /// The grammar of RFC 8259. An integer of more characters than
-    /// `integer_chars` is over its bound; a float must be finite.
-    fn number(&mut self) -> Checked<Json> {
-        let start = self.at;
-        if self.peek() == Some(b'-') {
-            self.at += 1;
-        }
-        let first = self.peek();
-        let digits = self.digits();
-        if digits == 0 || (digits > 1 && first == Some(b'0')) {
-            return Err(BAD);
-        }
-        let mut integer = true;
-        if self.peek() == Some(b'.') {
-            self.at += 1;
-            integer = false;
-            if self.digits() == 0 {
-                return Err(BAD);
-            }
-        }
-        if matches!(self.peek(), Some(b'e' | b'E')) {
-            self.at += 1;
-            integer = false;
-            if matches!(self.peek(), Some(b'+' | b'-')) {
-                self.at += 1;
-            }
-            if self.digits() == 0 {
-                return Err(BAD);
-            }
-        }
-        let text = &self.text[start..self.at];
-        if integer && text.len() > self.limits.integer_chars {
-            return Err(Broken("json integer"));
-        }
-        if !integer && !text.parse::<f64>().is_ok_and(f64::is_finite) {
-            return Err(Broken("json float"));
+        } else if !text.parse::<f64>().is_ok_and(f64::is_finite) {
+            return Err(self.state.fault("json float"));
         }
         Ok(Json::Number(text.to_owned()))
     }
+}
 
-    fn hex4(&mut self) -> Checked<u32> {
-        let digits = self.text.as_bytes().get(self.at..self.at + 4).ok_or(BAD)?;
-        let code = digits
-            .iter()
-            .try_fold(0, |n, &b| char::from(b).to_digit(16).map(|d| n * 16 + d))
-            .ok_or(BAD)?;
-        self.at += 4;
-        Ok(code)
-    }
+/// The items of a container whose text `Seed` read: the members are seeded
+/// one level deeper.
+struct Container<'a> {
+    seed: Seed<'a>,
+}
 
-    fn string(&mut self) -> Checked<String> {
-        self.eat(b'"')?;
-        let mut out = String::new();
-        loop {
-            let start = self.at;
-            while !matches!(self.peek(), None | Some(b'"' | b'\\' | 0..=0x1f)) {
-                self.at += 1;
-            }
-            // The run ends at an ASCII byte or at the end: whole characters.
-            out.push_str(&self.text[start..self.at]);
-            match self.next()? {
-                b'"' => return Ok(out),
-                b'\\' => {
-                    out.push(match self.next()? {
-                        b'"' => '"',
-                        b'\\' => '\\',
-                        b'/' => '/',
-                        b'b' => '\u{8}',
-                        b'f' => '\u{c}',
-                        b'n' => '\n',
-                        b'r' => '\r',
-                        b't' => '\t',
-                        b'u' => self.unicode()?,
-                        _ => return Err(BAD),
-                    });
-                }
-                _ => return Err(BAD),
-            }
+impl<'a> Container<'a> {
+    fn child(&self) -> Seed<'a> {
+        Seed {
+            depth: self.seed.depth + 1,
+            ..self.seed
         }
     }
+}
 
-    /// A `\u` escape, with the low half of a surrogate pair after a high
-    /// half. A lone surrogate is not a character.
-    fn unicode(&mut self) -> Checked<char> {
-        let high = self.hex4()?;
-        let code = match high {
-            0xd800..=0xdbff => {
-                self.eat(b'\\')?;
-                self.eat(b'u')?;
-                let low = self.hex4()?;
-                if !(0xdc00..=0xdfff).contains(&low) {
-                    return Err(BAD);
-                }
-                0x10000 + ((high - 0xd800) << 10) + (low - 0xdc00)
-            }
-            code => code,
-        };
-        char::from_u32(code).ok_or(BAD)
+impl<'de> Visitor<'de> for Container<'_> {
+    type Value = Json;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON array or object")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut items: A) -> Result<Json, A::Error> {
+        let mut values = Vec::new();
+        while let Some(value) = items.next_element_seed(self.child())? {
+            values.push(value);
+        }
+        Ok(Json::Array(values))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Json, A::Error> {
+        let mut pairs = Vec::new();
+        while let Some(key) = map.next_key::<String>()? {
+            self.seed.state.count(self.seed.limits)?;
+            let value = map.next_value_seed(self.child())?;
+            pairs.push((key, value));
+        }
+        Ok(Json::Object(pairs))
     }
 }

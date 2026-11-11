@@ -10,6 +10,7 @@ defmodule Helyx.Tool.SessionSend do
   @behaviour Helyx.Tool
 
   alias Helyx.{Coordinator, Session}
+  alias Helyx.Tool.Args
 
   @dispositions ~w(prompt steer follow_up)
 
@@ -31,10 +32,15 @@ defmodule Helyx.Tool.SessionSend do
       "type" => "object",
       "properties" => %{
         "id" => %{"type" => "string", "description" => "The id of the session"},
-        "text" => %{"type" => "string", "description" => "The text to send"},
+        "text" => %{
+          "type" => "string",
+          "maxLength" => Session.max_text_bytes(),
+          "description" => "The text to send"
+        },
         "disposition" => %{
           "type" => "string",
           "enum" => @dispositions,
+          "default" => "prompt",
           "description" => "prompt (the default), steer, or follow_up"
         }
       },
@@ -43,34 +49,20 @@ defmodule Helyx.Tool.SessionSend do
   end
 
   @impl true
-  def run(%{"id" => id, "text" => text} = args, _cwd) when is_binary(text) do
-    disposition = Map.get(args, "disposition", "prompt")
-
-    with :ok <- checked(id, text, disposition),
+  def run(args, _cwd) do
+    with {:ok, args} <- Args.check(args, parameters()),
+         :ok <- checked(args["id"]),
          {:ok, env} <- Coordinator.setup() do
-      send_text(env, id, text, disposition)
+      send_text(env, args["id"], args["text"], args["disposition"])
     else
       {:error, text} -> {:error, "session_send: " <> text}
     end
   end
 
-  def run(_args, _cwd), do: {:error, "session_send needs an id and a text, both strings"}
-
-  defp checked(id, text, disposition) do
-    cond do
-      not Coordinator.id?(id) ->
-        {:error, "the id must be a session id"}
-
-      disposition not in @dispositions ->
-        {:error, "the disposition must be prompt, steer, or follow_up"}
-
-      # The bound of any prompt, before the check moves the record.
-      byte_size(text) > Session.max_text_bytes() ->
-        {:error, Coordinator.text(:text_too_large)}
-
-      true ->
-        :ok
-    end
+  defp checked(id) do
+    if Coordinator.id?(id),
+      do: :ok,
+      else: {:error, "the id must be a session id"}
   end
 
   defp send_text(env, id, text, disposition) do

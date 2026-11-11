@@ -6,6 +6,7 @@ defmodule Helyx.Provider.ClaudeCode.SteerTest do
   import Helyx.Test.HarnessDriver
 
   alias Helyx.Provider.ClaudeCode
+  alias Helyx.Provider.ClaudeCode.Turn
 
   @moduletag :tmp_dir
 
@@ -23,7 +24,7 @@ defmodule Helyx.Provider.ClaudeCode.SteerTest do
     test "after the terminal answers :rejected and writes nothing", %{bin: bin, work: work} do
       turn(bin, 1, 1, reply("ok"))
 
-      state = running(work, &(&1.turn == nil))
+      state = running(work, &match?(%Turn{phase: :idle}, &1.turn))
       assert {from, [{:reply, from, :rejected}], _state} = steer(state)
       assert [%{"type" => "user"}] = stdin(bin, 1)
     end
@@ -77,12 +78,13 @@ defmodule Helyx.Provider.ClaudeCode.SteerTest do
       turn(bin, 1, 2, [result("a")])
 
       {_from, _actions, state} = steer(streaming(work))
-      state = settle(ClaudeCode, state, &(&1.turn.wait != nil))
+      state = settle(ClaudeCode, state, &match?(%Turn{phase: {:steer_wait, _ref}}, &1.turn))
+      assert {:steer_wait, ref} = state.turn.phase
       # The timer is armed for 5,000 ms; the test gives its message at once.
-      remaining = :erlang.read_timer(state.turn.wait)
+      remaining = :erlang.read_timer(ref)
       assert remaining <= 5_000 and remaining > 5_000 - @load_ms
-      :erlang.cancel_timer(state.turn.wait)
-      send(self(), {:timeout, state.turn.wait, :steer_wait})
+      :erlang.cancel_timer(ref)
+      send(self(), {:timeout, ref, :steer_wait})
       assert {[{:stop, :steer_not_started}], _state} = pump(ClaudeCode, state, [], &ended?/1)
     end
 
@@ -93,7 +95,7 @@ defmodule Helyx.Provider.ClaudeCode.SteerTest do
       script(bin, "ctl.1", [interrupted([], ["@U@"])])
 
       {_from, _actions, state} = steer(streaming(work))
-      state = settle(ClaudeCode, state, &(&1.turn.wait != nil))
+      state = settle(ClaudeCode, state, &match?(%Turn{phase: {:steer_wait, _ref}}, &1.turn))
       assert {:ok, _actions} = interrupt(state)
     end
   end

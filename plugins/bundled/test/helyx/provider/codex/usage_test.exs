@@ -36,8 +36,8 @@ defmodule Helyx.Provider.Codex.UsageTest do
   defp notify(items, last, window \\ 475_000),
     do: Items.usage(line(params(last, window)), "th", "tu", items)
 
-  defp done_usage(items) do
-    {:done, %{usage: usage}} = Items.terminal(%{"status" => "completed"}, items)
+  defp done_usage(items, compact? \\ false) do
+    {:done, %{usage: usage}} = Items.terminal(%{"status" => "completed"}, items, compact?)
     usage
   end
 
@@ -60,10 +60,10 @@ defmodule Helyx.Provider.Codex.UsageTest do
 
   test "a turn with no done keeps the sum and sets the flag; a done starts a new one" do
     items = notify(%Items{}, @call1)
-    kept = Items.next({:error, {:codex, "interrupted", ""}}, items)
+    kept = Items.next({:error, {:codex, "interrupted", ""}}, items, false)
     assert %Items{usage: usage, lost?: true} = kept
     assert usage == items.usage
-    assert Items.next({:done, %{}}, items) == %Items{}
+    assert Items.next({:done, %{}}, items, false) == %Items{}
   end
 
   # Prices in USD per million tokens; `info` as `Helyx.ModelInfo.lookup/4`
@@ -85,14 +85,14 @@ defmodule Helyx.Provider.Codex.UsageTest do
   # docs/features/harness-compaction.md: the compaction call goes into the
   # next `done`, once, priced as any call.
   test "a priced compaction call goes into the cost of the next done, once" do
-    compact = notify(%{@priced | compact?: true}, @call1)
-    assert done_usage(compact) == nil
+    compact = notify(@priced, @call1)
+    assert done_usage(compact, true) == nil
 
-    items = notify(Items.next({:done, %{}}, compact), @call2)
+    items = notify(Items.next({:done, %{}}, compact, true), @call2)
     assert %Helyx.Usage{cost_kind: :list, cost: cost} = done_usage(items)
     assert_in_delta cost, call_cost(@call1) + call_cost(@call2), 1.0e-12
 
-    after_done = Items.next({:done, %{}}, items)
+    after_done = Items.next({:done, %{}}, items, false)
     assert %Helyx.Usage{cost: cost} = after_done |> notify(@call2) |> done_usage()
     assert_in_delta cost, call_cost(@call2), 1.0e-12
   end
@@ -147,10 +147,12 @@ defmodule Helyx.Provider.Codex.UsageTest do
     lost = @priced |> notify(@call1) |> notify(bad) |> notify(@call2)
     assert %Helyx.Usage{cost: nil, output: 10} = done_usage(lost)
 
-    interrupted = Items.next({:error, {:codex, "interrupted", ""}}, notify(@priced, @call1))
+    interrupted =
+      Items.next({:error, {:codex, "interrupted", ""}}, notify(@priced, @call1), false)
+
     assert %Helyx.Usage{cost: nil} = interrupted |> notify(@call2) |> done_usage()
 
-    next = Items.next({:done, %{}}, lost)
+    next = Items.next({:done, %{}}, lost, false)
     assert %Helyx.Usage{cost: cost} = next |> notify(@call2) |> done_usage()
     assert_in_delta cost, call_cost(@call2), 1.0e-12
   end

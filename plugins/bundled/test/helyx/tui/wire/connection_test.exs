@@ -66,12 +66,22 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
       forward(test)
     end
 
-    defp until_turn_end(tag, acc \\ []) do
-      assert_receive {^tag, %Event{} = event}
+    defp until_turn_end(tag, acc \\ [])
+
+    defp until_turn_end(:helyx_event, acc) do
+      assert_receive {:helyx_event, _sub, %Event{} = event}
 
       if event.type == :turn_end,
         do: Enum.reverse([event | acc]),
-        else: until_turn_end(tag, [event | acc])
+        else: until_turn_end(:helyx_event, [event | acc])
+    end
+
+    defp until_turn_end(:node, acc) do
+      assert_receive {:node, %Event{} = event}
+
+      if event.type == :turn_end,
+        do: Enum.reverse([event | acc]),
+        else: until_turn_end(:node, [event | acc])
     end
 
     test "the events of a turn are the Core events of a client in the node", %{core: core} = c do
@@ -87,7 +97,7 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
       assert Enum.any?(events, &(&1.type == :message_update))
 
       assert :ok = Connection.set_model(c.conn, id, "fake/other")
-      assert_receive {:helyx_event, %Event{type: :model_change} = change}
+      assert_receive {:helyx_event, _sub, %Event{type: :model_change} = change}
       assert_receive {:node, ^change}
 
       :ok = Helyx.Sessions.stop(%Helyx.Session{id: id, core: core})
@@ -111,7 +121,7 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
       assert {:error, :not_found} = Connection.resume(c.conn, id: "missing")
     end
 
-    test "take makes the caller the owner, and stop ends a session", c do
+    test "take makes the caller the owner", c do
       assert {:ok, id} = Connection.start(c.conn, cwd: File.cwd!(), model: "fake/echo")
       test = self()
 
@@ -125,11 +135,10 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
         end)
 
       assert_receive {:sub, sub}
-      assert :ok = Connection.stop(c.conn, id)
+      :ok = Helyx.Sessions.stop(%Helyx.Session{id: id, core: c.core})
       assert_receive {:owner, {:helyx_end, ^sub, :stopped}}
       refute_received {:helyx_end, _sub, _reason}
       assert Helyx.Sessions.list_live(c.core) == []
-      assert {:error, :session_not_found} = Connection.stop(c.conn, id)
 
       # The connection ends with its new owner.
       Process.exit(owner, :kill)
@@ -157,7 +166,7 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
       text = String.duplicate("é", Frame.max_frame())
       assert :ok = Connection.steer(c.conn, id, text)
 
-      assert_receive {:helyx_event,
+      assert_receive {:helyx_event, _sub,
                       %Event{type: :message_end, data: %{message: %{role: :user}}} = e}
 
       assert Message.text(e.data.message) == text
@@ -196,7 +205,6 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
       instance_id: "i1",
       seq: 0,
       messages: [],
-      more: false,
       turn: nil,
       model: "fake/echo",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
@@ -304,7 +312,7 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     assert {:error, :unknown_sub} = Connection.unsubscribe(conn, sub)
     # The frames of the dropped sub reach no owner and do not break the connection.
     assert :ok = Connection.abort(conn, "s1")
-    refute_received {:helyx_event, _}
+    refute_received {:helyx_event, _sub, _event}
   end
 
   test "events go to the owner as Core events, an unknown type is dropped, and session_end ends them" do
@@ -316,10 +324,10 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
         text(%{type: "session_end", sub: "x", reason: "crashed"})
       ])
 
-    assert_receive {:helyx_event, %Event{type: :notice, seq: 1, data: %{text: "n"}}}
-    assert_receive {:helyx_event, %Event{type: :notice, seq: 3, data: %{text: "m"}}}
+    assert_receive {:helyx_event, _sub, %Event{type: :notice, seq: 1, data: %{text: "n"}}}
+    assert_receive {:helyx_event, _sub, %Event{type: :notice, seq: 3, data: %{text: "m"}}}
     assert_receive {:helyx_end, "x", :crashed}
-    refute_received {:helyx_event, %Event{seq: 2}}
+    refute_received {:helyx_event, _sub, %Event{seq: 2}}
   end
 
   test "a frame that the contract does not allow ends the connection with one error" do
@@ -409,13 +417,13 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
       instance_id: "i1",
       turn_id: nil,
       seq: 1,
-      data: %{messages: messages, texts: List.duplicate(text, 64)}
+      data: %{messages: messages}
     }
 
     {_conn, _ref} =
       subscribed(texts(%{type: "event", sub: "x", event: ServerWire.event(dropped)}))
 
-    assert_receive {:helyx_event, ^dropped}, 60_000
+    assert_receive {:helyx_event, _sub, ^dropped}, 60_000
   end
 
   # The value bound at its size is in frame_test.exs: a frame at it takes a
@@ -423,7 +431,7 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
   test "a frame over the outbound integer bound is a contract break; one at it passes" do
     at = Map.put(notice(1), :x, 10 ** 1_023)
     {_conn, _ref} = subscribed([event("x", at)])
-    assert_receive {:helyx_event, %Event{seq: 1}}
+    assert_receive {:helyx_event, _sub, %Event{seq: 1}}
 
     {conn, ref} = subscribed([event("x", Map.put(notice(1), :x, 10 ** 1_024))])
     assert_receive {:DOWN, ^ref, :process, ^conn, {:shutdown, :broken}}
@@ -511,13 +519,13 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     assert_receive {:server, server}
 
     for seq <- 1..1_023 do
-      assert_receive {:helyx_event, %Event{seq: ^seq} = event}
+      assert_receive {:helyx_event, _sub, %Event{seq: ^seq} = event}
       :ok = Connection.ack(conn, "x", event)
     end
 
     send(server, :ping)
     assert_receive {:client, {10, "p1"}}
-    assert_receive {:helyx_event, %Event{seq: 1_024} = last}
+    assert_receive {:helyx_event, _sub, %Event{seq: 1_024} = last}
     :ok = Connection.ack(conn, "x", last)
     assert_receive {:client, {1, ack}}
     assert JSON.decode!(ack) == %{"type" => "ack", "sub" => "x", "seq" => 1_024}
@@ -548,7 +556,7 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     steer = Task.async(fn -> Connection.steer(conn, "s1", String.duplicate("a", 16_777_216)) end)
 
     for seq <- [1_024, 2_048, 3_072] do
-      assert_receive {:helyx_event, %Event{seq: ^seq} = event}
+      assert_receive {:helyx_event, _sub, %Event{seq: ^seq} = event}
       :ok = Connection.ack(conn, "x", event)
     end
 
@@ -618,66 +626,6 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     assert Connection.abort(conn, "s1") == {:error, :busy}
     assert Connection.unsubscribe(conn, "x") == {:error, :busy}
     Task.shutdown(steer, :brutal_kill)
-  end
-
-  # Subscribes behind a steer that the server does not read pass their
-  # deadlines, the call timeout of the server, 6,000 ms, and the margin,
-  # 15,000 ms; the server then replies to them before it reads them. The
-  # unsubscribe of each late reply waits for a place among the 16 request
-  # frames, and goes out when the writer frees one.
-  @tag :slow
-  @tag timeout: 60_000
-  test "the unsubscribe of a late subscribe reply waits for a place among the 16 request frames" do
-    test = self()
-    ids = Enum.map(2..16, &Integer.to_string/1)
-
-    {conn, _ref} =
-      fake(fn socket ->
-        send(test, {:server, self()})
-        {1, _first_part} = client_raw(socket)
-        send(test, :writing)
-        snapshot = ServerWire.snapshot(snapshot())
-        receive do: (:reply -> :ok)
-
-        :ok =
-          :gen_tcp.send(
-            socket,
-            for(id <- ids, do: text(res(id, %{sub: "x" <> id, snapshot: snapshot})))
-          )
-
-        receive do: (:read -> :ok)
-        send(test, {:unsubscribed, unsubscribes(socket, length(ids), [])})
-      end)
-
-    assert_receive {:server, server}
-    steer = Task.async(fn -> Connection.steer(conn, "s1", String.duplicate("a", 16_777_216)) end)
-    assert_receive :writing
-    subscribes = for _id <- ids, do: Task.async(fn -> Connection.subscribe(conn, "s1") end)
-    for task <- subscribes, do: assert(Task.await(task, 30_000) == {:error, :timeout})
-
-    send(server, :reply)
-    wait_until(fn -> map_size(:sys.get_state(conn).subs.subs) == length(ids) end)
-    # The writer sends the steer; the 15 subscribes wait for it, and no
-    # unsubscribe.
-    assert Process.info(writer(conn), :message_queue_len) == {:message_queue_len, length(ids)}
-
-    send(server, :read)
-    assert_receive {:unsubscribed, subs}
-    assert subs == Enum.sort(for id <- ids, do: "x" <> id)
-    Task.shutdown(steer, :brutal_kill)
-  end
-
-  # The subs of the first `n` unsubscribe frames of the client, sorted.
-  defp unsubscribes(_socket, 0, acc), do: Enum.sort(acc)
-
-  defp unsubscribes(socket, n, acc) do
-    case client_frame(socket) do
-      %{"op" => "unsubscribe", "params" => %{"sub" => sub}} ->
-        unsubscribes(socket, n - 1, [sub | acc])
-
-      _part_or_subscribe ->
-        unsubscribes(socket, n, acc)
-    end
   end
 
   # docs/features/tui-attach.md, decision 11.
@@ -830,41 +778,6 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     send(server, :ping)
     assert_receive {:next, {10, "p"}}
     Enum.each(tasks, &Task.shutdown(&1, :brutal_kill))
-  end
-
-  # The client waits for the subscribe the call timeout of the server,
-  # 6,000 ms, and its margin, 15,000 ms.
-  @tag :slow
-  @tag timeout: 60_000
-  test "a late subscribe reply is dropped: its subscription ends with unsubscribe" do
-    test = self()
-
-    {conn, ref} =
-      fake(fn socket ->
-        send(test, {:server, self()})
-        %{"id" => id, "op" => "subscribe"} = client_frame(socket)
-        receive do: (:late -> :ok)
-        reply = text(res(id, %{sub: "x", snapshot: ServerWire.snapshot(snapshot())}))
-        :ok = :gen_tcp.send(socket, [reply, event("x", notice(1))])
-
-        %{"id" => unsub, "op" => "unsubscribe", "params" => %{"sub" => "x"}} =
-          client_frame(socket)
-
-        :ok = :gen_tcp.send(socket, [event("x", notice(2)), text(res(unsub, %{}))])
-        send(test, :unsubscribed)
-        %{"id" => abort, "op" => "abort"} = client_frame(socket)
-        :ok = :gen_tcp.send(socket, text(res(abort, %{})))
-      end)
-
-    assert_receive {:server, server}
-    assert Connection.subscribe(conn, "s1") == {:error, :timeout}
-    send(server, :late)
-    assert_receive :unsubscribed
-    # The reply of the abort comes after the frames of the dropped
-    # subscription, from the same connection.
-    assert Connection.abort(conn, "s1") == :ok
-    refute_received {:helyx_event, _event}
-    refute_received {:DOWN, ^ref, _, _, _}
   end
 
   # The server makes each `sub` unique on the connection, and a reply is

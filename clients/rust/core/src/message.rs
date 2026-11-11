@@ -1,4 +1,4 @@
-//! The data shapes of protocol 9 that the fold keeps: messages, blocks, asks,
+//! The data shapes of protocol 10 that the fold keeps: messages, blocks, asks,
 //! the queue, the snapshot. Each `parse` checks a value by the schema.
 
 use crate::check::{
@@ -52,7 +52,7 @@ const STOP_REASONS: &[&str] = &[
     "aborted",
     "error",
 ];
-const ORIGIN_KINDS: &[&str] = &["user", "background", "product", "hook", "unknown"];
+const ORIGIN_KINDS: &[&str] = &["user", "background", "product", "hook"];
 
 impl Message {
     pub fn parse(value: &Json) -> Checked<Message> {
@@ -213,7 +213,9 @@ pub struct Snapshot {
     pub instance_id: String,
     pub seq: Seq,
     pub messages: Vec<Message>,
-    pub more: bool,
+    /// The count of the older messages that `messages` leaves out; their
+    /// pages come from `history`.
+    pub older: u64,
     pub turn: Option<Turn>,
     pub model: String,
     pub queue: Queue,
@@ -261,7 +263,7 @@ impl Snapshot {
             instance_id: string(map, "instance_id", "snapshot")?.to_owned(),
             seq: seq_key(map, "seq", "snapshot seq")?,
             messages: list_of(map, "messages", "snapshot messages", Message::parse)?,
-            more: boolean(map, "more", "snapshot more")?,
+            older: int(field(map, "older", "snapshot older")?, "snapshot older")?,
             turn,
             model: string(map, "model", "snapshot model")?.to_owned(),
             queue: Queue::parse(field(map, "queue", "snapshot queue")?)?,

@@ -65,7 +65,7 @@ defmodule Helyx.Provider.LoopTest do
              {:tool_request, "call_1", "bash", %{"command" => "ls"}}
            ] = events(actions)
 
-    assert %{calls: [{%{id: "call_1"}, nil}], task: nil} = state
+    assert %{phase: {:results, "t1", [{%{id: "call_1"}, nil}]}} = state
   end
 
   test "every call goes out at once; the results join in call order, whatever order they come in" do
@@ -89,7 +89,7 @@ defmodule Helyx.Provider.LoopTest do
                {:need_context, "t1"}
              ]
 
-    assert %{calls: [], turn: "t1"} = state
+    assert %{phase: {:context, "t1"}} = state
   end
 
   test "a done at the token limit sends no tool request; each call gets an error result in call order" do
@@ -106,7 +106,7 @@ defmodule Helyx.Provider.LoopTest do
            ] = events(actions)
 
     assert List.last(actions) == {:need_context, "t1"}
-    assert %{calls: [], turn: "t1"} = state
+    assert %{phase: {:context, "t1"}} = state
   end
 
   test "a held steer continues the turn: the message ends, the steer goes out, then the context request" do
@@ -121,7 +121,7 @@ defmodule Helyx.Provider.LoopTest do
            ]
 
     assert List.last(actions) == {:need_context, "t1"}
-    assert %{turn: "t1", steers: []} = state
+    assert %{phase: {:context, "t1"}, steers: []} = state
   end
 
   # `docs/features/usage-and-limits.md`, "Per provider": a call that
@@ -202,7 +202,7 @@ defmodule Helyx.Provider.LoopTest do
     assert {:ok, [{:event, "t1", {:user_message, "s2"}}, {:need_context, "t1"}], state} =
              request({:context, "t1", {:ok, %Context{}}}, state)
 
-    assert %{task: nil, steers: []} = state
+    assert %{phase: {:context, "t1"}, steers: []} = state
   end
 
   test "a context error ends the turn" do
@@ -213,7 +213,7 @@ defmodule Helyx.Provider.LoopTest do
     assert {:ok, [{:event, "t1", {:error, :bad}}], state} =
              request({:context, "t1", {:error, :bad}}, state)
 
-    assert %{turn: nil} = state
+    assert %{phase: :idle} = state
   end
 
   test "a raising, throwing, or exiting stream gives task_exit; an empty one stream_ended" do
@@ -222,7 +222,7 @@ defmodule Helyx.Provider.LoopTest do
     errors =
       for model <- ["crash", "throw", "exit", "exit_normal", "empty"] do
         {actions, state} = pump(turn(model))
-        assert %{turn: nil, task: nil} = state
+        assert %{phase: :idle} = state
         {:error, error} = List.last(events(actions))
         error
       end
@@ -238,11 +238,11 @@ defmodule Helyx.Provider.LoopTest do
 
   test "the interrupt replies only after the model Task is dead; a late message of it changes nothing" do
     state = turn("hang")
-    %Task{pid: pid, ref: ref} = state.task
+    {:calling, "t1", %Task{pid: pid, ref: ref}, false, []} = state.phase
     {:ok, [], state} = request({:interrupt, "t1"}, state)
 
     refute Process.alive?(pid)
-    assert %{turn: nil, task: nil} = state
+    assert %{phase: :idle} = state
     assert {:ok, [], ^state} = Loop.info({Loop, pid, {:text_delta, "late"}}, state)
     assert {:ok, [], ^state} = Loop.info({ref, done(:end_turn)}, state)
   end
@@ -260,7 +260,7 @@ defmodule Helyx.Provider.LoopTest do
       end)
 
     {:ok, [], state} = request({:interrupt, "t1"}, state)
-    assert %{turn: nil, calls: [], task: nil} = state
+    assert %{phase: :idle} = state
     refute_received _
   end
 
@@ -269,7 +269,8 @@ defmodule Helyx.Provider.LoopTest do
     for _ <- 1..10_000, do: send(self(), :filler)
     state = turn("blocks")
     # The fillers stay until the model call ends.
-    ref = Process.monitor(state.task.pid)
+    {:calling, "t1", %Task{pid: pid}, _, _} = state.phase
+    ref = Process.monitor(pid)
     assert_receive {:DOWN, ^ref, :process, _, _}
     {actions, _state} = pump(state)
 
@@ -284,7 +285,8 @@ defmodule Helyx.Provider.LoopTest do
       assert elem(event, 0) in [:message_end, :tool_call], model
       # A repeated call id names the call with no raw argument text.
       if model == "repeat_id", do: assert({:tool_call, %{arguments: %{}}} = event)
-      Task.shutdown(state.task, :brutal_kill)
+      {:calling, "t1", task, _, _} = state.phase
+      Task.shutdown(task, :brutal_kill)
     end
   end
 

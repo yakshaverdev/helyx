@@ -47,7 +47,7 @@ fn id_of(frame: &Json) -> &str {
 
 fn snapshot(seq: u64) -> String {
     format!(
-        r#"{{"instance_id":"i1","seq":{seq},"messages":[{{"id":"u1","role":"user","content":[{{"type":"text","text":"hi"}}]}}],"more":false,"turn":null,"model":"fake/echo","persisting":true,"context":null,"asks":[],"ui_blocks":[],"activated":[],"queue":{{"steers":0,"follow_ups":0,"running":0,"held":0,"waiting":0}},"usage":{{"input":0,"output":0,"cache_read":0,"cache_write":0,"cost":null,"unknown":false,"list":false}}}}"#
+        r#"{{"older":0,"instance_id":"i1","seq":{seq},"messages":[{{"id":"u1","role":"user","content":[{{"type":"text","text":"hi"}}]}}],"turn":null,"model":"fake/echo","persisting":true,"context":null,"asks":[],"ui_blocks":[],"activated":[],"queue":{{"steers":0,"follow_ups":0,"running":0,"held":0,"waiting":0}},"usage":{{"input":0,"output":0,"cache_read":0,"cache_write":0,"cost":null,"unknown":false,"list":false}}}}"#
     )
 }
 
@@ -161,12 +161,12 @@ fn refused_keeps_its_line() {
         challenge(&mut ws);
         next_text(&mut ws);
         ws.send(Message::text(
-            r#"{"type":"refused","code":"protocol","server_protocol":10}"#,
+            r#"{"type":"refused","code":"protocol","server_protocol":11}"#,
         ))
         .unwrap();
         let _ = ws.read();
     });
-    assert_eq!(line, "the server speaks protocol 10: update the app");
+    assert_eq!(line, "the server speaks protocol 11: update the app");
 }
 
 #[test]

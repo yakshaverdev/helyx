@@ -111,7 +111,7 @@ defmodule Helyx.Tool.BashTest do
   test "missing arguments are an error result", %{run: run} do
     result = run.(%{})
     assert result.is_error
-    assert Helyx.Message.text(result) == "bash needs a command"
+    assert Helyx.Message.text(result) == "command is required"
   end
 
   test "a command with a NUL byte is an error result", %{tmp_dir: dir, run: run} do
@@ -453,12 +453,18 @@ defmodule Helyx.Tool.BashTest do
          %{tmp_dir: dir} do
       ran = Path.join(dir, "ran")
 
-      for workdir <- [1, true, ["sub"], %{}, "sub" <> <<0>>] do
+      for workdir <- [1, true, ["sub"], %{}] do
         assert {:error, text} =
                  Helyx.Tool.Bash.run(%{"command" => "touch #{ran}", "workdir" => workdir}, dir)
 
-        assert text == "workdir must be a string with no NUL byte", inspect(workdir)
+        assert text == "workdir must be a string", inspect(workdir)
       end
+
+      assert {:error, "workdir must be a string with no NUL byte"} =
+               Helyx.Tool.Bash.run(
+                 %{"command" => "touch #{ran}", "workdir" => "sub" <> <<0>>},
+                 dir
+               )
 
       refute File.exists?(ran)
     end
@@ -535,8 +541,10 @@ defmodule Helyx.Tool.BashTest do
       args = %{"command" => "touch '#{ran}'", "background" => true}
 
       for timeout <- [0, 86_401, 5.0, "5"] do
-        assert {:error, "a background timeout must be an integer from 1 to 86400 (seconds)"} =
+        assert {:error, text} =
                  Bash.run(Map.put(args, "timeout", timeout), dir)
+
+        assert text =~ "timeout must be an integer"
       end
 
       for timeout <- [1, 600, 601, 86_399, 86_400, nil] do

@@ -15,6 +15,8 @@ defmodule Helyx.Tool.Agent do
 
   @behaviour Helyx.Tool
 
+  alias Helyx.Tool.Args
+
   @impl true
   def name, do: "agent"
 
@@ -42,28 +44,20 @@ defmodule Helyx.Tool.Agent do
   end
 
   @impl true
-  def run(%{"description" => description, "prompt" => prompt}, cwd)
-      when is_binary(description) and is_binary(prompt) do
-    context = Helyx.Tool.context()
+  def run(args, cwd) do
+    with {:ok, args} <- Args.check(args, parameters()) do
+      context = Helyx.Tool.context()
 
-    opts = [
-      model: context.model,
-      cwd: cwd,
-      provider_opts: context.provider_opts,
-      model_context: context.model_context,
-      parent: %{session_id: context.session_id, call_id: context.call_id},
       # No user watches a child, so it gets no question tool either; it
       # opens no tool source, so `tool_search` would find nothing.
-      tools: context.tools -- [name(), "question", "tool_search"]
-    ]
+      tools = context.tools -- [name(), "question", "tool_search"]
 
-    case Helyx.Subagent.run(context.core, context.session_id, opts, prompt) do
-      {:error, {:start, reason}} -> {:error, start_error(reason)}
-      result -> result
+      case Helyx.Subagent.run(context, cwd, tools, args["prompt"]) do
+        {:error, {:start, reason}} -> {:error, start_error(reason)}
+        result -> result
+      end
     end
   end
-
-  def run(_args, _cwd), do: {:error, "agent needs a description and a prompt, both strings"}
 
   # The child stays held while its owner reports no stop (`Helyx.Subagent`).
   @impl true

@@ -36,7 +36,14 @@ defmodule Helyx.Session.SweepTest do
       assert_receive {:trace, ^hands, :receive, {:"$gen_call", {task, _}, {:hold, _}}}
       assert_receive {:trace, ^hands, :receive, {:"$gen_call", {^task, _}, {:hold, _}}}
       :erlang.trace(hands, false, [:receive])
-      assert [{^task, [_, _]}] = Map.to_list(:sys.get_state(hands).held)
+
+      assert [[_, _]] =
+               for(
+                 {_ref, entry} <- :sys.get_state(hands).tasks,
+                 entry.task.pid == task,
+                 do: entry.handles
+               )
+
       task
     end
 
@@ -122,7 +129,11 @@ defmodule Helyx.Session.SweepTest do
 
       # The texts go back to the client in the wait, with no turn id.
       assert_receive {:helyx_event,
-                      %Event{type: :queue_dropped, turn_id: nil, data: %{texts: ["dropped"]}}}
+                      %Event{
+                        type: :queue_dropped,
+                        turn_id: nil,
+                        data: %{messages: [%{content: [%{text: "dropped"}]}]}
+                      }}
 
       assert_receive {:helyx_event,
                       %Event{type: :queue_update, data: %{steers: 0, follow_ups: 0}}}

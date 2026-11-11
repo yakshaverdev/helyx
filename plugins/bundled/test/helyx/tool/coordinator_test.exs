@@ -159,7 +159,7 @@ defmodule Helyx.Tool.CoordinatorTest do
       assert Enum.at(texts, 1) =~ "the folder must be the absolute path"
       assert Enum.at(texts, 2) =~ "the folder must be the absolute path"
       assert Enum.at(texts, 3) =~ "the mode broken is not set up right"
-      assert Enum.at(texts, 4) =~ "needs a mode, a folder, and a prompt"
+      assert Enum.at(texts, 4) =~ "folder must be a string"
       assert length(Helyx.Sessions.list_live(context.core)) == 1
     end
 
@@ -249,7 +249,7 @@ defmodule Helyx.Tool.CoordinatorTest do
       [other, missing, bad] = coordinate(context, context.bob, calls)
       assert Message.text(other) == Message.text(missing)
       assert Message.text(other) =~ "no such session runs"
-      assert Message.text(bad) =~ "the disposition must be"
+      assert Message.text(bad) =~ "disposition must be one of"
     end
 
     test "a text over the bound of a prompt gives an error", context do
@@ -261,7 +261,18 @@ defmodule Helyx.Tool.CoordinatorTest do
           call("session_send", %{"id" => session.id, "text" => text})
         ])
 
-      assert Message.text(result) =~ "the text is too large"
+      assert Message.text(result) =~ "text must be a string of at most"
+    end
+
+    test "a null disposition is an absent one, so it is the default", context do
+      session = echo_session(context, context.ann)
+
+      [sent] =
+        coordinate(context, context.ann, [
+          call("session_send", %{"id" => session.id, "text" => "x", "disposition" => nil})
+        ])
+
+      assert Message.text(sent) == "sent to session #{session.id} as prompt"
     end
   end
 
@@ -283,6 +294,17 @@ defmodule Helyx.Tool.CoordinatorTest do
       assert Message.text(other) == Message.text(missing)
     end
 
+    test "a null question is an absent one, so no child reads the transcript", context do
+      session = echo_session(context, context.ann)
+
+      [read] =
+        coordinate(context, context.ann, [
+          call("session_read", %{"id" => session.id, "question" => nil})
+        ])
+
+      assert Message.text(read) =~ "session #{session.id}, no turn runs"
+    end
+
     test "with a question, a child reads the transcript and gives its answer", context do
       session = echo_session(context, context.ann)
       question = call("session_read", %{"id" => session.id, "question" => "what was said?"})
@@ -293,7 +315,7 @@ defmodule Helyx.Tool.CoordinatorTest do
 
     test "the render keeps the newest messages within the budget" do
       messages = for n <- 1..50, do: Message.user("message #{n} " <> String.duplicate("é", 100))
-      snapshot = %{messages: messages, more: false, turn: nil}
+      snapshot = %{messages: messages, older: 0, turn: nil}
 
       for budget <- [300, 1_000, 5_000] do
         text = Helyx.Tool.SessionRead.render("id", snapshot, budget)
@@ -352,6 +374,17 @@ defmodule Helyx.Tool.CoordinatorTest do
       assert System.monotonic_time(:millisecond) - started >= 1_000
     end
 
+    test "a null deadline is an absent one, so it is the default", context do
+      idle = echo_session(context, context.ann)
+
+      [wait] =
+        coordinate(context, context.ann, [
+          call("session_wait", %{"ids" => [idle.id], "deadline" => nil})
+        ])
+
+      assert Message.text(wait) == "session #{idle.id}: no turn runs"
+    end
+
     test "bad ids or a bad deadline give an error; another user gets the answer of a missing one",
          context do
       session = echo_session(context, context.ann)
@@ -368,8 +401,8 @@ defmodule Helyx.Tool.CoordinatorTest do
       texts = context |> coordinate(context.bob, calls) |> Enum.map(&Message.text/1)
       assert Enum.at(texts, 0) =~ "ids must be a list of 1 to 64"
       assert Enum.at(texts, 1) =~ "ids must be a list of 1 to 64"
-      assert Enum.at(texts, 2) =~ "the deadline must be"
-      assert Enum.at(texts, 3) =~ "the deadline must be"
+      assert Enum.at(texts, 2) =~ "deadline must be"
+      assert Enum.at(texts, 3) =~ "deadline must be"
 
       assert String.replace(Enum.at(texts, 4), session.id, "X") ==
                String.replace(Enum.at(texts, 5), @missing, "X")

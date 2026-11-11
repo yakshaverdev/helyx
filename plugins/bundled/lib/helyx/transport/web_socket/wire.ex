@@ -16,10 +16,6 @@ defmodule Helyx.Transport.WebSocket.Wire do
     }
   end
 
-  # The wire leaves out the texts of these two events: the messages carry them.
-  defp data(:queue_dropped, data), do: value(Map.delete(data, :texts))
-  defp data(:steer_unconfirmed, data), do: value(Map.delete(data, :text))
-
   defp data(:message_end, %{error: :aborted} = data),
     do: value(%{data | error: %{kind: :aborted}})
 

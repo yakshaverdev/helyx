@@ -97,7 +97,10 @@ defmodule Helyx.Provider.Codex.Program do
     end
   end
 
-  defp failed(state, reason), do: reply(%{state | from: nil}, state.from, {:error, reason})
+  defp failed(state, reason) do
+    from = State.from(state)
+    reply(State.clear_from(state), from, {:error, reason})
+  end
 
   def open_thread(%State{resume: nil, tools: %Tools{specs: []}} = state),
     do: rpc(state, "thread/start", params(state))

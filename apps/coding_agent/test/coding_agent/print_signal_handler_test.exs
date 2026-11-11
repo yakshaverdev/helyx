@@ -9,7 +9,7 @@ defmodule CodingAgent.Print.SignalHandlerTest do
     {:ok, state} = Signal.init({halt, nil})
 
     assert {:ok, stopped} = Signal.handle_event(:sigterm, state)
-    assert stopped.stopping == 143
+    assert stopped.phase == {:stopping, 143}
     assert_receive {:halt, 143}
 
     assert {:ok, ^stopped} = Signal.handle_event(:sigquit, stopped)
@@ -22,7 +22,6 @@ defmodule CodingAgent.Print.SignalHandlerTest do
   test "a run that finished first owns the status" do
     {:ok, state} = Signal.init({fn _status -> :ok end, nil})
     assert {:ok, :ok, done} = Signal.handle_call(:finish, state)
-    assert done.done
-    assert done.stopping == nil
+    assert done.phase == :finished
   end
 end

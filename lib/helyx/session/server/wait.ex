@@ -10,9 +10,9 @@ defmodule Helyx.Session.Server.Wait do
   # `:provider_down`. Each part is bounded: the hands by their release
   # deadlines, a reply by its armed kill. `callers` are the abort callers,
   # who get their reply at the end. `turn` is the id of the turn that the
-  # wait ended, or nil, and `turn_end` the data of its `turn_end` while that
-  # event waits for the hands, with `started_ms` of that turn and the UI
-  # blocks that the turn still shows (`ui_blocks`, as in
+  # wait ended, or nil, and `running` holds, while its `turn_end` waits for
+  # the hands, the `data` of that event, the `started_ms` of the turn and the
+  # UI blocks that the turn still shows (`ui_blocks`, as in
   # `Helyx.Session.Turn`), which its `turn_end` drops. `settle` is the
   # `before_settle` chain, due or running, or `:revoke`, the revoke that an
   # abort asked for while the chain waits behind a pending hands request,
@@ -32,17 +32,21 @@ defmodule Helyx.Session.Server.Wait do
   alias Helyx.Session.Server.{Approvals, Asks, Flow, Records, Settle, State, Steering}
   alias Helyx.Session.Server.{Summary, ToolRuns}
 
-  defstruct [:hands, :reply, :turn, :turn_end, :started_ms, :settle, callers: [], ui_blocks: []]
+  defstruct [:hands, :reply, :turn, :running, :settle, callers: []]
 
   @type t :: %__MODULE__{
           hands: :gen_server.request_id() | nil,
           reply: reference() | nil,
           turn: String.t() | nil,
-          turn_end: map() | nil,
-          started_ms: integer() | nil,
+          running:
+            %{
+              data: map(),
+              started_ms: integer(),
+              ui_blocks: [Helyx.Session.Server.UIBlocks.entry()]
+            }
+            | nil,
           settle: {:due, Helyx.Hook.settle(), map()} | :revoke | reference() | nil,
-          callers: [GenServer.from()],
-          ui_blocks: [Helyx.Session.Server.UIBlocks.entry()]
+          callers: [GenServer.from()]
         }
 
   # The end of the turn, at `outcome`: `{:done, stop_reason, usage}`,
@@ -106,16 +110,12 @@ defmodule Helyx.Session.Server.Wait do
       end
 
     wait = if outcome == :aborted, do: interrupt(state, phase, provider), else: %__MODULE__{}
-    {turn_end, blocks} = if running?, do: {data, state.phase.turn.ui_blocks}, else: {nil, []}
 
-    wait = %{
-      wait
-      | hands: hands,
-        turn: turn.id,
-        turn_end: turn_end,
-        started_ms: turn.started_ms,
-        ui_blocks: blocks
-    }
+    running =
+      if running?,
+        do: %{data: data, started_ms: turn.started_ms, ui_blocks: state.phase.turn.ui_blocks}
+
+    wait = %{wait | hands: hands, turn: turn.id, running: running}
 
     Settle.finish(%{state | phase: %Flow.Waiting{wait: wait, provider: provider}}, turn, outcome)
   end
@@ -124,7 +124,7 @@ defmodule Helyx.Session.Server.Wait do
   # turn still runs for a client (#595). Its records are closed, so it has
   # no partial message. No other phase has a turn.
   @spec snapshot_turn(:idle | t()) :: Helyx.Session.Snapshot.turn() | nil
-  def snapshot_turn(%__MODULE__{turn: id, turn_end: data, started_ms: started}) when data != nil,
+  def snapshot_turn(%__MODULE__{turn: id, running: %{started_ms: started}}),
     do: %{id: id, partial: nil, elapsed_ms: Turn.elapsed_ms(started)}
 
   def snapshot_turn(_phase), do: nil
@@ -169,9 +169,9 @@ defmodule Helyx.Session.Server.Wait do
         message
       ) do
     {:reply, result} = :gen_server.check_response(message, request)
-    state = if wait.turn_end, do: emit(state, wait.turn, :turn_end, wait.turn_end), else: state
+    state = if wait.running, do: emit(state, wait.turn, :turn_end, wait.running.data), else: state
     state = revoke(result, state)
-    %{cleanup_notice(result, state) | phase: %{phase | wait: %{wait | hands: nil, turn_end: nil}}}
+    %{cleanup_notice(result, state) | phase: %{phase | wait: %{wait | hands: nil, running: nil}}}
   end
 
   # The runs that the abort or the failure revoked delivered no end, so the

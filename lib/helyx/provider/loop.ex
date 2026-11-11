@@ -48,12 +48,9 @@ defmodule Helyx.Provider.Loop do
   provider process has `cost: nil`. A stream error, a stream that ends
   with no terminal (`:stream_ended`), a model Task that raises, throws, or
   exits (`{:task_exit, reason}`), and a context error end the turn; the
-  provider process stays. A model call that fails with
-  `{:context_overflow, detail}` before any content asks once in a turn for
-  a fresh context, `{:need_context, turn_id, :overflow}`, and calls the
-  model again with it (`docs/features/summary-compaction.md`). An exit
-  signal that kills the model Task, such as one from a process linked to
-  it, ends the provider process too, through the link (L4).
+  provider process stays. An exit signal that kills the model Task, such
+  as one from a process linked to it, ends the provider process too,
+  through the link (L4).
 
   A steer of the live turn is held for the next model call; after the
   terminal it gets `:rejected`. A steer held while a context is built goes
@@ -70,26 +67,25 @@ defmodule Helyx.Provider.Loop do
   @callback stream(model :: String.t(), context :: Helyx.Context.t(), opts :: keyword()) ::
               {:ok, Enumerable.t()} | {:error, term()}
 
-  # `turn` is the live turn id or nil; `task` the model Task; `calls` the
-  # calls of the message with no result in the transcript yet, in call
-  # order, each `{call, result}` with the result nil until it comes; the
-  # call id is the request id. `steers` the ids of the held steers.
+  # `phase` is the state of one model call at a time: `:idle` with no
+  # turn; `{:calling, turn, task, content?, calls}` with the model Task in
+  # flight, `content?` set by a text, a thinking text, or a call; `{:results,
+  # turn, calls}` while the calls wait for their results; and `{:context,
+  # turn}` while the session builds a fresh context. `calls` are the calls
+  # of the message with no result in the transcript yet, in call order, each
+  # `{call, result}` with the result nil until it comes; the call id is the
+  # request id. `steers` the ids of the held steers of the live turn.
   # `usage` is the usage of a call that sent no `message_end`, or nil; it
   # outlives the turn. `lost?` is the flag: a call since the last usage
-  # ended with no usage, so the next usage has no cost. `overflowed?`: the
-  # turn asked for a context after an overflow.
+  # ended with no usage, so the next usage has no cost.
   @enforce_keys [:provider, :model, :opts]
   defstruct [
     :provider,
     :model,
     :opts,
-    :turn,
-    :task,
     :usage,
+    phase: :idle,
     lost?: false,
-    overflowed?: false,
-    content?: false,
-    calls: [],
     steers: []
   ]
 
@@ -128,42 +124,54 @@ defmodule Helyx.Provider.Loop do
   @doc "The `request/3` callback of `Helyx.Provider`."
   @spec request(Helyx.Provider.request(), Helyx.Provider.from(), %__MODULE__{}) ::
           {:ok, [Helyx.Provider.action()], %__MODULE__{}}
-  def request({:turn, turn_id, context}, from, state) do
-    state = %{end_turn(stop_task(state)) | turn: turn_id}
-    {:ok, [{:reply, from, :ok}], model_call(state, context)}
+  # A turn starts in `:idle`, or replaces a turn that the session ended
+  # while it waited for a context (e.g. `:context_timeout`).
+  def request({:turn, turn_id, context}, from, %{phase: :idle} = state),
+    do: {:ok, [{:reply, from, :ok}], model_call(%{state | steers: []}, context, turn_id)}
+
+  def request({:turn, turn_id, context}, from, %{phase: {:context, _}} = state),
+    do: {:ok, [{:reply, from, :ok}], model_call(%{state | steers: []}, context, turn_id)}
+
+  # A steer of the live turn is held for the next model call.
+  def request({:steer, turn_id, steer_id, _text}, from, state) do
+    if live?(state.phase, turn_id),
+      do: {:ok, [{:reply, from, :ok}], %{state | steers: state.steers ++ [steer_id]}},
+      else: {:ok, [{:reply, from, :rejected}], state}
   end
 
-  def request({:steer, turn_id, steer_id, _text}, from, %{turn: turn_id} = state),
-    do: {:ok, [{:reply, from, :ok}], %{state | steers: state.steers ++ [steer_id]}}
-
-  def request({:steer, _, _, _}, from, state), do: {:ok, [{:reply, from, :rejected}], state}
-
   # The `:ok` goes out only after the model Task is dead (L3).
-  def request({:interrupt, turn_id}, from, %{turn: turn_id} = state),
-    do: {:ok, [{:reply, from, :ok}], end_turn(stop_task(state))}
+  def request({:interrupt, turn_id}, from, state) do
+    if live?(state.phase, turn_id),
+      do: {:ok, [{:reply, from, :ok}], stop(state)},
+      else: {:ok, [{:reply, from, :ok}], state}
+  end
 
   # The session sends one result for each request. The `aborted` results
   # that it sends at an interrupt end the calls too; the events after them
   # are of a turn that the session ended, and it drops them.
-  def request({:tool_result, turn_id, id, result}, from, %{turn: turn_id} = state) do
+  def request(
+        {:tool_result, turn_id, id, result},
+        from,
+        %{phase: {:results, turn_id, calls}} = state
+      ) do
     calls =
-      Enum.map(state.calls, fn
+      Enum.map(calls, fn
         {%Message.ToolCall{id: ^id} = call, nil} -> {call, result}
         entry -> entry
       end)
 
-    send_ready([{:reply, from, :ok}], %{state | calls: calls})
+    send_ready([{:reply, from, :ok}], turn_id, calls, state)
   end
 
-  def request({:context, turn_id, result}, from, %{turn: turn_id} = state) do
+  def request({:context, turn_id, result}, from, %{phase: {:context, turn_id}} = state) do
     case result do
       # A steer held while the context was built goes out first, and the
       # model gets a context with it (C2).
       {:ok, _context} when state.steers != [] ->
-        request_context([{:reply, from, :ok}], state)
+        request_context([{:reply, from, :ok}], turn_id, state)
 
       {:ok, context} ->
-        {:ok, [{:reply, from, :ok}], model_call(state, context)}
+        {:ok, [{:reply, from, :ok}], model_call(state, context, turn_id)}
 
       {:error, _} = error ->
         {:ok, [{:reply, from, :ok}, {:event, turn_id, error}], end_turn(state)}
@@ -175,22 +183,44 @@ defmodule Helyx.Provider.Loop do
   def request({:compact, _turn_id, _instructions}, from, state),
     do: {:ok, [{:reply, from, :unsupported}], state}
 
-  # A close, an idle close, and a request of a turn that is not live.
-  def request(_request, from, state), do: {:ok, [{:reply, from, :ok}], state}
+  # An answer that is still in flight when the session ends the turn: the
+  # `aborted` results of an interrupt, and the context answer.
+  def request({:tool_result, _turn_id, _id, _result}, from, %{phase: :idle} = state),
+    do: {:ok, [{:reply, from, :ok}], state}
+
+  def request({:context, _turn_id, _result}, from, %{phase: :idle} = state),
+    do: {:ok, [{:reply, from, :ok}], state}
+
+  # A close, an idle close, and an approval that a model provider never
+  # asks for.
+  def request({:approval, _turn_id, _approval_id, _answer}, from, state),
+    do: {:ok, [{:reply, from, :ok}], state}
+
+  def request(request, from, state) when request in [:close, :idle_close],
+    do: {:ok, [{:reply, from, :ok}], state}
+
+  defp live?({:calling, turn, _, _, _}, turn), do: true
+  defp live?({:results, turn, _}, turn), do: true
+  defp live?({:context, turn}, turn), do: true
+  defp live?(_phase, _turn), do: false
 
   @doc "The `info/2` callback of `Helyx.Provider`."
   @spec info(term(), %__MODULE__{}) :: {:ok, [Helyx.Provider.action()], %__MODULE__{}}
-  def info({__MODULE__, pid, event}, %{task: %Task{pid: pid}} = state), do: event(event, state)
+  def info({__MODULE__, pid, event}, %{phase: {:calling, _, %Task{pid: pid}, _, _}} = state),
+    do: event(event, state)
 
-  def info({ref, result}, %{task: %Task{ref: ref}} = state) do
+  def info({ref, result}, %{phase: {:calling, _, %Task{ref: ref}, _, _}} = state) do
     Process.demonitor(ref, [:flush])
-    terminal(result, %{state | task: nil})
+    terminal(result, state)
   end
 
   # A signal that ends the Task with `:normal` passes the catch of `run/5`
   # and the link.
-  def info({:DOWN, ref, :process, _, reason}, %{task: %Task{ref: ref}} = state),
-    do: terminal({:failed, reason}, %{state | task: nil})
+  def info(
+        {:DOWN, ref, :process, _, reason},
+        %{phase: {:calling, _, %Task{ref: ref}, _, _}} = state
+      ),
+      do: terminal({:failed, reason}, state)
 
   # A message of an old model Task, or any other message.
   def info(_message, state), do: {:ok, [], state}
@@ -199,20 +229,24 @@ defmodule Helyx.Provider.Loop do
 
   # Core checks the payload. A `{:tool_call, term}` that is not a
   # `%Message.ToolCall{}` is a contract break, as the moduledoc says.
-  defp event({tag, _} = event, state) when tag in [:text_delta, :thinking_delta],
-    do: {:ok, [{:event, state.turn, event}], %{state | content?: true}}
+  defp event(
+         {tag, _} = event,
+         %{phase: {:calling, turn, task, _, calls}} = state
+       )
+       when tag in [:text_delta, :thinking_delta],
+       do: {:ok, [{:event, turn, event}], %{state | phase: {:calling, turn, task, true, calls}}}
 
   defp event(event, _state), do: bad(event)
 
   # A call id names its result, so a call id that repeats in one message
   # breaks the contract, whether the session answered the first call or not.
   # The reason names the call with `%{}`, as the errors of Core do.
-  defp call(call, state) do
-    if Enum.any?(state.calls, fn {%{id: id}, _} -> id == call.id end),
+  defp call(call, %{phase: {:calling, turn, task, _, calls}} = state) do
+    if Enum.any?(calls, fn {%{id: id}, _} -> id == call.id end),
       do: bad({:tool_call, %{call | arguments: %{}}})
 
-    state = %{state | calls: state.calls ++ [{call, nil}], content?: true}
-    {:ok, [{:event, state.turn, {:tool_call, call}}], state}
+    phase = {:calling, turn, task, true, calls ++ [{call, nil}]}
+    {:ok, [{:event, turn, {:tool_call, call}}], %{state | phase: phase}}
   end
 
   # The process ends as it ends at a malformed event of the provider.
@@ -227,41 +261,36 @@ defmodule Helyx.Provider.Loop do
 
   defp terminal({:failed, reason}, state), do: terminal({:error, {:task_exit, reason}}, state)
   defp terminal(:stream_ended, state), do: terminal({:error, :stream_ended}, state)
-
-  # One retry in a turn, with a fresh context, when the call sent nothing.
-  defp terminal(
-         {:error, {:context_overflow, _detail}},
-         %{overflowed?: false, content?: false} = s
-       ),
-       do: {:ok, [{:need_context, s.turn, :overflow}], %{s | overflowed?: true, lost?: true}}
-
   defp terminal({:error, _} = error, state), do: finish(error, %{state | lost?: true})
   # A malformed done, which Core rejects.
   defp terminal({:done, _} = done, state), do: finish(done, state)
 
   # A call that finished with a valid usage. The kept usage joins it.
-  defp called(%{stop_reason: stop, usage: usage} = fields, state) do
+  defp called(
+         %{stop_reason: stop, usage: usage} = fields,
+         %{phase: {:calling, turn, _, content?, calls}} = state
+       ) do
     usage = state.usage |> join(usage) |> lose(state.lost?)
     done = {:done, %{fields | usage: usage}}
-    message_end = {:event, state.turn, {:message_end, stop, usage}}
+    message_end = {:event, turn, {:message_end, stop, usage}}
     state = %{state | usage: nil, lost?: state.lost? and usage == nil}
 
     # A call sets `content?`. No call of a reply cut at the token limit
     # runs (#494).
     cond do
-      state.calls == [] and state.steers == [] ->
+      calls == [] and state.steers == [] ->
         finish(done, state)
 
-      stop == :max_tokens and state.calls != [] ->
+      stop == :max_tokens and calls != [] ->
         cut = {:error, Stream.not_run("the reply was cut at the token limit")}
-        calls = for {call, _} <- state.calls, do: {call, cut}
-        send_ready([message_end], %{state | calls: calls})
+        calls = for {call, _} <- calls, do: {call, cut}
+        send_ready([message_end], turn, calls, state)
 
-      state.content? ->
-        dispatch([message_end], state)
+      content? ->
+        dispatch([message_end], turn, calls, state)
 
       true ->
-        dispatch([], %{state | usage: usage})
+        dispatch([], turn, calls, %{state | usage: usage})
     end
   end
 
@@ -272,58 +301,59 @@ defmodule Helyx.Provider.Loop do
   defp lose(%Helyx.Usage{} = usage, true), do: Helyx.Usage.unpriced(usage)
   defp lose(usage, _lost?), do: usage
 
-  defp finish(terminal, state), do: {:ok, [{:event, state.turn, terminal}], end_turn(state)}
+  defp finish(terminal, %{phase: {:calling, turn, _, _, _}} = state),
+    do: {:ok, [{:event, turn, terminal}], end_turn(state)}
 
   # Every call of the message goes to the session at once, in call order.
-  defp dispatch(actions, state) do
+  defp dispatch(actions, turn, calls, state) do
     requests =
-      for {call, _} <- state.calls,
-          do: {:event, state.turn, {:tool_request, call.id, call.name, call.arguments}}
+      for {call, _} <- calls,
+          do: {:event, turn, {:tool_request, call.id, call.name, call.arguments}}
 
-    send_ready(actions ++ requests, state)
+    send_ready(actions ++ requests, turn, calls, state)
   end
 
   # The results that every call before them has, in call order. With no
   # call left, the held steers and the context request (C2).
-  defp send_ready(actions, state) do
-    {done, open} = Enum.split_while(state.calls, fn {_, result} -> result != nil end)
+  defp send_ready(actions, turn, calls, state) do
+    {done, open} = Enum.split_while(calls, fn {_, result} -> result != nil end)
 
-    results =
-      for {call, result} <- done, do: {:event, state.turn, {:tool_result, call.id, result}}
-
-    state = %{state | calls: open}
+    results = for {call, result} <- done, do: {:event, turn, {:tool_result, call.id, result}}
+    state = %{state | phase: {:results, turn, open}}
 
     if open == [],
-      do: request_context(actions ++ results, state),
+      do: request_context(actions ++ results, turn, state),
       else: {:ok, actions ++ results, state}
   end
 
-  defp request_context(actions, state) do
-    steers = for id <- state.steers, do: {:event, state.turn, {:user_message, id}}
-    {:ok, actions ++ steers ++ [{:need_context, state.turn}], %{state | steers: []}}
+  defp request_context(actions, turn, state) do
+    steers = for id <- state.steers, do: {:event, turn, {:user_message, id}}
+
+    {:ok, actions ++ steers ++ [{:need_context, turn}],
+     %{state | phase: {:context, turn}, steers: []}}
   end
 
-  defp end_turn(state), do: %{state | turn: nil, calls: [], steers: [], overflowed?: false}
+  defp end_turn(state), do: %{state | phase: :idle, steers: []}
 
+  # The turn ends while its model Task may run (an interrupt, a new turn):
   # `Task.shutdown/2` unlinks, kills, waits for the `:DOWN`, and flushes the
   # reply. Events that the Task sent before stay in the mailbox; `info/2`
-  # drops them by the pid.
-  defp stop_task(%{task: nil} = state), do: state
-
-  # The killed call reports no usage: the flag.
-  defp stop_task(%{task: task} = state) do
+  # drops them by the pid. The killed call reports no usage: the flag.
+  defp stop(%{phase: {:calling, _, task, _, _}} = state) do
     Task.shutdown(task, :brutal_kill)
-    %{state | task: nil, lost?: true}
+    %{state | phase: :idle, steers: [], lost?: true}
   end
+
+  defp stop(state), do: end_turn(state)
 
   # `Task.async/1` links and monitors the model Task. The provider process
   # never ends with `:normal`, so the link ends the Task with it (L1, L2).
-  defp model_call(state, context) do
+  defp model_call(state, context, turn) do
     %{provider: provider, model: model} = state
-    opts = [turn_id: state.turn] ++ state.opts
+    opts = [turn_id: turn] ++ state.opts
     parent = self()
     task = Task.async(fn -> run(provider, model, context, opts, parent) end)
-    %{state | task: task, calls: [], content?: false}
+    %{state | phase: {:calling, turn, task, false, []}}
   end
 
   # A raise, a throw, or an exit of the model call is its result, so the

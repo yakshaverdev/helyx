@@ -264,7 +264,12 @@ defmodule Helyx.SessionsTest do
       :ok = Session.prompt(session, Helyx.Test.Gate.open())
 
       await(
-        fn -> :sys.get_state(hands).held |> Map.values() |> List.flatten() |> length() == 2 end,
+        fn ->
+          :sys.get_state(hands).tasks
+          |> Map.values()
+          |> Enum.map(&length(&1.handles))
+          |> Enum.sum() == 2
+        end,
         "the two holds"
       )
 
@@ -285,7 +290,12 @@ defmodule Helyx.SessionsTest do
       :ok = Session.prompt(session, Helyx.Test.Gate.open())
 
       await(
-        fn -> :sys.get_state(hands).held |> Map.values() |> List.flatten() |> length() == 2 end,
+        fn ->
+          :sys.get_state(hands).tasks
+          |> Map.values()
+          |> Enum.map(&length(&1.handles))
+          |> Enum.sum() == 2
+        end,
         "the two holds"
       )
 

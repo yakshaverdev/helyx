@@ -3,15 +3,19 @@ defmodule Helyx.Hub.Store.SQLite do
   The SQLite store of `Helyx.Hub` (`docs/features/hub.md`, decision 9 and
   "Store schema"), with `exqlite`.
 
-  A file store holds the SQLite write lock from its open to its close
-  (`locking_mode = EXCLUSIVE`), so a second store on the file, in this node
-  or in another OS process, fails its open with `{:error, :store_locked}`
-  when it has not taken the lock 5,000 ms after the start of the open; of
-  several opens at once, one takes it. The file and the WAL, SHM, and journal
-  files beside it have mode 0600; each is a regular file with one name or
-  nothing, else the open gives `{:error, {:invalid_option, :path}}`. The
-  journal is WAL. With no `:path` the store is a database in memory that ends with its
-  connection.
+  A file store holds an `flock` of `<path>.lock` from its open to its close,
+  so a second store on the file, in this node or in another OS process, fails
+  its open with `{:error, :store_locked}`; of several opens at once, one takes
+  it. The lock guarantees that one store opens the file and that the OS drops
+  it when the process that holds it ends; it does not stop a program that
+  ignores the lock file and writes the database itself. The database holds
+  the SQLite write lock too (`locking_mode = EXCLUSIVE`), which a second
+  writer of the file must take as well.
+
+  The file and the WAL, SHM, and journal files beside it have mode 0600; each
+  is a regular file with one name or nothing, else the open gives
+  `{:error, {:invalid_option, :path}}`. The journal is WAL. With no `:path`
+  the store is a database in memory that ends with its connection.
   """
 
   @behaviour Helyx.Hub.Store
@@ -19,13 +23,18 @@ defmodule Helyx.Hub.Store.SQLite do
   import Helyx.Hub.Store.SQLite.Query
 
   alias Exqlite.Sqlite3
-  alias Helyx.Hub.Store.SQLite.{Disk, Projects, Records, Schedules, Schema, Subscriptions}
+  alias Helyx.Hub.Store.SQLite.{Disk, Projects, Records, Schedules, Schema, Subscriptions, Tables}
+  alias Helyx.Session.Lock
 
   @version Schema.version()
 
-  # The busy wait of every query, and the time an open tries the lock (Bounds).
+  @users Tables.select_sql(:users)
+  @tokens Tables.select_sql(:tokens)
+
+  # The busy wait of every query, and the time an open tries the SQLite lock
+  # of the file (Bounds).
   @busy_ms 5_000
-  # The longest pause between two tries of the lock at the open.
+  # The longest pause between two tries of that lock.
   @lock_pause_ms 20
 
   @impl true
@@ -38,25 +47,60 @@ defmodule Helyx.Hub.Store.SQLite do
 
   defp open_memory do
     {:ok, db} = Sqlite3.open(":memory:")
-    started(db, [&settings/1, &schema/1])
+
+    case started(db, [&settings/1, &schema/1]) do
+      {:ok, db} -> {:ok, %{db: db, lock: nil}}
+      error -> error
+    end
   end
 
   # The order of decision 9: every name is checked before any change, a
-  # missing file is made, the lock is taken with no write, the file and its
-  # version are checked again under the lock, and only then does the store
-  # set the modes and write. So a refused start writes nothing.
+  # missing file is made, the lock of the file is taken with no write, the
+  # file and its version are checked again under the lock, and only then does
+  # the store set the modes and write. So a refused start writes nothing.
   defp open_file(path) do
     deadline = System.monotonic_time(:millisecond) + @busy_ms
 
     with :ok <- prepare(path),
-         {:ok, db} <- locked_open(path, deadline) do
-      started(db, [
-        &settings/1,
-        &version/1,
-        fn _db -> Disk.own(path) end,
-        &exec(&1, "PRAGMA journal_mode = WAL"),
-        &schema/1
-      ])
+         {:ok, lock} <- take_lock(path) do
+      held(path, lock, deadline)
+    end
+  end
+
+  # The lock is held from here to the close, and given back at once when the
+  # open fails after it.
+  defp held(path, lock, deadline) do
+    opened =
+      with {:ok, db} <- locked_open(path, deadline) do
+        started(db, [
+          &settings/1,
+          &version/1,
+          fn _db -> Disk.own(path) end,
+          &exec(&1, "PRAGMA journal_mode = WAL"),
+          &schema/1
+        ])
+      end
+
+    case opened do
+      {:ok, db} ->
+        {:ok, %{db: db, lock: lock}}
+
+      error ->
+        Lock.release(lock)
+        error
+    end
+  end
+
+  # The lock of the file: an `flock` of `<path>.lock`, held by a perl program
+  # for the life of the store. A POSIX lock of `hub.db` itself would go with
+  # the first close of a descriptor of the file in this VM, which a read of
+  # the path makes; a close of a descriptor of another file does not drop
+  # this one.
+  defp take_lock(path) do
+    case Lock.take(path <> ".lock") do
+      {:ok, port} -> {:ok, port}
+      {:error, {:session_locked, _name}} -> {:error, :store_locked}
+      {:error, {:lock_failed, _text} = error} -> {:error, error}
     end
   end
 
@@ -139,8 +183,6 @@ defmodule Helyx.Hub.Store.SQLite do
     case one(db, "PRAGMA user_version", []) do
       {:ok, [@version]} -> :ok
       {:ok, [0]} -> empty(db)
-      # #921 migrates a store of version 1 in `schema/1`.
-      {:ok, [1]} -> :ok
       {:ok, [n]} -> {:error, {:store_version, n}}
       {:error, _} = error -> error
     end
@@ -160,7 +202,6 @@ defmodule Helyx.Hub.Store.SQLite do
     case one(db, "PRAGMA user_version", []) do
       {:ok, [@version]} -> :ok
       {:ok, [0]} -> transaction(db, :infinity, fn -> create_schema(db) end)
-      {:ok, [1]} -> transaction(db, :infinity, fn -> upgrade_schema(db) end)
       {:error, _} = error -> error
     end
   end
@@ -169,27 +210,24 @@ defmodule Helyx.Hub.Store.SQLite do
     with :ok <- exec(db, Schema.sql()), do: exec(db, "PRAGMA user_version = #{@version}")
   end
 
-  defp upgrade_schema(db) do
-    with :ok <- exec(db, Schema.upgrade()), do: exec(db, "PRAGMA user_version = #{@version}")
-  end
-
   @impl true
-  def close(db) do
+  def close(%{db: db, lock: lock}) do
     :ok = Sqlite3.close(db)
+    Lock.release(lock)
   end
 
   @impl true
   def users(db) do
-    with {:ok, rows} <- all(db, "SELECT id, name, created_at FROM users ORDER BY name", []) do
-      {:ok, Enum.map(rows, &info/1)}
+    with {:ok, rows} <- all(db, @users <> " ORDER BY name", []) do
+      {:ok, Enum.map(rows, &Tables.row(:users, &1))}
     end
   end
 
   @impl true
   def user(db, user_id) do
-    case one(db, "SELECT id, name, created_at FROM users WHERE id = ?1", [user_id]) do
+    case one(db, @users <> " WHERE id = ?1", [user_id]) do
       {:ok, nil} -> {:error, :not_found}
-      {:ok, row} -> {:ok, info(row)}
+      {:ok, row} -> {:ok, Tables.row(:users, row)}
       {:error, _} = error -> error
     end
   end
@@ -207,8 +245,7 @@ defmodule Helyx.Hub.Store.SQLite do
   defp insert_user(_db, _row, true = _full, _taken), do: {:error, :too_many_users}
   defp insert_user(_db, _row, false, true = _taken), do: {:error, :name_taken}
 
-  defp insert_user(db, row, false, false),
-    do: run(db, "INSERT INTO users (id, name, created_at) VALUES (?1, ?2, ?3)", row)
+  defp insert_user(db, row, false, false), do: run(db, Tables.insert(:users), row)
 
   @impl true
   def remove_user(db, user_id, deadline) do
@@ -217,30 +254,23 @@ defmodule Helyx.Hub.Store.SQLite do
 
   @impl true
   def token(db, token_id) do
-    sql = "SELECT id, user_id, name, key, created_at FROM tokens WHERE id = ?1"
-
-    case one(db, sql, [token_id]) do
-      {:ok, [id, user_id, name, key, at]} ->
-        {:ok, %{id: id, user_id: user_id, name: name, key: key, created_at: at}}
-
-      {:ok, nil} ->
-        {:error, :not_found}
-
-      {:error, _} = error ->
-        error
+    case one(db, @tokens <> " WHERE id = ?1", [token_id]) do
+      {:ok, nil} -> {:error, :not_found}
+      {:ok, row} -> {:ok, Tables.row(:tokens, row)}
+      {:error, _} = error -> error
     end
   end
 
+  # The listing of a user's tokens leaves the key in the store: no listing
+  # carries it (decision 2).
   @impl true
   def tokens(db, user_id) do
-    sql = "SELECT id, name, created_at FROM tokens WHERE user_id = ?1 ORDER BY created_at, rowid"
+    sql = @tokens <> " WHERE user_id = ?1 ORDER BY created_at, rowid"
 
     with {:ok, rows} <- all(db, sql, [user_id]) do
-      {:ok, Enum.map(rows, &info/1)}
+      {:ok, Enum.map(rows, &Map.delete(Tables.row(:tokens, &1), :key))}
     end
   end
-
-  defp info([id, name, at]), do: %{id: id, name: name, created_at: at}
 
   @impl true
   def add_token(db, token, max, deadline) do
@@ -258,13 +288,8 @@ defmodule Helyx.Hub.Store.SQLite do
   defp checked_token(_db, _token, true, true = _full), do: {:error, :too_many_tokens}
   defp checked_token(db, token, true, false), do: insert_token(db, token)
 
-  defp insert_token(db, t) do
-    run(
-      db,
-      "INSERT INTO tokens (id, user_id, name, key, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-      [t.id, t.user_id, t.name, {:blob, t.key}, t.created_at]
-    )
-  end
+  defp insert_token(db, t),
+    do: run(db, Tables.insert(:tokens), [t.id, t.user_id, t.name, {:blob, t.key}, t.created_at])
 
   @impl true
   def revoke_token(db, :any, token_id, deadline),

@@ -112,8 +112,9 @@ defmodule Helyx.Hub.LiveTest do
     Events.wait_until(fn -> not Live.running?(:sys.get_state(context.hub), first) end)
     %{"result" => %{"session" => _second}} = start(owner)
     # An old time on the row, so a touch would show: written on the
-    # connection of the store while the Hub waits for its next call.
-    %{db: db} = :sys.get_state(context.hub)
+    # connection inside the handle of the store, while the Hub waits for its
+    # next call.
+    %{db: %{db: db}} = :sys.get_state(context.hub)
 
     :ok =
       Exqlite.Sqlite3.execute(

@@ -11,6 +11,8 @@ defmodule Helyx.Tool.Edit do
 
   @behaviour Helyx.Tool
 
+  alias Helyx.Tool.Args
+
   @impl true
   def name, do: "edit"
 
@@ -29,7 +31,11 @@ defmodule Helyx.Tool.Edit do
           "type" => "string",
           "description" => "File path, absolute or relative to the working directory"
         },
-        "old_text" => %{"type" => "string", "description" => "Exact text to replace"},
+        "old_text" => %{
+          "type" => "string",
+          "minLength" => 1,
+          "description" => "Exact text to replace"
+        },
         "new_text" => %{"type" => "string", "description" => "Replacement text"}
       },
       "required" => ["path", "old_text", "new_text"]
@@ -37,20 +43,19 @@ defmodule Helyx.Tool.Edit do
   end
 
   @impl true
-  def run(%{"path" => path, "old_text" => old, "new_text" => new}, cwd)
-      when is_binary(path) and is_binary(old) and is_binary(new) do
-    full = Path.expand(path, cwd)
+  def run(args, cwd) do
+    with {:ok, args} <- Args.check(args, parameters()) do
+      path = args["path"]
+      new = args["new_text"]
+      full = Path.expand(path, cwd)
 
-    with {:ok, text} <- read(full, path),
-         {:ok, from, to, new} <- locate(text, old, new, path),
-         :ok <- write(full, splice(text, from, to, new), path) do
-      {:ok, "Edited #{path}"}
+      with {:ok, text} <- read(full, path),
+           {:ok, from, to, new} <- locate(text, args["old_text"], new, path),
+           :ok <- write(full, splice(text, from, to, new), path) do
+        {:ok, "Edited #{path}"}
+      end
     end
   end
-
-  def run(_args, _cwd), do: {:error, "edit needs a path, old_text, and new_text"}
-
-  defp locate(_text, "", _new, _path), do: {:error, "old_text is empty"}
 
   # The exact match writes the new text as it is. The normalized match
   # gives the new text the file's line ends: it matched LF against CRLF.

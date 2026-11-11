@@ -135,7 +135,7 @@ defmodule Helyx.Session.MessageIdentityTest do
     :ok = Session.follow_up(session, "f", origin: %{kind: :product, id: "f1"})
     :ok = Session.abort(session)
 
-    assert [%{texts: ["f"], messages: [%Message{origin: %{kind: :product, id: "f1"}} = m]}] =
+    assert [%{messages: [%Message{origin: %{kind: :product, id: "f1"}} = m]}] =
              of_type(collect_until(:turn_end), :queue_dropped)
 
     assert Session.Id.valid?(m.id)

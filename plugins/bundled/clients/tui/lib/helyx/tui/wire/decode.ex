@@ -18,14 +18,7 @@ defmodule Helyx.TUI.Wire.Decode do
                   steer_unconfirmed compaction notice ask ask_end ui_block tools_change)a
   @types Map.new(@event_types, &{Atom.to_string(&1), &1})
 
-  @error_codes ~w(unknown_op bad_params busy timeout failed session_not_found
-                  too_many_sessions too_many_subscriptions unknown_sub instance_changed
-                  unknown_message invalid_cwd invalid_model_ref unknown_provider not_found
-                  start_failed invalid_utf8 invalid_origin queue_full turn_running
-                  text_too_large invalid_answer not_waiting forbidden too_many_records
-                  too_many_projects unknown_project unknown_token too_many_schedules
-                  unknown_schedule)a
-  @codes Map.new(@error_codes, &{Atom.to_string(&1), &1})
+  @codes Map.new(Helyx.Transport.WebSocket.Bounds.error_codes(), &{Atom.to_string(&1), &1})
   # The codes whose text names the value: the TUI shows it.
   @texts ~w(invalid_model_ref unknown_provider start_failed)a
 
@@ -143,16 +136,10 @@ defmodule Helyx.TUI.Wire.Decode do
 
   defp data(:queue_update, data), do: queue(data)
 
-  # The wire leaves out the texts; the messages carry them.
-  defp data(:queue_dropped, %{"messages" => messages}) when is_list(messages) do
-    messages = Enum.map(messages, &message!(&1, :user))
-    %{messages: messages, texts: Enum.map(messages, &Message.text/1)}
-  end
+  defp data(:queue_dropped, %{"messages" => messages}) when is_list(messages),
+    do: %{messages: Enum.map(messages, &message!(&1, :user))}
 
-  defp data(:steer_unconfirmed, %{"message" => message}) do
-    message = message!(message, :user)
-    %{message: message, text: Message.text(message)}
-  end
+  defp data(:steer_unconfirmed, %{"message" => message}), do: %{message: message!(message, :user)}
 
   defp data(:model_change, %{"model" => model}), do: %{model: model!(model)}
   defp data(:tools_change, %{"activated" => names}), do: %{activated: activated!(names)}
@@ -254,17 +241,16 @@ defmodule Helyx.TUI.Wire.Decode do
   defp role!(role) when role in ~w(user assistant tool_result), do: String.to_existing_atom(role)
 
   # An origin of the schema. A user message keeps one that Core makes, so it decodes as Core holds
-  # it (`unknown` is one of a file from before #649); any other is dropped, as the TUI shows no
+  # it; any other is dropped, as the TUI shows no
   # origin.
   defp origin!(_role, nil), do: nil
 
   defp origin!(role, %{"kind" => kind, "id" => id}) when is_binary(id) or is_nil(id) do
     origin = %{kind: origin_kind!(kind), id: id}
-    known? = origin == %{kind: :unknown, id: nil} or Message.origin?(origin)
-    if role == :user and known?, do: origin
+    if role == :user and Message.origin?(origin), do: origin
   end
 
-  defp origin_kind!(kind) when kind in ~w(user background product hook unknown),
+  defp origin_kind!(kind) when kind in ~w(user background product hook),
     do: String.to_existing_atom(kind)
 
   # A text of a tool result gets the cut of Core at each boundary of tool text
@@ -319,7 +305,6 @@ defmodule Helyx.TUI.Wire.Decode do
            "instance_id" => instance_id,
            "seq" => seq,
            "messages" => messages,
-           "more" => more,
            "turn" => turn,
            "model" => model,
            "queue" => queue,
@@ -331,17 +316,15 @@ defmodule Helyx.TUI.Wire.Decode do
            "activated" => activated
          } = wire
        )
-       when is_binary(instance_id) and count?(seq) and is_list(messages) and is_boolean(more) and
+       when is_binary(instance_id) and count?(seq) and is_list(messages) and
               is_boolean(persisting) and is_list(asks) and is_list(ui_blocks) do
-    # Additive: an older server sends none, and the client shows no notice.
-    older = Map.get(wire, "older", 0)
+    older = Map.fetch!(wire, "older")
     true = count?(older)
 
     snapshot = %Snapshot{
       instance_id: instance_id,
       seq: seq,
       messages: Enum.map(messages, &message!/1),
-      more: more,
       older: older,
       turn: turn(turn),
       model: model!(model),

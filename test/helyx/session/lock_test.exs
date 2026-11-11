@@ -437,7 +437,7 @@ defmodule Helyx.Session.LockTest do
     pid = Session.pid(session)
     path = path(dir, session.id)
     lock_path = Path.rootname(path) <> ".lock"
-    perl = PerlSignal.pid(:sys.get_state(pid).lock, lock_path)
+    perl = PerlSignal.pid(Helyx.Session.Server.State.lock(:sys.get_state(pid)), lock_path)
     on_exit(fn -> PerlSignal.continue(perl, lock_path) end)
 
     PerlSignal.send!(perl, "STOP", lock_path)

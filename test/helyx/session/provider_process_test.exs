@@ -466,7 +466,11 @@ defmodule Helyx.Session.ProviderProcessTest do
       abort = Task.async(fn -> Session.abort(session) end)
 
       assert_receive {:helyx_event,
-                      %{type: :queue_dropped, turn_id: nil, data: %{texts: ["two"]}}}
+                      %{
+                        type: :queue_dropped,
+                        turn_id: nil,
+                        data: %{messages: [%{content: [%{text: "two"}]}]}
+                      }}
 
       # The call waits for the wait: the hands hold the provider_down.
       assert Task.yield(abort, 0) == nil
@@ -490,7 +494,11 @@ defmodule Helyx.Session.ProviderProcessTest do
       abort = Task.async(fn -> Session.abort(session) end)
 
       assert_receive {:helyx_event,
-                      %{type: :queue_dropped, turn_id: nil, data: %{texts: ["two"]}}}
+                      %{
+                        type: :queue_dropped,
+                        turn_id: nil,
+                        data: %{messages: [%{content: [%{text: "two"}]}]}
+                      }}
 
       assert Task.yield(abort, 0) == nil
       :erlang.resume_process(hands)
@@ -665,10 +673,10 @@ defmodule Helyx.Session.ProviderProcessTest do
 
     # The text of each notice, which is the text of its message.
     defp unconfirmed(events) do
-      for %{type: :steer_unconfirmed, data: %{text: text, message: message}} <- events do
+      for %{type: :steer_unconfirmed, data: %{message: message}} <- events do
         assert %Message{role: :user, id: id, origin: %{kind: :user}} = message
-        assert is_binary(id) and Message.text(message) == text
-        %{text: text}
+        assert is_binary(id)
+        %{text: Message.text(message)}
       end
     end
 
@@ -985,7 +993,12 @@ defmodule Helyx.Session.ProviderProcessTest do
       events = collect_until(:turn_end)
       [turn_start | _] = events
 
-      assert [%{turn_id: turn_id, data: %{texts: ["s", "f"]}}] =
+      assert [
+               %{
+                 turn_id: turn_id,
+                 data: %{messages: [%{content: [%{text: "s"}]}, %{content: [%{text: "f"}]}]}
+               }
+             ] =
                Enum.filter(events, &(&1.type == :queue_dropped))
 
       assert turn_id == turn_start.turn_id
@@ -1011,7 +1024,7 @@ defmodule Helyx.Session.ProviderProcessTest do
       send(proc, :stop)
       events = collect_until(:turn_end)
       assert %{outcome: :error} = List.last(events).data
-      assert [%{texts: ["s", "f"], messages: messages}] = of_type(events, :queue_dropped)
+      assert [%{messages: messages}] = of_type(events, :queue_dropped)
       assert Enum.map(messages, &Message.text/1) == ["s", "f"]
     end
 

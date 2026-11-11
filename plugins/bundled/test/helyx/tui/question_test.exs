@@ -46,7 +46,7 @@ defmodule Helyx.TUI.QuestionTest do
     if done?.(state) do
       state
     else
-      assert_receive {:helyx_event, %Event{}} = message, 5_000
+      assert_receive {:helyx_event, _sub, %Event{}} = message, 5_000
       {:noreply, state} = TUI.handle_info(message, state)
       until(state, done?)
     end
@@ -276,7 +276,6 @@ defmodule Helyx.TUI.QuestionTest do
       model: "fake/m",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
       persisting: true,
-      more: false,
       usage: %Helyx.Session.Totals{},
       context: nil,
       asks: [other]

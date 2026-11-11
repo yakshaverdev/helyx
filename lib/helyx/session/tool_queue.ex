@@ -32,6 +32,14 @@ defmodule Helyx.Session.ToolQueue do
           | {:result, String.t(), {:ok | :error, String.t()}}
   @type step :: {t(), [effect()]}
 
+  # The fan-out bounds, for the approval chains of the turn
+  # (`Helyx.Session.ApprovalChains`).
+  @doc false
+  def max_running, do: @max_running
+
+  @doc false
+  def max_waiting, do: @max_waiting
+
   # A request of `bytes` encoded call bytes (`Helyx.Session.Stream`) with
   # the checker's `rejection` reason, or nil, of a tool that runs
   # `concurrent?` with others or alone. A call id that is open (it runs or

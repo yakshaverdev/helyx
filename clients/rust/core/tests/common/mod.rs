@@ -10,7 +10,7 @@ use std::path::PathBuf;
 #[allow(dead_code)]
 pub fn snapshot_json(instance_id: &str, turn: Value) -> Value {
     json!({
-        "instance_id": instance_id, "seq": 4, "messages": [], "more": true, "turn": turn,
+        "instance_id": instance_id, "seq": 4, "messages": [], "older": 1, "turn": turn,
         "model": "fake/echo", "persisting": true, "context": null, "asks": [], "ui_blocks": [], "activated": [],
         "queue": {"steers": 0, "follow_ups": 0, "running": 0, "held": 0, "waiting": 0},
         "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0,

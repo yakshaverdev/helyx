@@ -228,7 +228,6 @@ defmodule Helyx.TUI.ViewModelTest do
       model: "test/model",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
       persisting: true,
-      more: false,
       usage: %Helyx.Session.Totals{},
       context: nil
     }
@@ -278,7 +277,6 @@ defmodule Helyx.TUI.ViewModelTest do
         model: "test/model",
         queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
         persisting: true,
-        more: false,
         usage: %Helyx.Session.Totals{},
         context: nil
       })
@@ -356,7 +354,6 @@ defmodule Helyx.TUI.ViewModelTest do
       model: "test/model",
       queue: %{steers: 1, follow_ups: 2, running: 3, held: 4, waiting: 5, new: 6},
       persisting: true,
-      more: false,
       usage: %Helyx.Session.Totals{},
       context: nil
     }
@@ -430,7 +427,6 @@ defmodule Helyx.TUI.ViewModelTest do
       model: "test/model",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
       persisting: true,
-      more: false,
       usage: %Helyx.Session.Totals{},
       context: nil
     }
@@ -451,7 +447,6 @@ defmodule Helyx.TUI.ViewModelTest do
       model: "test/model",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
       persisting: true,
-      more: false,
       usage: %Helyx.Session.Totals{},
       context: nil
     }
@@ -473,7 +468,6 @@ defmodule Helyx.TUI.ViewModelTest do
       model: "test/model",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
       persisting: false,
-      more: false,
       usage: %Helyx.Session.Totals{},
       context: nil
     }
@@ -503,7 +497,6 @@ defmodule Helyx.TUI.ViewModelTest do
       model: "test/model",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
       persisting: true,
-      more: false,
       usage: %Helyx.Session.Totals{},
       context: nil
     }
@@ -823,7 +816,7 @@ defmodule Helyx.TUI.ViewModelTest do
   end
 
   test "an unconfirmed steer shows a notice with its text" do
-    assert cells(fold(steer_unconfirmed: %{text: "more"})) == [
+    assert cells(fold(steer_unconfirmed: %{message: Helyx.Message.user("more")})) == [
              {:notice, "the steer was not confirmed; send it again if needed: more"}
            ]
   end

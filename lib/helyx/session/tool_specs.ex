@@ -3,6 +3,10 @@ defmodule Helyx.Session.ToolSpecs do
   # The checks of the fixed tools at a session start, their specs, `check/0`,
   # and `concurrent?/0`, and the name rule of every tool, for
   # `Helyx.Tool.specs/2`, `check_available/1`, `concurrent/1`, and `name?/1`.
+  # `spec_error/2` is also the check of the entries of a tool source
+  # (`Helyx.Session.ToolRegistry`): one check of a spec.
+
+  alias Helyx.Session.Input
 
   def specs(core, only) do
     result =
@@ -30,7 +34,7 @@ defmodule Helyx.Session.ToolSpecs do
       not name?(spec.name) ->
         {:error, {:bad_tool_spec, inspect(tool)}}
 
-      not text?(spec.description) or not parameters?(spec.parameters) ->
+      spec_error(spec.description, spec.parameters) != nil ->
         {:error, {:bad_tool_spec, spec.name}}
 
       true ->
@@ -47,7 +51,34 @@ defmodule Helyx.Session.ToolSpecs do
     end
   end
 
-  defp text?(value), do: is_binary(value) and String.valid?(value)
+  # The most bytes of the description and of the parameters of a spec
+  # (docs/features/mcp-client.md, "Bounds"). One check for the specs of the
+  # fixed tools and of the entries of a tool source: the MCP plugin cuts the
+  # description of an entry at a character boundary before `put_tools/2`,
+  # and Core rejects a longer one.
+  @max_description_bytes 4_096
+  @max_parameters_bytes 16_384
+
+  @doc false
+  # The reason that the description or the parameters of a spec are outside
+  # the rule, or nil: a description of UTF-8 of at most 4,096 bytes, and
+  # parameters that are a JSON object of at most 16,384 bytes.
+  @spec spec_error(term(), term()) :: String.t() | nil
+  def spec_error(description, parameters) do
+    cond do
+      not text?(description, @max_description_bytes) ->
+        "a description that is not UTF-8 of at most #{@max_description_bytes} bytes"
+
+      Input.json_object(parameters, @max_parameters_bytes) != :ok ->
+        "parameters that are not a JSON object of at most #{@max_parameters_bytes} bytes"
+
+      true ->
+        nil
+    end
+  end
+
+  defp text?(value, max),
+    do: is_binary(value) and byte_size(value) <= max and String.valid?(value)
 
   # The smallest name limit known among the providers is 64 bytes of this
   # set, and Claude Code shows a Helyx tool as `mcp__helyx__<name>`, 12 bytes
@@ -55,11 +86,6 @@ defmodule Helyx.Session.ToolSpecs do
   @name_pattern ~r/\A[A-Za-z0-9_-]{1,52}\z/
 
   def name?(value), do: is_binary(value) and Regex.match?(@name_pattern, value)
-
-  defp parameters?(value) when is_map(value),
-    do: Enum.all?(Map.keys(value), &is_binary/1) and Helyx.Message.encoded_size(value) != :error
-
-  defp parameters?(_value), do: false
 
   def check_available(tools) do
     Enum.find_value(tools, :ok, fn {tool, spec} ->

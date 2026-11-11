@@ -10,6 +10,7 @@ defmodule Helyx.Tool.Schedule do
   @behaviour Helyx.Tool
 
   alias Helyx.Coordinator
+  alias Helyx.Tool.Args
 
   @impl true
   def name, do: "schedule"
@@ -31,12 +32,15 @@ defmodule Helyx.Tool.Schedule do
         "id" => %{"type" => "string", "description" => "The id of the session"},
         "at" => %{
           "type" => "integer",
-          "description" => "When, in POSIX seconds, from now to 366 days on"
+          "description" => "When, in POSIX seconds, from now to #{days()} days on"
         },
-        "prompt" => %{"type" => "string", "description" => "The prompt, at most 16,384 bytes"},
+        "prompt" => %{
+          "type" => "string",
+          "description" => "The prompt, at most #{bounds().max_prompt_bytes} bytes"
+        },
         "every" => %{
           "type" => "integer",
-          "description" => "Optional: the period in seconds, 300 to 2,678,400"
+          "description" => "Optional: the period in seconds, #{every()}"
         }
       },
       "required" => ["id", "at", "prompt"]
@@ -44,17 +48,11 @@ defmodule Helyx.Tool.Schedule do
   end
 
   @impl true
-  def run(%{"id" => id, "at" => at, "prompt" => prompt} = args, _cwd) do
-    # The Hub checks each value with the rules of `hub.schedules.create`.
-    params =
-      Map.merge(
-        %{"session" => id, "at" => at, "prompt" => prompt},
-        Map.take(args, ["every"])
-      )
-
-    with true <- Coordinator.id?(id) || {:error, "the id must be a session id"},
+  def run(args, _cwd) do
+    with {:ok, args} <- Args.check(args, parameters()),
+         true <- Coordinator.id?(args["id"]) || {:error, "the id must be a session id"},
          {:ok, env} <- Coordinator.setup(),
-         {:ok, schedule} <- made(Helyx.Hub.schedule(env.hub, env.user, params)) do
+         {:ok, schedule} <- made(Helyx.Hub.schedule(env.hub, env.user, params(args))) do
       every = if schedule.every, do: " each #{schedule.every} s", else: " once"
       {:ok, "schedule #{schedule.id}: session #{schedule.session} at #{schedule.at}#{every}"}
     else
@@ -62,15 +60,26 @@ defmodule Helyx.Tool.Schedule do
     end
   end
 
-  def run(_args, _cwd), do: {:error, "schedule needs an id, a time at, and a prompt"}
+  # The Hub checks each value with the rules of `hub.schedules.create`.
+  defp params(args) do
+    Map.merge(
+      %{"session" => args["id"], "at" => args["at"], "prompt" => args["prompt"]},
+      Map.take(args, ["every"])
+    )
+  end
 
   defp made({:ok, schedule}), do: {:ok, schedule}
 
   defp made({:error, :bad_params}),
     do:
       {:error,
-       "at must be from now to 366 days on, every from 300 to 2,678,400 s, " <>
+       "at must be from now to #{days()} days on, every from #{every()} s, " <>
          "and the prompt not empty"}
 
   defp made({:error, reason}), do: {:error, Coordinator.text(reason)}
+
+  # The Hub owns the bounds (`Helyx.Hub.Params`); the text reads them.
+  defp bounds, do: Helyx.Hub.Params.schedule_bounds()
+  defp days, do: div(bounds().max_ahead_s, 86_400)
+  defp every, do: "#{bounds().every_s.first} to #{bounds().every_s.last}"
 end

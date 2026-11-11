@@ -87,7 +87,12 @@ defmodule Helyx.Hub.Records do
   end
 
   def handle({:project_create, auth, name}, deadline, %{store: mod, db: db} = state) do
-    project = %{id: new_id(), owner: auth.user, name: name, created_at: System.os_time(:second)}
+    project = %{
+      id: Helyx.Hub.Schedules.new_id(),
+      owner: auth.user,
+      name: name,
+      created_at: System.os_time(:second)
+    }
 
     with :ok <- Rules.credential(auth, state),
          :ok <- mod.put_project(db, project, @max_projects, deadline),
@@ -206,6 +211,4 @@ defmodule Helyx.Hub.Records do
        }}
     end
   end
-
-  defp new_id, do: Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
 end

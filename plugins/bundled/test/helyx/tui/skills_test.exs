@@ -75,7 +75,7 @@ defmodule Helyx.TUI.SkillsTest do
     [skill] = Enum.filter(Skills.scan(dir, System.user_home!()).skills, &(&1.name == @name))
     expected = Skills.text(skill) <> "\n\n730"
 
-    assert_receive {:helyx_event,
+    assert_receive {:helyx_event, _sub,
                     %Event{type: :message_end, data: %{message: %Message{role: :user} = user}}},
                    5_000
 

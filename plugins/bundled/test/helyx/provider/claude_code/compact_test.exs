@@ -326,7 +326,7 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
              {:event, "t1", {:error, %Helyx.ProviderError{kind: :compaction_failed}}}
            ] = actions
 
-    assert state.turn == nil and not state.sent?
+    assert state.turn.phase == :idle and not state.sent?
     closed(state)
     refute File.exists?(Path.join(bin, "count"))
   end
@@ -354,7 +354,7 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
               }}
            ] = events_of(actions)
 
-    assert state.turn == nil and not state.sent?
+    assert state.turn.phase == :idle and not state.sent?
     closed(state)
     assert programs(bin) == "2"
     assert stdin(bin, 2) == []

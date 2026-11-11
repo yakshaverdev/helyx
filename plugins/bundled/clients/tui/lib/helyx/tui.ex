@@ -22,11 +22,9 @@ defmodule Helyx.TUI do
   The TUI subscribes to one session at a time and renders from `Helyx.TUI.ViewModel`,
   a pure fold over the session's events. It holds no session state of its own. It runs
   over the wire on the server of the data folder (`docs/features/tui-attach.md`), whose
-  handshake checks the protocol. Typing fills the composer (`Helyx.TUI.Composer`), at
-  most 8 lines high; a paste of more than 5 lines shows as one marker and is sent in
-  full, and a rejected send stays in the composer. `/help` lists the slash commands
-  (`Helyx.TUI.Command`) and these keys, with the full rules in
-  `docs/features/coding-agent.md`, "TUI":
+  handshake checks the protocol. Typing fills the composer (`Helyx.TUI.Composer`); a
+  rejected send stays in it. `/help` lists the slash commands (`Helyx.TUI.Command`)
+  and these keys, with the full rules in `docs/features/coding-agent.md`, "TUI":
 
   #{Enum.map_join(@keys, "\n", fn {key, text} -> "* #{key}: #{text}" end)}
 
@@ -54,19 +52,17 @@ defmodule Helyx.TUI do
   @doc """
   Starts the TUI for a session and blocks until the user quits.
 
-  The options are `:session`, a `Helyx.TUI.Link` with the connection that
-  the caller opened (`Helyx.TUI.Wire.Connection`), which the TUI takes;
-  `:resumed` (true when the session was resumed: an information cell
-  "resumed session" follows the history), `:cwd` (the directory that the
-  footer shows and the folder of `/new` and `/resume`, default
-  `File.cwd!/0`), `:home` (the folder of the user skills that the mount
-  scans, default `System.user_home!/0`), `:reconnect` (the connect after
-  a lost connection:
-  `{:ok, socket, ws}`, owned by the caller, or `{:error, text}`), `:notices`
-  (lines of the caller, each a notice cell after those of the skills
-  scan, default none), and those of `ExRatatui.App`. The scroll keys read
-  the terminal size through `:terminal_size_fn`, the option of
-  `ExRatatui.Server`; the default is `ExRatatui.terminal_size/0`.
+  The options are `:session`, a `Helyx.TUI.Link` with the connection that the caller
+  opened (`Helyx.TUI.Wire.Connection`), which the TUI takes; `:resumed` (true when the
+  session was resumed: an information cell "resumed session" follows the history),
+  `:cwd` (the directory that the footer shows and the folder of `/new` and `/resume`,
+  default `File.cwd!/0`), `:home` (the folder of the user skills that the mount scans,
+  default `System.user_home!/0`), `:reconnect` (the connect after a lost connection:
+  `{:ok, socket, ws}`, owned by the caller, or `{:error, text}`), `:notices` (lines of
+  the caller, each a notice cell after those of the skills scan, default none), and
+  those of `ExRatatui.App`. The scroll keys read the terminal size through
+  `:terminal_size_fn`, the option of `ExRatatui.Server`; the default is
+  `ExRatatui.terminal_size/0`.
   """
   @spec run(keyword()) :: :ok | {:error, term()}
   def run(opts), do: Start.run(fn -> start_link(Keyword.put_new(opts, :mouse_capture, true)) end)
@@ -80,7 +76,6 @@ defmodule Helyx.TUI do
       # The session and its subscription: `Helyx.TUI.Switch.bind/3`.
       session: nil,
       session_ref: nil,
-      instance_id: nil,
       vm: nil,
       reconnect: opts[:reconnect],
       switch: nil,
@@ -91,8 +86,7 @@ defmodule Helyx.TUI do
       cwd: cwd,
       # The folder of the user skills, for the mount scan and `/name`.
       home: home,
-      # Row 1 of the footer. The branch comes from a task that starts
-      # at mount and after each turn; the result of the latest wins.
+      # Row 1 of the footer: the branch of a task at mount and after each turn.
       location: Footer.location(cwd, nil),
       branch_ref: nil,
       # A `Transcript.position()`; nil follows the newest output.
@@ -122,7 +116,8 @@ defmodule Helyx.TUI do
   def handle_info({:DOWN, _ref, :process, conn, reason}, %{session: %Link{conn: conn}} = state),
     do: {:noreply, settle(sync_busy(read_branch(Switch.reconnect(state, reason))))}
 
-  def handle_info({:helyx_event, %{instance_id: id} = event}, %{instance_id: id} = state) do
+  # An event of the current subscription; a switch drops the events of the sub it left here.
+  def handle_info({:helyx_event, sub, event}, %{session_ref: sub} = state) do
     # A turn can change the branch; an event at or below the seq of the fold changes nothing.
     branch? = event.type == :turn_end and event.seq > state.vm.seq
     state = Switch.apply_event(state, event)
@@ -134,8 +129,7 @@ defmodule Helyx.TUI do
     {:noreply, settle(sync_busy(Switch.done(state, result)))}
   end
 
-  # ExRatatui traps exits, so a crash of the switch Task reaches the TUI as
-  # its `:DOWN` (and an `:EXIT`, which the last clause drops).
+  # ExRatatui traps exits, so a crash of the switch Task reaches the TUI as its `:DOWN`.
   def handle_info(
         {:DOWN, ref, :process, _pid, reason},
         %{switch: %Switch{task: %{ref: ref}}} = state
@@ -165,14 +159,12 @@ defmodule Helyx.TUI do
   # An older branch task or list scan, or its `:DOWN`, is ignored here.
   def handle_info(_msg, state), do: {:noreply, state}
 
-  # git runs in a task, so a slow git never holds a frame;
-  # `Footer.branch/1` bounds it and never raises.
+  # git runs in a task, so a slow git never holds a frame; `Footer.branch/1` bounds it.
   defp read_branch(%{cwd: cwd} = state),
     do: %{state | branch_ref: Task.async(fn -> Footer.branch(cwd) end).ref}
 
-  # The next key press or paste clears the reason of the last reject, then
-  # runs as usual, so it can set a new reason. The release and the repeat of
-  # a key are not a new press: those of the rejected Enter keep the reason.
+  # The next key press or paste clears the reason of the last reject, then runs as
+  # usual. The release and the repeat of the rejected Enter keep the reason.
   @impl true
   def handle_event(event, %{vm: %ViewModel{reason: reason}} = state)
       when is_binary(reason) and
@@ -205,17 +197,18 @@ defmodule Helyx.TUI do
       when code in ["page_up", "page_down"] and kind in ["press", "repeat"],
       do: {:noreply, on_screen(state, &Transcript.page(state.vm, state.scroll, code, &1, &2))}
 
-  # The toggle changes the rows of tool cells: a selection ends, as at a new
-  # size, and a scrolled view stays in its item.
+  # A toggle changes the rows of tool cells: a selection ends, a scrolled view stays.
   def handle_event(%Key{code: "o", kind: "press", modifiers: ["ctrl"]}, state) do
     state = %{state | vm: ViewModel.toggle_expanded(state.vm), selection: nil}
     {:noreply, settle(state, &Transcript.keep/4)}
   end
 
   # Escape aborts, also over a hidden search; a Task keeps the wait off the render loop.
-  def handle_event(%Key{code: "esc", kind: "press"}, state)
-      when state.search == nil or state.question != nil,
-      do: {:noreply, tap(state, &Link.abort_async(&1.session))}
+  def handle_event(%Key{code: "esc", kind: "press"} = event, state) do
+    if mode(state) == :search,
+      do: Search.handle(event, state, layout(state, state.terminal_size_fn.())),
+      else: {:noreply, tap(state, &Link.abort_async(&1.session))}
+  end
 
   def handle_event(event, state) when Question.handles?(state.question, event),
     do: Question.handle(event, state)
@@ -238,8 +231,7 @@ defmodule Helyx.TUI do
     end
   end
 
-  # Ctrl+J is a new line in every terminal. Shift+Enter reaches here only
-  # where the terminal reports Shift on Enter; elsewhere it is Enter.
+  # Ctrl+J is a new line everywhere. Shift+Enter reaches here where the terminal reports it.
   def handle_event(%Key{code: code, kind: kind, modifiers: modifiers}, state)
       when {code, modifiers} in [{"j", ["ctrl"]}, {"enter", ["shift"]}] and
              kind in ["press", "repeat"] do
@@ -276,8 +268,7 @@ defmodule Helyx.TUI do
 
   def handle_event(_event, state), do: {:noreply, state}
 
-  # An edit that changes the composer height changes the screen of the
-  # transcript, so the position gets its check.
+  # An edit that changes the composer height changes the screen of the transcript.
   defp edit(state, op, text), do: edit(state, &Composer.edit(&1, op, text))
 
   defp edit(state, change) do
@@ -322,11 +313,11 @@ defmodule Helyx.TUI do
     marks = Search.marks(state.search, rows, transcript)
 
     middle =
-      cond do
-        state.list -> [{SessionList.widget(state.list), middle}]
-        state.question -> Question.widgets(state.question, middle)
-        state.search -> Search.widgets(state.search, marks, middle)
-        true -> Composer.widgets(state.composer, middle)
+      case mode(state) do
+        :list -> [{SessionList.widget(state.list), middle}]
+        :question -> Question.widgets(state.question, middle)
+        :search -> Search.widgets(state.search, marks, middle)
+        :composer -> Composer.widgets(state.composer, middle)
       end
 
     # A switch that runs is an open that the footer shows (tui-attach.md, decision 17).
@@ -355,14 +346,23 @@ defmodule Helyx.TUI do
 
   defp layout(_state, {:error, _reason}), do: nil
 
-  defp middle_rows(%{list: %SessionList{} = list}, _width, room), do: SessionList.rows(list, room)
-  defp middle_rows(%{question: q}, width, room) when q != nil, do: Question.rows(q, width, room)
-  defp middle_rows(%{composer: composer}, _width, room), do: Composer.rows(composer, room)
+  # The middle of the screen: the list, then the picker, then the search, then the composer.
+  defp mode(%{list: %SessionList{}}), do: :list
+  defp mode(%{question: question}) when question != nil, do: :question
+  defp mode(%{search: search}) when search != nil, do: :search
+  defp mode(_state), do: :composer
+
+  # The search takes the box of the composer, so it has the composer's rows.
+  defp middle_rows(state, width, room), do: middle_rows(mode(state), state, width, room)
+  defp middle_rows(:list, state, _width, room), do: SessionList.rows(state.list, room)
+  defp middle_rows(:question, state, width, room), do: Question.rows(state.question, width, room)
+
+  defp middle_rows(_search_or_composer, state, _width, room),
+    do: Composer.rows(state.composer, room)
 
   # Scroll position
 
-  # Sets the position from the transcript rect, of at least one row. With no
-  # size there is no screen to check, so the view follows the newest output.
+  # The position from the transcript rect, one row at least; with no size the view follows.
   defp on_screen(state, position) do
     case layout(state, state.terminal_size_fn.()) do
       [%Rect{width: width, height: rows} | _] ->

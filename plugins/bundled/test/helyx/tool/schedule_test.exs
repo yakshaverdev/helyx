@@ -181,8 +181,8 @@ defmodule Helyx.Tool.ScheduleTest do
   test "bad arguments give an error result", context do
     [bad_id, bad_list, bad_key] =
       coordinate(context, context.ann, [
-        call("schedule_delete", %{"schedule" => 7}),
-        call("schedule_list", %{"id" => 7}),
+        call("schedule_delete", %{"schedule" => ""}),
+        call("schedule_list", %{"id" => ""}),
         call("schedule_list", %{"other" => 1})
       ])
 

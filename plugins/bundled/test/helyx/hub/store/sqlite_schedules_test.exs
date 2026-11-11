@@ -69,7 +69,8 @@ defmodule Helyx.Hub.Store.SQLiteSchedulesTest do
       )
   end
 
-  defp count(db, sql, args) do
+  # The rows of a query, on the connection inside the handle of the store.
+  defp count(%{db: db}, sql, args) do
     {:ok, stmt} = Exqlite.Sqlite3.prepare(db, sql)
     :ok = Exqlite.Sqlite3.bind(stmt, args)
     {:ok, [[n]]} = Exqlite.Sqlite3.fetch_all(db, stmt)

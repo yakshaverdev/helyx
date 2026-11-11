@@ -32,7 +32,7 @@ defmodule Helyx.Session.Hands.Approval do
     context = Map.merge(context, extra)
 
     {_task, state} =
-      Hands.spawn_task(state, turn_id, {:approval, call.id}, nil, fn ->
+      Hands.spawn_task(state, {:approval, call.id}, turn_id, nil, fn ->
         Process.put(:helyx_call, context)
         Chain.approve(call, cwd, turn_id, hooks, provider)
       end)

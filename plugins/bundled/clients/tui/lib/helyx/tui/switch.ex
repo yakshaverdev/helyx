@@ -45,17 +45,13 @@ defmodule Helyx.TUI.Switch do
   # (`Question.sync/1`): a reconnect keeps the answers so far, the
   # position, and the text of the Other line. A switch keeps none.
   defp show(state, session, snapshot, ref, info, question \\ nil) do
-    # The Ctrl+O toggle belongs to the client, so a switch keeps it.
-    vm = ViewModel.from_snapshot(snapshot, session.id)
-    vm = %{vm | expanded?: match?(%{expanded?: true}, state.vm)}
+    vm = ViewModel.subscribed(state.vm, snapshot, session.id)
 
     Question.sync(%{
       state
       | session: session,
         # The sub of the subscribe: its `session_end` is the end signal.
         session_ref: ref,
-        # An event of another instance is of a session that a switch left.
-        instance_id: snapshot.instance_id,
         vm: if(info, do: ViewModel.info(vm, info), else: vm),
         busy: busy(snapshot.turn),
         scroll: nil,
@@ -97,7 +93,7 @@ defmodule Helyx.TUI.Switch do
   def reconnect(_state, reason), do: exit({:connection_down, reason})
 
   defp resubscribe(state, session) do
-    case subscribe!(session, after: %{instance_id: state.instance_id, seq: state.vm.seq}) do
+    case subscribe!(session, after: %{instance_id: state.vm.instance_id, seq: state.vm.seq}) do
       {{:replay, events}, sub} ->
         state = %{state | session: session, session_ref: sub}
         state = Enum.reduce(events, state, &apply_event(&2, &1))
@@ -144,11 +140,9 @@ defmodule Helyx.TUI.Switch do
   def down(state, reason), do: put_in(state.switch.down, {:down, reason})
 
   # An event of the current session, live or of a replay: the ack, the
-  # fold, the question of an ask, and the composer. An event at or below
-  # the seq of the fold changes nothing (decision 11).
+  # fold, the question of an ask, and the composer. The fold leaves its view
+  # model unchanged for an event at or below its seq (decision 11).
   @spec apply_event(map(), Event.t()) :: map()
-  def apply_event(%{vm: %{seq: last}} = state, %Event{seq: seq}) when seq <= last, do: state
-
   def apply_event(state, event) do
     :ok = Link.ack(state.session, state.session_ref, event)
     event(Question.sync(%{state | vm: ViewModel.apply(state.vm, event)}), event)

@@ -45,7 +45,7 @@ defmodule Helyx.Session.Server.Open do
          state
          | model: ref,
            provider: provider,
-           file: resumed.file,
+           save: {:saving, resumed.file, nil},
            transcript: Transcript.repair(resumed.messages),
            sync: {:replay, resumed.messages},
            summary: resumed.summary,
@@ -65,7 +65,7 @@ defmodule Helyx.Session.Server.Open do
     {Helyx.Session.File.path(dir, cwd, id, parent),
      fn state ->
        with {:ok, file} <- Helyx.Session.File.create(dir, id, cwd, model, parent),
-            do: {:ok, %{state | file: file}}
+            do: {:ok, %{state | save: {:saving, file, nil}}}
      end}
   end
 
@@ -215,8 +215,13 @@ defmodule Helyx.Session.Server.Open do
       end)
 
     Killer.cancel(killer)
-    with {:ok, lock, state} <- result, do: {:ok, %{state | lock: lock}}
+    with {:ok, lock, state} <- result, do: {:ok, %{state | save: hold_lock(state.save, lock)}}
   end
+
+  # The lock is taken after the load, which sets the file. An open with no
+  # file holds the lock for its path until it ends: nothing is saved then.
+  defp hold_lock({:saving, file, nil}, lock), do: {:saving, file, lock}
+  defp hold_lock(:never, lock), do: {:stopped, 0, lock}
 
   # A file that is not there, as for a new session, or not readable, loads
   # nothing; the load gives its own error for it.

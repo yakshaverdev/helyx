@@ -99,7 +99,7 @@ defmodule Helyx.Provider.ClaudeCode.Mcp do
     end
   end
 
-  # Only a tool that the program was given maps.
+  # Only a tool that the program was given maps, in a started turn.
   defp helyx_call?(
          %{"_meta" => %{"claudecode/toolUseId" => call_id}, "name" => name},
          %{turn: turn, tools: tools}

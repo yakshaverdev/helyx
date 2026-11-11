@@ -13,9 +13,7 @@ defmodule Helyx.Message do
 
   Core sets `id` on every message that joins a session, and `origin` on
   every user message: `%{kind: :user | :background | :product | :hook, id:
-  id}`,
-  or `:unknown` for a user message of a session file from before #649
-  (`docs/features/message-identity.md`). A message that a provider builds
+  id}` (`docs/features/message-identity.md`). A message that a provider builds
   for its own wire has neither.
 
   The module also defines the rules of the values in a message and in a
@@ -65,7 +63,7 @@ defmodule Helyx.Message do
   @type role :: :user | :assistant | :tool_result
   @typedoc "Who made a user message (`origin?/1`)."
   @type origin :: %{
-          kind: :user | :background | :product | :hook | :unknown,
+          kind: :user | :background | :product | :hook,
           id: String.t() | nil
         }
   @typedoc "A stream event that `add_block/2` adds to assistant content."

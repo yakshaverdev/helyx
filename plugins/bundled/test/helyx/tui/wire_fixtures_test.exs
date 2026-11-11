@@ -124,17 +124,17 @@ defmodule Helyx.TUI.WireFixturesTest do
 
       case expect do
         "valid" ->
-          assert_receive {:helyx_event, %Event{}}, Events.wait_ms(), name
+          assert_receive {:helyx_event, _sub, %Event{}}, Events.wait_ms(), name
           assert_receive {:helyx_end, "0", :stopped}, Events.wait_ms(), name
 
         # The session_end after it shows that the connection took it.
         "ignored" ->
           assert_receive {:helyx_end, "0", :stopped}, Events.wait_ms(), name
-          refute_received {:helyx_event, _event}, name
+          refute_received {:helyx_event, _sub, _event}, name
 
         "broken" ->
           assert_broken(conn, ref, name)
-          refute_received {:helyx_event, _event}, name
+          refute_received {:helyx_event, _sub, _event}, name
       end
 
       Process.exit(conn, :kill)
@@ -165,7 +165,7 @@ defmodule Helyx.TUI.WireFixturesTest do
   test "each fold leaves the state of its expect steps" do
     for fold <- WireFixtures.load("folds.json")["cases"] do
       %{"name" => name, "steps" => steps} = WireFixtures.keys!(fold, ~w(name steps), [])
-      state = run_fold(name, steps, %{results: %{}, vm: nil, instance: nil, conn: nil, ref: nil})
+      state = run_fold(name, steps, %{results: %{}, vm: nil, conn: nil, ref: nil})
       if state.conn, do: Process.exit(state.conn, :kill)
     end
   end
@@ -245,7 +245,7 @@ defmodule Helyx.TUI.WireFixturesTest do
           []
 
         after_ ->
-          assert after_ == %{"instance_id" => state.instance, "seq" => state.vm.seq}, name
+          assert after_ == %{"instance_id" => state.vm.instance_id, "seq" => state.vm.seq}, name
           [after: %{instance_id: after_["instance_id"], seq: after_["seq"]}]
       end
 
@@ -260,19 +260,13 @@ defmodule Helyx.TUI.WireFixturesTest do
 
   defp fold_step(_name, %{"server" => %{"type" => "res", "id" => id}}, state) do
     case Map.fetch!(state.results, id) do
-      {:ok, %Snapshot{} = snapshot, _sub} ->
-        %{state | vm: ViewModel.from_snapshot(snapshot), instance: snapshot.instance_id}
-
-      {:ok, {:replay, events}, _sub} ->
-        %{state | vm: Enum.reduce(events, state.vm, &ViewModel.apply(&2, &1))}
-
-      {:error, _code} ->
-        state
+      {:ok, reply, _sub} -> %{state | vm: ViewModel.subscribed(state.vm, reply)}
+      {:error, _code} -> state
     end
   end
 
   defp fold_step(name, %{"server" => %{"type" => "event", "event" => %{"seq" => seq}}}, state) do
-    assert_receive {:helyx_event, %Event{} = event}, Events.wait_ms(), name
+    assert_receive {:helyx_event, _sub, %Event{} = event}, Events.wait_ms(), name
     assert event.seq == seq, name
     %{state | vm: ViewModel.apply(state.vm, event)}
   end
@@ -293,7 +287,7 @@ defmodule Helyx.TUI.WireFixturesTest do
 
   defp fold_step(name, %{"expect" => expect}, state) do
     actual = %{
-      "instance_id" => state.instance,
+      "instance_id" => state.vm.instance_id,
       "seq" => state.vm.seq,
       "model" => state.vm.model,
       "running" => state.vm.running?,

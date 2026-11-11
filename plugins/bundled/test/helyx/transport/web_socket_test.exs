@@ -669,6 +669,10 @@ defmodule Helyx.Transport.WebSocketTest do
     assert Ops.deadline("set_model", true) == Ops.deadline("set_model")
   end
 
+  test "a subscribe has the 5,000 ms call timeout of Core" do
+    assert Ops.deadline("subscribe") == 5_000
+  end
+
   # The open deadlines of the session bound them (#834, wire-protocol.md,
   # "Deadlines").
   test "start and resume have no deadline of the wire" do

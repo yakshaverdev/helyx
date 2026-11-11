@@ -1,8 +1,8 @@
 defmodule Helyx.Session.Server.Records do
   @moduledoc false
-  # The records of a session: the only writer of `transcript`, `file`,
-  # `model`, `provider`, `resume_ids`, `summary`, `compacted`, and
-  # `unsaved_from` in `Helyx.Session.Server.State`. Each operation changes
+  # The records of a session: the only writer of `transcript`, `save`,
+  # `model`, `provider`, `resume_ids`, `summary`, and `compacted` in
+  # `Helyx.Session.Server.State`. Each operation changes
   # the open assistant message, the transcript, the session file, and emits
   # its events together. The rule: no message goes between a call and its
   # result. A call still open gets its `aborted` result before the next
@@ -183,7 +183,7 @@ defmodule Helyx.Session.Server.Records do
   # A Helyx summary (docs/features/summary-compaction.md): the record on
   # disk, the stored summary, and `:compaction`. A failed write leaves it
   # in memory only (`persist/2`). One in a compaction turn marks the turn
-  # as compacted; an overflow summary is `auto`.
+  # as compacted.
   def summary(%State{phase: %{turn: %Turn{compact: compact}}} = state, summary) do
     state = persist_compaction(state, &Helyx.Session.File.append_summary(&1, summary, &2), nil)
     state = if compact, do: put_in(state.phase.turn.compact, :reported), else: state
@@ -298,10 +298,8 @@ defmodule Helyx.Session.Server.Records do
     %{state | transcript: state.transcript ++ [message]}
   end
 
-  defp persist(%State{file: nil} = state, _append), do: state
-
-  defp persist(%State{file: file} = state, append) do
-    %{state | file: append.(file)}
+  defp persist(%State{save: {:saving, file, lock}} = state, append) do
+    %{state | save: {:saving, append.(file), lock}}
   rescue
     # A disk failure must not take the session down. The turn, or the model
     # switch, goes on in memory; persistence stays off for this session. Only
@@ -314,25 +312,34 @@ defmodule Helyx.Session.Server.Records do
       stop_saving(state, "the session file could not be written", Exception.message(error))
   end
 
+  defp persist(state, _append), do: state
+
   # Persistence goes off for the rest of the session: after a disk failure,
   # and after the loss of the writer lock, when another process can append
   # to the file. The turn goes on in memory. One notice with a fixed text
   # tells the clients, the snapshot says `persisting: false`, and the log
   # has the detail. Persistence that is off already gets no second notice.
-  def stop_saving(%State{file: nil} = state, _cause, _detail), do: state
+  def stop_saving(%State{save: :never} = state, _cause, _detail), do: state
+  def stop_saving(%State{save: {:stopped, _from, _lock}} = state, _cause, _detail), do: state
 
-  def stop_saving(state, cause, detail) do
+  def stop_saving(%State{save: {:saving, _file, lock}} = state, cause, detail) do
     Logger.warning("#{cause}, persistence off: #{detail}")
     text = cause <> "; the rest of this session is not saved"
-    state = %{state | file: nil, unsaved_from: length(state.transcript)}
+    state = %{state | save: {:stopped, length(state.transcript), lock}}
     emit(state, turn_id(state.phase), :notice, %{text: text})
   end
 
   # The messages that joined the transcript in the turn, each with whether
-  # the file holds it, for the sync of the Memory plugin. A session with no
-  # file and no `unsaved_from` never had a file, so the file holds none.
+  # the file holds it, for the sync of the Memory plugin. A session that
+  # never had a file holds none; one that stopped saving holds those before
+  # `unsaved_from`.
   def turn_entries(%State{phase: %{turn: %Turn{start: start}}} = state) do
-    unsaved = state.unsaved_from || if(state.file, do: nil, else: 0)
+    unsaved =
+      case state.save do
+        {:saving, _file, _lock} -> nil
+        {:stopped, from, _lock} -> from
+        :never -> 0
+      end
 
     state.transcript
     |> Enum.drop(start)

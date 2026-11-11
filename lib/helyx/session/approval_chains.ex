@@ -16,10 +16,12 @@ defmodule Helyx.Session.ApprovalChains do
   # the provider process).
 
   alias Helyx.Message.ToolCall
+  alias Helyx.Session.ToolQueue
 
-  # The bounds of the tool queue (`Helyx.Session.ToolQueue`).
-  @max_running 8
-  @max_waiting 16
+  # The bounds are the bounds of the tool queue, which the approval chains
+  # share.
+  @max_running ToolQueue.max_running()
+  @max_waiting ToolQueue.max_waiting()
   @too_many "too many approval requests: #{@max_running} run and #{@max_waiting} wait"
   @second "the call has a pending approval request"
 

@@ -9,13 +9,24 @@ defmodule Helyx.Subagent do
   alias Helyx.{Event, Message, Session}
 
   @doc false
-  # Starts the child with `opts` (`Helyx.Sessions.start/2`), sends `prompt`,
+  # Starts the child with the model, provider options and ModelContext of
+  # the call `context`, the folder `cwd` and `tools` (`Helyx.Sessions.start/2`), sends `prompt`,
   # and gives the text of its last assistant message. A start that fails
   # gives `{:error, {:start, reason}}`, any other failure `{:error, text}`.
-  @spec run(Helyx.Core.name(), String.t(), keyword(), String.t()) ::
+  @spec run(map(), String.t(), [String.t()], String.t()) ::
           {:ok, String.t()} | {:error, String.t() | {:start, term()}}
-  def run(core, session_id, opts, prompt) do
-    parent = Session.pid(%Session{id: session_id, core: core})
+  def run(context, cwd, tools, prompt) do
+    opts = [
+      model: context.model,
+      cwd: cwd,
+      provider_opts: context.provider_opts,
+      model_context: context.model_context,
+      parent: %{session_id: context.session_id, call_id: context.call_id},
+      tools: tools
+    ]
+
+    core = context.core
+    parent = Session.pid(%Session{id: context.session_id, core: core})
     {owner, monitor} = start_owner(core, opts, parent)
 
     receive do

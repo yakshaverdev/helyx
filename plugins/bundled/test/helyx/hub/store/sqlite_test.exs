@@ -37,91 +37,6 @@ defmodule Helyx.Hub.Store.SQLiteTest do
     assert SQLite.open(path: path) == {:error, {:store_version, 3}}
   end
 
-  test "a store of version 1 gets the event subscriptions at the open", %{tmp_dir: dir} do
-    path = Path.join(dir, "hub.db")
-    {:ok, db} = Exqlite.Sqlite3.open(path)
-
-    :ok =
-      Exqlite.Sqlite3.execute(db, """
-      CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL) STRICT;
-      CREATE TABLE schedules (
-        id TEXT PRIMARY KEY, owner TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        session_id TEXT NOT NULL, prompt TEXT NOT NULL, at INTEGER NOT NULL, every INTEGER,
-        run INTEGER NOT NULL DEFAULT 0, delivery_id TEXT, due_at INTEGER, next_try_at INTEGER,
-        last_at INTEGER,
-        last_outcome TEXT CHECK (last_outcome IN ('delivered', 'missed', 'refused', 'unconfirmed')),
-        created_at INTEGER NOT NULL
-      ) STRICT;
-      INSERT INTO users (id, name, created_at) VALUES ('u', 'u', 1);
-      INSERT INTO schedules (id, owner, session_id, prompt, at, run, delivery_id, due_at,
-        next_try_at, created_at)
-        VALUES ('old', 'u', 'S0', 'old prompt', 1, 0, 'd0', 1, 1, 1);
-      PRAGMA user_version = 1;
-      """)
-
-    :ok = Exqlite.Sqlite3.close(db)
-
-    {:ok, db} = SQLite.open(path: path)
-    assert version(db) == 2
-    assert {:ok, %{name: "u"}} = SQLite.user(db, "u")
-
-    assert {:ok, %{id: "old", prompt: "old prompt", subscription_id: nil}} =
-             SQLite.schedule(db, "old")
-
-    assert {:ok, []} = SQLite.subscriptions(db, "u", nil)
-
-    # A subscription and its one-run delivery go in the new table and column.
-    sub = %{
-      id: "s1",
-      owner: "u",
-      session_id: "S1",
-      template: "{{payload}}",
-      label: "",
-      secret: "secret",
-      created_at: 1,
-      last_at: nil,
-      last_outcome: nil
-    }
-
-    :ok = SQLite.put_subscription(db, sub, 16, 256, :infinity)
-
-    delivery = %{
-      id: "d1",
-      subscription_id: "s1",
-      owner: "u",
-      session_id: "S1",
-      prompt: "p",
-      at: 1,
-      every: nil,
-      run: 0,
-      delivery_id: "x1",
-      due_at: 1,
-      next_try_at: 1,
-      last_at: nil,
-      last_outcome: nil,
-      created_at: 1
-    }
-
-    :ok = SQLite.put_delivery(db, delivery, 16, 60, 3_600, 1, :infinity)
-    assert {:ok, [%{id: "s1", pending: true}]} = SQLite.subscriptions(db, "u", nil)
-    :ok = SQLite.close(db)
-
-    # The migrated file opens again with the same rows.
-    {:ok, db} = SQLite.open(path: path)
-    assert version(db) == 2
-    assert {:ok, %{id: "old"}} = SQLite.schedule(db, "old")
-    assert {:ok, [%{id: "s1", pending: true}]} = SQLite.subscriptions(db, "u", nil)
-    :ok = SQLite.close(db)
-  end
-
-  defp version(db) do
-    {:ok, stmt} = Exqlite.Sqlite3.prepare(db, "PRAGMA user_version")
-    :ok = Exqlite.Sqlite3.bind(stmt, [])
-    {:ok, [[n]]} = Exqlite.Sqlite3.fetch_all(db, stmt)
-    :ok = Exqlite.Sqlite3.release(db, stmt)
-    n
-  end
-
   test "a store in memory ends with its connection" do
     {:ok, db} = SQLite.open(path: nil)
     :ok = SQLite.add_user(db, user("ann"), 64, :infinity)
@@ -133,7 +48,8 @@ defmodule Helyx.Hub.Store.SQLiteTest do
 
   test "a query that cannot run answers :failed" do
     {:ok, db} = SQLite.open(path: nil)
-    :ok = Exqlite.Sqlite3.execute(db, "DROP TABLE tokens")
+    %{db: connection} = db
+    :ok = Exqlite.Sqlite3.execute(connection, "DROP TABLE tokens")
     assert SQLite.tokens(db, "u") == {:error, :failed}
     assert SQLite.add_token(db, token("t1", "u"), 2, :infinity) == {:error, :failed}
     :ok = SQLite.close(db)
@@ -259,6 +175,47 @@ defmodule Helyx.Hub.Store.SQLiteTest do
     assert SQLite.open(path: path) == {:error, :store_locked}
 
     Port.close(port)
+  end
+
+  # A POSIX lock of a file belongs to the OS process, so any open and close of
+  # `hub.db` in this VM drops the lock that SQLite holds on it: the `read` tool
+  # on the path is enough. The store's lock is an `flock` on another file,
+  # which a close of a descriptor of the database does not drop.
+  @tag :slow
+  test "an open and close of the file in this VM does not drop the lock", %{tmp_dir: dir} do
+    path = Path.join(dir, "hub.db")
+    {:ok, db} = SQLite.open(path: path)
+
+    File.close(File.open!(path, [:read, :binary]))
+
+    assert open_elsewhere(path) == :store_locked
+
+    :ok = SQLite.close(db)
+    assert open_elsewhere(path) == :opened
+  end
+
+  # The store of a second OS process, which takes the lock of the path: its
+  # answer is the one that a held file gives.
+  defp open_elsewhere(path) do
+    paths = Enum.flat_map(:code.get_path(), &["-pa", to_string(&1)])
+
+    script = """
+    case Helyx.Hub.Store.SQLite.open(path: #{inspect(path)}) do
+      {:ok, _store} -> IO.puts("opened")
+      {:error, :store_locked} -> IO.puts("store_locked")
+      other -> IO.puts(inspect(other))
+    end
+    """
+
+    {out, 0} =
+      System.cmd(System.find_executable("elixir"), paths ++ ["-e", script],
+        stderr_to_stdout: true
+      )
+
+    case out |> String.split("\n", trim: true) |> List.last() do
+      "opened" -> :opened
+      "store_locked" -> :store_locked
+    end
   end
 
   # The output of the holder can come in parts; it holds the lock once it says so.

@@ -15,7 +15,10 @@ defmodule Helyx.Provider.Codex.Wire do
 
   # `events` in order; `out` is newest first.
   def push(state, events),
-    do: %{state | out: Enum.reverse(Enum.map(events, &{:event, state.turn_id, &1}), state.out)}
+    do: %{
+      state
+      | out: Enum.reverse(Enum.map(events, &{:event, State.turn_id(state), &1}), state.out)
+    }
 
   def rpc(state, method, params) do
     {id, state} = open(state, method)

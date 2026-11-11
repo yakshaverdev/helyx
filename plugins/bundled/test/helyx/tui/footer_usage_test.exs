@@ -49,7 +49,12 @@ defmodule Helyx.TUI.FooterUsageTest do
   # snapshot.
   defp resumed(messages, model) do
     decoded =
-      for m <- messages, do: %{m | id: "m1"} |> Codec.encode() |> JSON.encode!() |> JSON.decode!()
+      for m <- messages,
+          do:
+            %{m | id: "m1", origin: if(m.role == :user, do: %{kind: :user, id: nil})}
+            |> Codec.encode()
+            |> JSON.encode!()
+            |> JSON.decode!()
 
     snapshot(Enum.map(decoded, &Codec.decode/1), model)
   end
@@ -66,7 +71,6 @@ defmodule Helyx.TUI.FooterUsageTest do
       model: model,
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
       persisting: true,
-      more: false,
       usage: usage,
       context: context
     })
@@ -167,14 +171,14 @@ defmodule Helyx.TUI.FooterUsageTest do
           "outputTokens" => 5
         })
 
-      {:done, %{usage: usage}} = Items.terminal(%{"status" => "completed"}, items)
+      {:done, %{usage: usage}} = Items.terminal(%{"status" => "completed"}, items, false)
       model = "codex/gpt-6.1-sol"
 
       assert row([Message.user("one"), assistant(usage, model)], model) ==
                "codex/gpt-6.1-sol · idle · in 52.3k out 10 · cache 68% · $? · 5%"
 
       # A done with no notification: the unknown usage.
-      {:done, %{usage: unknown}} = Items.terminal(%{"status" => "completed"}, %Items{})
+      {:done, %{usage: unknown}} = Items.terminal(%{"status" => "completed"}, %Items{}, false)
       assert row([assistant(unknown, model)], model) == "codex/gpt-6.1-sol · idle · $?"
     end
 
@@ -282,7 +286,6 @@ defmodule Helyx.TUI.FooterUsageTest do
           instance_id: "i",
           seq: 0,
           messages: [Message.user("two")],
-          more: true,
           turn: nil,
           model: @model,
           queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
@@ -304,7 +307,6 @@ defmodule Helyx.TUI.FooterUsageTest do
         instance_id: "i",
         seq: 0,
         messages: messages,
-        more: false,
         turn: nil,
         model: @model,
         queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},

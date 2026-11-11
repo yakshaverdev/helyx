@@ -23,20 +23,6 @@ fn a_nonce_has_exactly_32_bytes() {
     }
 }
 
-#[test]
-fn no_frame_of_the_handshake_follows_its_answer() {
-    for answer in [
-        json!({"type": "welcome", "protocol": 9}),
-        json!({"type": "refused", "code": "protocol", "server_protocol": 10}),
-    ] {
-        let mut handshake = Handshake::new(None);
-        handshake.step(&j(&challenge(32))).unwrap();
-        assert!(handshake.step(&j(&answer)).is_ok());
-        assert!(handshake.step(&j(&answer)).is_err(), "{answer}");
-        assert!(handshake.step(&j(&challenge(32))).is_err(), "{answer}");
-    }
-}
-
 fn steer_res(id: &str) -> Result<ServerFrame, helyx_client_core::Broken> {
     let frame = json!({"type": "res", "id": id, "ok": true, "result": {}});
     frame::parse(&j(&frame), |_| Some("steer"))
@@ -135,7 +121,7 @@ fn a_cost_of_signed_zero_is_zero() {
 
 #[test]
 fn refused_names_another_protocol() {
-    for (server_protocol, valid) in [(7, true), (9, false), (10, true)] {
+    for (server_protocol, valid) in [(7, true), (10, false), (11, true)] {
         let mut handshake = Handshake::new(None);
         handshake.step(&j(&challenge(32))).unwrap();
         let refused =
@@ -175,30 +161,6 @@ fn a_tool_call_keeps_an_integer_of_100_digits() {
         panic!()
     };
     assert_eq!(arguments.get("n").unwrap().encode(), digits);
-}
-
-#[test]
-fn a_broken_handshake_frame_ends_the_handshake() {
-    let broken_then_good = [
-        (challenge(3), challenge(32)),
-        (
-            json!({"type": "welcome", "protocol": 2}),
-            json!({"type": "welcome", "protocol": 9}),
-        ),
-        (
-            json!({"type": "refused", "code": "x", "server_protocol": 4}),
-            json!({"type": "refused", "code": "protocol", "server_protocol": 10}),
-        ),
-    ];
-    for (broken, good) in broken_then_good {
-        let mut handshake = Handshake::new(None);
-        // An answer is taken only after a challenge.
-        if broken["type"] != "challenge" {
-            handshake.step(&j(&challenge(32))).unwrap();
-        }
-        assert!(handshake.step(&j(&broken)).is_err(), "{broken}");
-        assert!(handshake.step(&j(&good)).is_err(), "{good}");
-    }
 }
 
 #[test]

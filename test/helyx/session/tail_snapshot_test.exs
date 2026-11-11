@@ -30,7 +30,7 @@ defmodule Helyx.Session.TailSnapshotTest do
     assert [%{role: :user}, %{role: :assistant, usage: %{cost: 0.5}}, %{role: :tool_result}, last] =
              full.messages
 
-    refute full.more
+    assert full.older == 0
     assert {full.usage, full.context} == Totals.of(full.messages)
 
     assert %Totals{input: 3, output: 4, cache_read: 5, cache_write: 6, unknown: true, list: true} =
@@ -40,14 +40,14 @@ defmodule Helyx.Session.TailSnapshotTest do
 
     {:ok, tail, _} = Session.subscribe(session, tail: 1)
     assert tail.messages == [last]
-    assert tail.more
+    assert tail.older > 0
     # The tail has no message with a cost, and the totals still count it.
     assert {tail.usage, tail.context} == {full.usage, full.context}
     assert tail.older == 3
 
     # Two would start at the result: the cut moves to the last message.
-    assert {:ok, %{messages: [^last], more: true}, _} = Session.subscribe(session, tail: 2)
-    assert {:ok, %{messages: messages, more: true}, _} = Session.subscribe(session, tail: 3)
+    assert {:ok, %{messages: [^last]}, _} = Session.subscribe(session, tail: 2)
+    assert {:ok, %{messages: messages}, _} = Session.subscribe(session, tail: 3)
     assert messages == tl(full.messages)
 
     assert Map.drop(tail, [:messages, :more, :older]) ==
@@ -75,7 +75,7 @@ defmodule Helyx.Session.TailSnapshotTest do
     {:ok, tail, _} = Session.subscribe(session, tail: 1)
     [first] = tail.messages
 
-    assert {:ok, %{messages: older, more: true, next: next}} =
+    assert {:ok, %{messages: older, next: next}} =
              Session.history(session, tail.instance_id, first.id, limit: 1)
 
     # The page of one would start at the result: it is the group of the call.
@@ -83,7 +83,7 @@ defmodule Helyx.Session.TailSnapshotTest do
     assert next == hd(older).id
 
     assert Session.history(session, tail.instance_id, next) ==
-             {:ok, %{messages: [hd(full.messages)], more: false, older: 0, next: nil}}
+             {:ok, %{messages: [hd(full.messages)], older: 0, next: nil}}
 
     # No event, and the same seq, totals, and transcript.
     refute_received {:helyx_event, _}
@@ -150,7 +150,7 @@ defmodule Helyx.Session.TailSnapshotTest do
     assert [%{role: :user} = later] = tail.messages
     assert Message.text(later) == "later"
 
-    {:ok, %{messages: [assistant, interrupted], more: true}} =
+    {:ok, %{messages: [assistant, interrupted]}} =
       Session.history(session, tail.instance_id, later.id, limit: 2)
 
     assert interrupted.role == :tool_result

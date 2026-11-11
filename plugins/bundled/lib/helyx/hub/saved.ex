@@ -8,12 +8,12 @@ defmodule Helyx.Hub.Saved do
   # by access before the page and the cursor are made.
 
   alias Helyx.Hub
+  alias Helyx.Hub.Params
 
-  # The scan of Core, its deadline, and the page of `sessions.saved` (Bounds).
+  # The scan of Core and its deadline (Bounds); the page of `sessions.saved`
+  # takes the bounds of `Params`.
   @scan_limit 256
   @scan_ms 10_000
-  @max_limit 256
-  @default_limit 50
   # The deadline of `sessions.saved` under an authority on the wire, 15,000
   # ms, less 500 ms for the reply.
   @run_ms 15_000 - 500
@@ -52,11 +52,12 @@ defmodule Helyx.Hub.Saved do
   defp params(params) do
     with true <- Enum.all?(Map.keys(params), &(&1 in ~w(cwd after limit))),
          {:ok, cwd} <- optional(params, "cwd", &is_binary/1),
-         {:ok, limit} <- optional(params, "limit", &(is_integer(&1) and &1 in 1..@max_limit)),
+         {:ok, limit} <-
+           optional(params, "limit", &(is_integer(&1) and &1 in 1..Params.max_limit())),
          {:ok, cursor} <- optional(params, "after", &is_binary/1),
          {:ok, cursor} <- cursor(cursor),
          :ok <- cwd(cwd) do
-      {:ok, cwd, cursor, limit || @default_limit}
+      {:ok, cwd, cursor, limit || Params.default_limit()}
     else
       {:error, :invalid_cwd} = error -> error
       _ -> {:error, :bad_params}

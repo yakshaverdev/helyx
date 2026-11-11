@@ -128,7 +128,7 @@ One JSON object per line. Every entry has `id`, `parent_id`, `ts`, and `type`. T
 {"id":"01J...","parent_id":"01J...","ts":"...","type":"message","role":"assistant","model":"opencode-go/kimi-k2","stop_reason":"tool_use","usage":{"input":120,"output":40},"content":[{"type":"text","text":"Listing."},{"type":"tool_call","id":"call_1","name":"bash","arguments":{"command":"ls test"}}]}
 {"id":"01J...","parent_id":"01J...","ts":"...","type":"message","role":"tool_result","tool_call_id":"call_1","tool_name":"bash","is_error":false,"content":[{"type":"text","text":"core_test.exs"}]}
 {"id":"01J...","parent_id":"01J...","ts":"...","type":"model_change","model":"claude-code/opus"}
-{"id":"01J...","parent_id":"01J...","ts":"...","type":"harness_session","provider":"claude-code","harness_session_id":"..."}
+{"id":"01J...","parent_id":"01J...","ts":"...","type":"resume_id","provider":"claude-code","resume_id":"..."}
 ```
 
 Content blocks: `text` has `text`. `thinking` has `thinking`. `tool_call` has `id`, `name`, and `arguments`. A block of another type, or a `thinking` block with a `signature`, makes the file invalid (#634). So does a message with more blocks than the live path allows (#673, the bounds row "content blocks of one message in the session file").

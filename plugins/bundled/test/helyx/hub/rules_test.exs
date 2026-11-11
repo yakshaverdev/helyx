@@ -15,13 +15,17 @@ defmodule Helyx.Hub.RulesTest do
 
     state = %{store: SQLite, db: db, default_owner_id: "owner", server_token: nil, core: nil}
     on_exit(fn -> SQLite.close(db) end)
-    %{state: state, db: db}
+    %{state: state, db: db, connection: connection(db)}
   end
 
-  defp row(db, session, owner, visibility) do
+  # The connection inside the handle of the store, for the rows that only SQL
+  # writes.
+  defp connection(%{db: db}), do: db
+
+  defp row(connection, session, owner, visibility) do
     :ok =
       Exqlite.Sqlite3.execute(
-        db,
+        connection,
         "INSERT INTO records (session_id, owner, cwd, model, active_at, visibility, created_at, " <>
           "updated_at) VALUES ('#{session}', '#{owner}', '/w', 'fake/echo', 1, '#{visibility}', 1, 1)"
       )
@@ -38,9 +42,9 @@ defmodule Helyx.Hub.RulesTest do
       )
 
   test "a hub record: a reader reads, gets forbidden on a write and not_found on a resume",
-       %{state: state, db: db} do
-    row(db, "SHAREDxxxxxx", "ann", "hub")
-    row(db, "PRIVATExxxxx", "ann", "private")
+       %{state: state, connection: connection} do
+    row(connection, "SHAREDxxxxxx", "ann", "hub")
+    row(connection, "PRIVATExxxxx", "ann", "private")
 
     assert ask(state, "bob", :read, "SHAREDxxxxxx") == :ok
     assert ask(state, "bob", :write, "SHAREDxxxxxx") == {:error, :forbidden}
@@ -75,13 +79,19 @@ defmodule Helyx.Hub.RulesTest do
   end
 
   test "a user holds at most 10,000 records: the place of a start at 9,999 and at 10,000",
-       %{state: state, db: db} do
-    :ok = Exqlite.Sqlite3.execute(db, "BEGIN")
+       %{state: state, db: db, connection: connection} do
+    :ok = Exqlite.Sqlite3.execute(connection, "BEGIN")
 
     for n <- 1..9_999,
-        do: row(db, "s" <> String.pad_leading(Integer.to_string(n), 11, "0"), "ann", "private")
+        do:
+          row(
+            connection,
+            "s" <> String.pad_leading(Integer.to_string(n), 11, "0"),
+            "ann",
+            "private"
+          )
 
-    :ok = Exqlite.Sqlite3.execute(db, "COMMIT")
+    :ok = Exqlite.Sqlite3.execute(connection, "COMMIT")
     auth = %{user: "ann", token: nil}
 
     # The place of a start holds the cap (decision 14): at 9,999 rows a
@@ -95,25 +105,34 @@ defmodule Helyx.Hub.RulesTest do
     # The default owner writes no record at a start.
     assert {:ok, _} = Live.reserve(state, "owner", second, false)
     state = Live.release(state, first)
-    row(db, "s10000xxxxxx", "ann", "private")
+    row(connection, "s10000xxxxxx", "ann", "private")
     assert Live.reserve(state, "ann", first, true) == {:error, :too_many_records}
 
     # The write of the result holds the same cap.
     start = %{session_id: "s10001xxxxxx", cwd: "/w", model: "fake/echo"}
     assert Rules.handle({:started, auth, start}, :infinity, state) == {:error, :too_many_records}
-    :ok = Exqlite.Sqlite3.execute(db, "DELETE FROM records WHERE session_id = 's10000xxxxxx'")
+
+    :ok =
+      Exqlite.Sqlite3.execute(connection, "DELETE FROM records WHERE session_id = 's10000xxxxxx'")
+
     assert Rules.handle({:started, auth, start}, :infinity, state) == :ok
     assert {:ok, %{owner: "ann", prompt: ""}} = SQLite.record(db, "s10001xxxxxx")
   end
 
   test "the first update of a derived record holds the cap of 10,000 records",
-       %{state: state, db: db} do
-    :ok = Exqlite.Sqlite3.execute(db, "BEGIN")
+       %{state: state, db: db, connection: connection} do
+    :ok = Exqlite.Sqlite3.execute(connection, "BEGIN")
 
     for n <- 1..9_999,
-        do: row(db, "o" <> String.pad_leading(Integer.to_string(n), 11, "0"), "owner", "private")
+        do:
+          row(
+            connection,
+            "o" <> String.pad_leading(Integer.to_string(n), 11, "0"),
+            "owner",
+            "private"
+          )
 
-    :ok = Exqlite.Sqlite3.execute(db, "COMMIT")
+    :ok = Exqlite.Sqlite3.execute(connection, "COMMIT")
     auth = %{user: "owner", token: nil}
     found = %{cwd: "/w", model: "fake/echo"}
     update = &Rules.handle({:record_update, auth, &1, found, %{title: "t"}}, :infinity, state)
@@ -133,8 +152,8 @@ defmodule Helyx.Hub.RulesTest do
   end
 
   test "the first text sets the prompt; later ones and sessions with no row do not",
-       %{state: state, db: db} do
-    row(db, "MINExxxxxxxx", "ann", "private")
+       %{state: state, db: db, connection: connection} do
+    row(connection, "MINExxxxxxxx", "ann", "private")
     assert ask(state, "ann", :write, "MINExxxxxxxx", {:touch, "first"}) == :ok
     assert ask(state, "ann", :write, "MINExxxxxxxx", {:touch, "second"}) == :ok
     assert {:ok, %{prompt: "first", active_at: at}} = SQLite.record(db, "MINExxxxxxxx")
@@ -143,7 +162,7 @@ defmodule Helyx.Hub.RulesTest do
     assert SQLite.record(db, "NOROWxxxxxxx") == {:error, :not_found}
 
     # A resume moves `active_at` and leaves the prompt.
-    :ok = Exqlite.Sqlite3.execute(db, "UPDATE records SET active_at = 1")
+    :ok = Exqlite.Sqlite3.execute(connection, "UPDATE records SET active_at = 1")
     assert ask(state, "ann", :resume, "MINExxxxxxxx", {:touch, nil}) == :ok
     assert {:ok, %{prompt: "first", active_at: moved}} = SQLite.record(db, "MINExxxxxxxx")
     assert moved > 1

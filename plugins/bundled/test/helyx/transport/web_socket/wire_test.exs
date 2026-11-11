@@ -25,7 +25,6 @@ defmodule Helyx.Transport.WebSocket.WireTest do
       instance_id: "i1",
       seq: 3,
       messages: [],
-      more: false,
       turn: nil,
       model: "fake/echo",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
@@ -59,6 +58,15 @@ defmodule Helyx.Transport.WebSocket.WireTest do
       assert encoded["data"] == %{"call_id" => call_id, "key" => "plan", "block" => @block}
       assert wire(encoded)["data"] == %{"call_id" => call_id, "key" => "plan", "block" => @block}
     end
+  end
+
+  # The keys of `snapshot` in the schema of `docs/features/wire-protocol.md`.
+  @snapshot_schema ~w(instance_id seq messages older turn model queue persisting
+                      usage context asks ui_blocks activated)
+
+  test "the snapshot of the encoder has exactly the keys of the schema" do
+    keys = Wire.snapshot(snapshot([])) |> Map.keys() |> MapSet.new()
+    assert keys == MapSet.new(@snapshot_schema)
   end
 
   test "the snapshot has ui_blocks, each as the data of its event, in order" do

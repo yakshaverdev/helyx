@@ -17,14 +17,14 @@ defmodule Helyx.Event do
     * `:turn_end` – `%{outcome: :done | :aborted}`, or `%{outcome: :error, error: String.t()}`; once per turn
     * `:queue_update` – `%{steers: _, follow_ups: _, running: _, held: _, waiting: _}` counts.
       Between turns it follows the drain, so the counts are the next turn's queue
-    * `:queue_dropped` – `%{texts: [String.t()], messages: [Helyx.Message.t()]}`
+    * `:queue_dropped` – `%{messages: [Helyx.Message.t()]}`
     * `:model_change` – `%{model: String.t()}`; the turn id is nil, because the
       change is outside a turn
     * `:tools_change` – `%{activated: [String.t()]}`, the activated deferred tool
       names in drop order (`docs/features/mcp-client.md`)
     * `:resume_id` – `%{provider: String.t(), resume_id: String.t(), lost: boolean, cut: non_neg_integer}`;
       `lost` is true when the provider lost its own session, and the TUI shows its notice
-    * `:steer_unconfirmed` – `%{text: String.t(), message: Helyx.Message.t()}`
+    * `:steer_unconfirmed` – `%{message: Helyx.Message.t()}`
     * `:compaction` – `%{trigger: :manual | :auto, tokens_before: non_neg_integer | nil, tokens_after: non_neg_integer | nil}`
     * `:notice` – `%{text: String.t()}`, not in the transcript
     * `:ask` – `%{ask_id: String.t(), call_id: String.t(), tool: String.t(), request: map}`

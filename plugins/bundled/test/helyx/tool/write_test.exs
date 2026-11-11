@@ -58,6 +58,6 @@ defmodule Helyx.Tool.WriteTest do
   test "missing arguments are an error result", %{run: run} do
     result = run.(%{"path" => "a.txt"})
     assert result.is_error
-    assert Helyx.Message.text(result) == "write needs a path and content"
+    assert Helyx.Message.text(result) == "content is required"
   end
 end
