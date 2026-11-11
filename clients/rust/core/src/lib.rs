@@ -3,6 +3,7 @@
 //! of events into the state that a client shows. It does no I/O: a host feeds
 //! it the decoded frames of one connection and sends the frames it returns.
 
+pub mod attention;
 mod check;
 pub mod client;
 mod connection;
