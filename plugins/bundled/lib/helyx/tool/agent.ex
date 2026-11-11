@@ -46,18 +46,11 @@ defmodule Helyx.Tool.Agent do
       when is_binary(description) and is_binary(prompt) do
     context = Helyx.Tool.context()
 
-    opts = [
-      model: context.model,
-      cwd: cwd,
-      provider_opts: context.provider_opts,
-      model_context: context.model_context,
-      parent: %{session_id: context.session_id, call_id: context.call_id},
-      # No user watches a child, so it gets no question tool either; it
-      # opens no tool source, so `tool_search` would find nothing.
-      tools: context.tools -- [name(), "question", "tool_search"]
-    ]
+    # No user watches a child, so it gets no question tool either; it
+    # opens no tool source, so `tool_search` would find nothing.
+    tools = context.tools -- [name(), "question", "tool_search"]
 
-    case Helyx.Subagent.run(context.core, context.session_id, opts, prompt) do
+    case Helyx.Subagent.run(context, cwd, tools, prompt) do
       {:error, {:start, reason}} -> {:error, start_error(reason)}
       result -> result
     end

@@ -106,23 +106,12 @@ defmodule Helyx.Tool.SessionRead do
   defp answer(_env, text, "", _cwd), do: {:ok, text}
 
   defp answer(env, text, question, cwd) do
-    context = env.context
-
-    opts = [
-      model: context.model,
-      cwd: cwd,
-      provider_opts: context.provider_opts,
-      model_context: context.model_context,
-      parent: %{session_id: context.session_id, call_id: context.call_id},
-      # The child reads the text of its prompt and runs no tool.
-      tools: []
-    ]
-
     prompt =
       "Answer the question from the transcript of a session below. Give only the answer.\n\n" <>
         "Question: " <> question <> "\n\nTranscript:\n\n" <> text
 
-    case Helyx.Subagent.run(env.core, context.session_id, opts, prompt) do
+    # The child reads the text of its prompt and runs no tool.
+    case Helyx.Subagent.run(env.context, cwd, [], prompt) do
       {:error, {:start, reason}} ->
         {:error, "session_read: the helper agent did not start: " <> Coordinator.text(reason)}
 
