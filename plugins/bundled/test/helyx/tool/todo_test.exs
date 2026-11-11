@@ -22,7 +22,7 @@ defmodule Helyx.Tool.TodoTest do
     assert text ==
              "[x] Read the brief\n[>] Write the tool\n[ ] Run the tests\n1/3 done"
 
-    assert block == %{"kind" => "todo", "text" => text, "items" => items}
+    assert block == %{"kind" => "todo", "text" => "1/3 done", "items" => items}
   end
 
   test "1 item and max_items() items pass, and an empty or a longer list fails" do

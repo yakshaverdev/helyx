@@ -5,7 +5,7 @@ defmodule Helyx.Tool.Todo do
 
   The result text is one line for each item, `[x]` for done, `[>]` for in
   progress, and `[ ]` for pending, then a line with the count of the done
-  items. The result carries the same lines in a `todo` UI block, which every
+  items. The result carries the items in a `todo` UI block, which a
   client shows under the call (`docs/features/ui-blocks.md`, "The
   vocabulary").
 
@@ -20,9 +20,8 @@ defmodule Helyx.Tool.Todo do
   @statuses ~w(pending in_progress done)
   # The most items of one plan, and the most bytes of one item. A longer
   # plan does not help the user at a glance, and a plan item is one short
-  # line. At both bounds the block takes about four fifths of
-  # `Helyx.UIBlock.max_bytes/0`, because it holds the result text and the
-  # items.
+  # line. At both bounds the block stays under
+  # `Helyx.UIBlock.max_bytes/0`.
   @max_items 50
   @max_item_bytes 500
 
@@ -85,8 +84,9 @@ defmodule Helyx.Tool.Todo do
   def run(args, _cwd) do
     with {:ok, args} <- Args.check(args, parameters()),
          {:ok, items} <- checked(args["items"]) do
-      plan = text(items)
-      {:ok, plan, [%{"kind" => "todo", "text" => plan, "items" => items}]}
+      # A client shows the result text and the text of a block that it cannot
+      # render, so the block text is the count only.
+      {:ok, text(items), [%{"kind" => "todo", "text" => count(items), "items" => items}]}
     end
   end
 
@@ -124,12 +124,14 @@ defmodule Helyx.Tool.Todo do
       else: {:ok, items}
   end
 
-  # The model reads the same lines that the block shows.
+  # The lines that the model reads.
   defp text(items) do
-    done = Enum.count(items, &(&1["status"] == "done"))
     lines = Enum.map(items, &"#{mark(&1["status"])} #{&1["text"]}")
-    Enum.join(lines ++ ["#{done}/#{length(items)} done"], "\n")
+    Enum.join(lines ++ [count(items)], "\n")
   end
+
+  defp count(items),
+    do: "#{Enum.count(items, &(&1["status"] == "done"))}/#{length(items)} done"
 
   defp mark("done"), do: "[x]"
   defp mark("in_progress"), do: "[>]"

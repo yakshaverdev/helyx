@@ -43,10 +43,10 @@ The result text is one line for each item in the order of the list: `[x] text` f
 The result also carries one UI block of kind `todo`:
 
 ```json
-{"kind": "todo", "text": "<the result text>", "items": [{"text": "...", "status": "pending" | "in_progress" | "done"}]}
+{"kind": "todo", "text": "<done>/<total> done", "items": [{"text": "...", "status": "pending" | "in_progress" | "done"}]}
 ```
 
-The `text` of the block is the result text, so a client that cannot render `todo` shows the checklist as it is. The result carries one block, so the bound of the count of blocks of a result (`Helyx.UIBlock.max_result_blocks/0`) holds with room to spare. The session checks it with `Helyx.UIBlock.check/1` as any block of a result (`Helyx.Session.Hands.Run`), and the model never gets it.
+The `text` of the block is the count line only. A client shows the result text and the text of a block that it cannot render, so a block with the full checklist would show the checklist twice. The result carries one block, so the bound of the count of blocks of a result (`Helyx.UIBlock.max_result_blocks/0`) holds with room to spare. The session checks it with `Helyx.UIBlock.check/1` as any block of a result (`Helyx.Session.Hands.Run`), and the model never gets it.
 
 ### Clients
 
@@ -65,7 +65,7 @@ None. This feature adds a tool and a kind.
 | new lines in a text | none: the block shows one line for each item | the error result `items[n].text must hold no new line` | `run/2` |
 | items in progress | 1 | the error result `items: at most one item is in_progress` | `run/2` |
 | keys of one item | `text` and `status` | the error result `items[n]: an item holds only text and status` | `run/2` |
-| one `todo` block | `Helyx.UIBlock.max_bytes/0` bytes of JSON. A list at both item bounds takes about four fifths of it, because the block holds the result text and the items, so it holds two copies of each text | the session cuts the block to `{kind, text, cut: true}`, as for any block (ADR 0011 §2), and the user sees the fallback text of the block; the model still reads the whole list in the result text | `Helyx.UIBlock.check/1` |
+| one `todo` block | `Helyx.UIBlock.max_bytes/0` bytes of JSON. A list at both item bounds stays under it, because the block holds each item text once | the session cuts the block to `{kind, text, cut: true}`, as for any block (ADR 0011 §2), and the user sees the fallback text of the block; the model still reads the whole list in the result text | `Helyx.UIBlock.check/1` |
 
 Accepted (constructed): a text of many quotes, backslashes, or control characters encodes to more bytes than its raw size and is treated as above. A plan is a sentence; a text that JSON escapes at every byte is not one. No real model or client sends it, so the tool adds no check of the encode.
 
