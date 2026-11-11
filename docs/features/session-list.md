@@ -33,18 +33,20 @@ Decisions:
   - `Scan.find(dir, id)` returns `{:ok, path, header}`, `{:error, :invalid_id}`, `{:error, :not_found}`, `{:error, :duplicate_id}` (two project folders hold the id; only a copy by hand makes that), or `{:error, {:invalid_file, text}}` (the file has no session header).
 - `Helyx.Session.File.pick/3` takes the option `:id`: it picks the file of that id, and the header must name `cwd`, else `:not_found`. Without `:id`, the newest session of the folder that has a message.
 - `Helyx.Session.resume/2` passes `:id` to `Helyx.Session.File.pick/3`. `session.ex` does not grow, so it needs no split.
-- `CodingAgent.run/1` and `CodingAgent.start_session/1`: `:resume` is `true` (the newest session of `:cwd`) or a session id. `:sessions_dir` is required; `CodingAgent.CLI` sets the default `~/.helyx/sessions`.
+- `CodingAgent.print/3`: `:resume` is `true` (the newest session of `:cwd`) or a session id, and `--session` runs in the folder of the header, which the server gives. The session is opened by the server of the data folder.
 - `CodingAgent.CLI`: the switches `--list`, `--all`, and `--session <id>`.
   - `--list` combines only with `--all` or a directory argument. `--all` needs `--list` and does not combine with a directory argument.
   - `--session` does not combine with `--model`, `--resume`, `--list`, or a directory argument. `--model` with `--resume` stays an error.
   - `--version` skips these checks, as it skips the others.
-  - `--list` reads the disk and prints. It starts no application, and it returns 0, also when no session is listed.
-  - The errors of `--session`: `not a session id: "<id>"`, `no session "<id>"`, `not a directory: "<folder>"`, and the error line of a failed start for the other errors. They come after the tool checks (see "Folder").
+  - `--list` asks the server of the data folder for one page of 256 sessions, prints each line, and ends the connection. It starts a server when none runs, as `helyx` with no `-p` does, and returns 0, also when no session is listed.
+  - The errors of `--session`: `no session "<id>"` for the `not_found` of the wire, `not a directory: "<folder>"` for the folder of the header, and the error line of a failed start for the other errors, with the text of the server (`:start_failed`) or the text of the wire code. They come after the tool checks (see "Folder").
 
 ## Replaced mechanism
 
 1. `most_recent/3`, `newest/2`, `read_header/1` (now `head/1`), `read_up_to/2`, `project_dir/2`, `check_version/1`, `@version`, and the header map of `create/4` move from `Helyx.Session.File` to `Helyx.Session.File.Scan`. `most_recent/3` adds one rule: a candidate must not be empty (see Goal). A header with no string `cwd` is now not a session; before, it matched no folder, so the result is the same. The other rules stay: the scan bound of 256 files by modification time, the path as the tie break, the header `cwd` match, and the newest header `ts` wins.
 2. The tests of the header scan in `test/helyx/session/file_test.exs` keep their properties. Their sessions get a user message, because a session with only a header is now left out. The test "create writes a header and resume restores the empty session" becomes the test that a header-only session is not resumed. The tests that resume a session with a model change or a damaged entry and no message get a user message first.
+
+The change of 2026-11-11 replaces the read of the disk by the CLI: `--list` is a page of `sessions.saved` of the server of the data folder (`Helyx.TUI.Wire.Connection.list_saved/2`), and `--session` resumes the id over the wire, so the client reads no session file. The scan stays in the server, where its bounds are. Tests: "`--list` prints the sessions of the folder, newest first" and "`--list --all` puts the folder on each line, and the file text has a width" (`cli_test.exs`), which run a server of the test VM.
 
 ## Bounds
 
@@ -60,8 +62,8 @@ Decisions:
 | first prompt on screen | 60 code points after the clean pass; a code point, not a grapheme, because one grapheme can hold any number of combining marks | cut at 60 code points | `Helyx.TUI.SessionList.line/2` (#551 moved it from `CodingAgent.CLI`) |
 | model on screen | 40 code points after the clean pass | cut at 40 code points | `Helyx.TUI.SessionList.line/2` (#551 moved it from `CodingAgent.CLI`) |
 | folder on screen (`--all`, and the error of `--session`) | the last 80 code points after the clean pass; the end of a path is the part that tells folders apart | the start is cut | `Helyx.TUI.SessionList.line/2` (#551 moved it from `CodingAgent.CLI`) |
-| session id of `--session` | the format of `Helyx.Session.Id`, checked before any path is built | `not a session id`, no file access | `Scan.find/2` |
-| files that match an id | one | two or more give `:duplicate_id` | `Scan.find/2` |
+| session id of `--session` | the format of `Helyx.Session.Id`, checked in the server before any path is built | no session of that id: `no session "<id>"` under a Hub, or the term of the server | `Scan.find/2` |
+| files that match an id | one | two or more: `no session "<id>"` under a Hub, or the term of the server | `Scan.find/2` |
 | resume by id: file size, heap | the bounds of the resume of `Helyx.Session.File` (no file limit, 64 MiB for one line, the heap cap of the decode of one line) | as for `--resume` | `Helyx.Session.File.resume_picked/3` |
 
 ## Ownership

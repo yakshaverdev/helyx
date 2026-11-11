@@ -1,33 +1,38 @@
 defmodule CodingAgent.Print do
   @moduledoc """
-  Print mode, a client of one session: one prompt in, the final answer out
-  on stdout, and an exit status. The session id, the notices, and the
-  errors go to stderr. Piped stdin (stdin is not a terminal) is added to
-  the prompt as a block, up to 1 MiB of UTF-8. Every print run ends with a
-  halt of the VM, and the first SIGTERM or SIGHUP aborts the turn first.
-  The design is in `docs/features/print-mode.md`.
+  Print mode, a client of one session over the wire: one prompt in, the
+  final answer out on stdout, and an exit status. The session id, the
+  notices, and the errors go to stderr. Piped stdin (stdin is not a
+  terminal) is added to the prompt as a block, up to 1 MiB of UTF-8. Every
+  print run ends with a halt of the VM, and the first SIGTERM or SIGHUP
+  ends the session first. The design is in `docs/features/print-mode.md`.
   """
 
-  alias Helyx.{Event, Message, Reason, Session}
+  alias Helyx.{Event, Message, Reason}
+  alias Helyx.TUI.Link
+  alias Helyx.TUI.Wire.Connection
+
+  require Link
 
   defmodule Wait do
     @moduledoc false
-    # The state of the wait of `run/2`: `last` is the last assistant message
+    # The state of the wait of `run/5`: `last` is the last assistant message
     # of the turn, `queue` the last counts of the session (`queue_update`),
     # and `idle?` true from a normal turn end that leaves the wait to the
-    # next turn. `session` gets the acks.
-    defstruct [:session, :last, :queue, idle?: false]
+    # next turn. `conn` and `sub` get the acks.
+    defstruct [:conn, :sub, :last, :queue, idle?: false]
   end
 
   # About 250,000 tokens, more than the context window of the models Helyx
   # runs, and far under the 64 MiB of one line of a session file.
   @max_stdin_bytes 1_048_576
 
-  # The abort releases the provider and the tools, or reports them as not
-  # confirmed; a turn that does not end in this time is cut by the halt.
+  # The end of the session releases the provider and the tools, or reports
+  # them as not confirmed; a turn that does not end in this time is cut by
+  # the halt.
   @abort_ms 3_000
 
-  @typedoc "The exit status that `run/2` returns; a signal halts with 129 or 143."
+  @typedoc "The exit status that `run/5` returns; a signal halts with 129 or 143."
   @type status :: 0 | 1
 
   @typedoc "Ends the VM with the status; tests pass a function that reports it."
@@ -37,15 +42,15 @@ defmodule CodingAgent.Print do
   @spec max_stdin_bytes() :: pos_integer()
   def max_stdin_bytes, do: @max_stdin_bytes
 
-  @doc "The bound of the wait for the abort after a signal, in milliseconds."
+  @doc "The bound of the wait for the end of the session after a signal, in milliseconds."
   @spec abort_ms() :: pos_integer()
   def abort_ms, do: @abort_ms
 
   @doc """
   Runs `fun` as the whole of print mode, and ends it with `halt` and the
   status. The first step traps SIGTERM and SIGHUP, before any output, and
-  the trap stays for the life of the VM: the first of them aborts the
-  session that `run/2` runs, waits at most `abort_ms/0`, and calls `halt`
+  the trap stays for the life of the VM: the first of them ends the
+  session that `run/5` runs, waits at most `abort_ms/0`, and calls `halt`
   with 143 or 129; later ones are ignored, and so is every other signal while
   the stop runs. The run, in a process of its own, sends the log to
   stderr, so stdout holds only the answer, and calls `fun`. A raise, throw,
@@ -151,76 +156,86 @@ defmodule CodingAgent.Print do
   end
 
   @doc """
-  Sends `prompt` to `session`, waits until the session settles, prints the
-  answer of the last turn, and returns the exit status: 0 for a normal
-  end, 1 for a failed or aborted turn, an answer cut at the output limit,
-  a session that stops, or background runs whose ends hold
+  Sends `prompt` to the session `id` over the connection `conn`, waits until
+  the session settles, prints the answer of the last turn, and returns the
+  exit status: 0 for a normal end, 1 for a failed or aborted turn, an answer
+  cut at the output limit, a session or a connection that ends, or
+  background runs whose ends hold
   (`docs/features/print-background-wait.md`). It must run inside `main/2`,
-  which a signal uses to abort `session`. The caller aborts the turn and
-  stops Core after it.
+  in the process that owns `conn` and its monitor `ref`: the events of the
+  subscription come to that process. `stop` is what the signal handler
+  calls; the caller ends the session and the connection after it. The
+  design is in `docs/features/print-mode.md`.
   """
-  @spec run(Session.t(), String.t()) :: status()
-  def run(session, prompt) do
-    :ok = :gen_event.call(:erl_signal_server, __MODULE__.Signal, {:session, session})
+  @spec run(pid(), reference(), String.t(), String.t(), (-> term())) :: status()
+  def run(conn, ref, id, prompt, stop) do
+    :ok = :gen_event.call(:erl_signal_server, __MODULE__.Signal, {:session, stop})
 
-    with {:ok, snapshot, ref} <- Session.subscribe(session),
-         stderr("session " <> session.id),
+    with {:ok, snapshot, sub} <- Connection.subscribe(conn, id),
+         stderr("session " <> id),
          # A stop of the saving before the subscribe sent its notice to no client.
          if(not snapshot.persisting, do: stderr(Reason.text(:not_saved))),
-         :ok <- Session.prompt(session, prompt) do
-      wait(ref, %Wait{session: session, queue: snapshot.queue})
+         :ok <- Connection.prompt(conn, id, prompt) do
+      wait(ref, sub, %Wait{conn: conn, sub: sub, queue: snapshot.queue})
     else
-      {:error, reason} -> fail("could not run the prompt: " <> inspect(reason))
+      {:error, reason} -> fail("could not run the prompt: " <> prompt_error(reason))
     end
   end
 
-  defp wait(ref, state) do
-    receive do
-      {:helyx_event, %Event{} = event} ->
-        :ok = Session.ack(state.session, event)
-        on_event(event, ref, state)
+  # A wire error has the text of the footer of the TUI; any other error is
+  # the term as inspect/1 shows it.
+  defp prompt_error(reason) when Link.wire_error?(reason), do: Link.error_text(reason)
+  defp prompt_error(reason), do: inspect(reason)
 
-      {:helyx_end, ^ref, :slow} ->
-        fail({:session_down, :slow})
+  defp wait(ref, sub, state) do
+    receive do
+      {:helyx_event, ^sub, %Event{} = event} ->
+        :ok = Connection.ack(state.conn, sub, event)
+        on_event(event, ref, sub, state)
+
+      # The session of the subscription ended: stopped, or crashed.
+      {:helyx_end, ^sub, reason} ->
+        fail({:session_down, reason})
 
       {:DOWN, ^ref, :process, _pid, reason} ->
-        fail({:session_down, Session.end_reason(reason)})
+        fail({:connection_down, reason})
     end
   end
 
   defp on_event(
          %Event{type: :message_end, data: %{message: %Message{role: :assistant} = m}},
          ref,
+         sub,
          state
        ),
-       do: wait(ref, %{state | last: m})
+       do: wait(ref, sub, %{state | last: m})
 
   # While idle, a turn opens after the `queue_update` of its ends, so
   # the counts alone end the wait only with an end that holds.
-  defp on_event(%Event{type: :queue_update, data: queue}, ref, state) do
+  defp on_event(%Event{type: :queue_update, data: queue}, ref, sub, state) do
     if queue.held > 0 and state.idle?,
-      do: settle(ref, %{state | queue: queue}),
-      else: wait(ref, %{state | queue: queue})
+      do: settle(ref, sub, %{state | queue: queue}),
+      else: wait(ref, sub, %{state | queue: queue})
   end
 
-  defp on_event(%Event{type: :notice, data: %{text: text}}, ref, state) do
+  defp on_event(%Event{type: :notice, data: %{text: text}}, ref, sub, state) do
     stderr(text)
-    wait(ref, state)
+    wait(ref, sub, state)
   end
 
-  defp on_event(%Event{type: :turn_start}, ref, state),
-    do: wait(ref, %{state | last: nil, idle?: false})
+  defp on_event(%Event{type: :turn_start}, ref, sub, state),
+    do: wait(ref, sub, %{state | last: nil, idle?: false})
 
-  defp on_event(%Event{type: :turn_end, data: %{outcome: :done}}, ref, state),
-    do: settle(ref, state)
+  defp on_event(%Event{type: :turn_end, data: %{outcome: :done}}, ref, sub, state),
+    do: settle(ref, sub, state)
 
-  defp on_event(%Event{type: :turn_end, data: data}, _ref, _state), do: finish(data)
-  defp on_event(%Event{}, ref, state), do: wait(ref, state)
+  defp on_event(%Event{type: :turn_end, data: data}, _ref, _sub, _state), do: finish(data)
+  defp on_event(%Event{}, ref, sub, state), do: wait(ref, sub, state)
 
   # After a normal turn end: a running run, or an end that waits for a
   # turn, holds the wait; a held end never opens a turn, as no user sends a
   # prompt.
-  defp settle(ref, %Wait{queue: queue, last: last} = state) do
+  defp settle(ref, sub, %Wait{queue: queue, last: last} = state) do
     case {queue.running + queue.waiting, queue.held} do
       {0, 0} ->
         answer(last)
@@ -232,7 +247,7 @@ defmodule CodingAgent.Print do
 
       {n, 0} ->
         stderr("waiting for background runs: #{n}")
-        wait(ref, %{state | idle?: true})
+        wait(ref, sub, %{state | idle?: true})
     end
   end
 
@@ -278,13 +293,13 @@ defmodule CodingAgent.Print do
 
     @impl true
     def init({halt, _old_state}),
-      do: {:ok, %{halt: halt, session: nil, phase: :running}}
+      do: {:ok, %{halt: halt, stop: nil, phase: :running}}
 
     @impl true
     def handle_event(signal, %{phase: :running} = state) when is_map_key(@statuses, signal) do
-      %{halt: halt, session: session} = state
+      %{halt: halt, stop: stop} = state
       status = Map.fetch!(@statuses, signal)
-      spawn(fn -> stop(session, status, halt) end)
+      spawn(fn -> stop(stop, status, halt) end)
       {:ok, %{state | phase: {:stopping, status}}}
     end
 
@@ -304,7 +319,7 @@ defmodule CodingAgent.Print do
     def handle_event(_signal, state), do: {:ok, state}
 
     @impl true
-    def handle_call({:session, session}, state), do: {:ok, :ok, %{state | session: session}}
+    def handle_call({:session, stop}, state), do: {:ok, :ok, %{state | stop: stop}}
     # `{:stopping, status}`: a signal started the stop. `:running`: the run
     # finished first, and only one call happens.
     def handle_call(:finish, %{phase: {:stopping, _status}} = state),
@@ -312,12 +327,13 @@ defmodule CodingAgent.Print do
 
     def handle_call(:finish, state), do: {:ok, :ok, %{state | phase: :finished}}
 
-    # The abort runs unlinked: a session that is gone, or one that does not
-    # answer, holds the halt for at most the bound.
+    # The request runs unlinked: a session that is gone, or one that does not
+    # answer, holds the halt for at most the bound. `stop` is nil before
+    # `run/5` names it.
     defp stop(nil, status, halt), do: halt.(status)
 
-    defp stop(session, status, halt) do
-      {_pid, ref} = spawn_monitor(fn -> Session.abort(session) end)
+    defp stop(stop, status, halt) do
+      {_pid, ref} = spawn_monitor(stop)
 
       receive do
         {:DOWN, ^ref, :process, _pid, _reason} -> :ok

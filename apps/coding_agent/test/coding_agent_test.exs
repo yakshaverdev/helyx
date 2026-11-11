@@ -32,74 +32,35 @@ defmodule CodingAgentTest do
     assert Message.text(List.last(messages(events))) == "Done."
   end
 
-  # run/1 starts Core under its default name; no other async test uses it.
-  @tag :tmp_dir
-  test "run/1 rejects a bad model ref and stops the Core it started", %{tmp_dir: dir} do
-    assert {:error, {:invalid_model_ref, "not-a-ref"}} =
-             CodingAgent.run(model: "not-a-ref", cwd: dir, sessions_dir: dir, prompt: "p")
-
-    assert Process.whereis(Helyx.Core) == nil
-  end
-
-  @tag :tmp_dir
-  test "start_session persists to disk, and a resume by id restores the saved model",
-       %{tmp_dir: dir} do
-    core = :"agent_core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: CodingAgent.plugins()})
-
-    {:ok, session} =
-      CodingAgent.start_session(core: core, cwd: dir, sessions_dir: dir, model: "fake/echo")
-
-    assert [_file] = Path.wildcard(Path.join(dir, "*/*.jsonl"))
-
-    Helyx.Test.SessionFile.stop(session)
-
-    # The session has no message, so the newest-session resume leaves it out.
-    assert {:error, :not_found} =
-             CodingAgent.start_session(core: core, cwd: dir, sessions_dir: dir, resume: true)
-
-    {:ok, resumed} =
-      CodingAgent.start_session(core: core, cwd: dir, sessions_dir: dir, resume: session.id)
-
-    assert snapshot(resumed).model == "fake/echo"
-  end
-
   # The sentence of a start error, after the prefix of every start error.
   defp sentence(reason) do
     assert "could not start the agent: " <> text = CodingAgent.error_text(reason)
     text
   end
 
+  # The reasons of a start, a resume, or a command. The file errors of a
+  # session reach a client as the text of `{:start_failed, text}`.
   test "error_text turns the remaining shapes into text" do
-    assert sentence(:not_regular) =~ "not a regular file"
-    assert sentence(:invalid_id) == "not a session id"
-    assert sentence(:duplicate_id) == "more than one session file has this id"
+    assert sentence(:not_found) ==
+             "no saved session for this directory; start one without --resume"
+
     assert sentence(:eacces) == "permission denied"
     assert sentence(:queue_full) == ":queue_full"
-    assert sentence({:repair_failed, "x"}) == "could not repair the session file: x"
-
-    assert sentence({:create_failed, :enospc}) =~
-             "create the session file: no space"
+    assert sentence(:too_large) == "over the request bound"
+    assert sentence(:too_many_sessions) == "the server runs as many sessions as it can"
+    assert sentence(:invalid_cwd) =~ "the directory is not UTF-8"
 
     assert sentence({:tool_unavailable, "bash", "perl not found"}) ==
              "the bash tool is not available: perl not found"
 
-    assert sentence({:too_large, "a\nb\e[2J"}) == "a b?[2J"
-    assert sentence({:invalid_file, <<"a", 0xFF, 0, "b">>}) =~ "damaged: a??b"
-    refute sentence({:repair_failed, %{__struct__: MapSet, map: 1}}) =~ "\n"
-    assert sentence(:invalid_cwd) =~ "the directory is not UTF-8"
-    assert sentence({:create_failed, :eacces}) =~ "session file: permission denied"
     assert sentence({:terminal_init_failed, "no tty"}) =~ "did not start: no tty"
 
-    assert sentence({:lock_failed, "perl gave no answer\nin 5000 ms"}) ==
-             "could not lock the session: perl gave no answer in 5000 ms"
+    assert sentence({:invalid_model_ref, "x"}) ==
+             "the model ref is not valid; use provider/model"
 
-    assert sentence(:open_timeout) == "the session file did not open in time"
-
-    # The whole line, with no start prefix (#579).
-    assert CodingAgent.error_text({:session_locked, "abc\e[2J"}) ==
-             "session abc?[2J is open in another process"
-
+    assert sentence({:unknown_provider, "nope"}) == ~s(no provider has the id "nope")
+    assert sentence({:invalid_option, :model}) =~ "the model ref is not valid"
+    assert sentence({:start_failed, "no\nroom"}) == "no room"
     assert sentence({:some, "other"}) == ~s({:some, "other"})
 
     # A Core start error names the plugins, and inspect/1 caps a long id (#169).
@@ -154,11 +115,13 @@ defmodule CodingAgentTest do
     assert String.valid?(text)
   end
 
-  test "error_text of a long value from the session file has at most 4000 bytes" do
-    # `inspect/1` keeps 4096 characters of the string, more than the cap.
-    text = CodingAgent.error_text({:unknown_version, String.duplicate("9", 10_000)})
-    assert text =~ ~s(could not start the agent: the session file has version "999)
+  # A text of the server that a start fails with keeps the 4000-byte cap of
+  # the line.
+  test "error_text of a long text of a failed start has at most 4000 bytes" do
+    text = CodingAgent.error_text({:start_failed, String.duplicate("9", 10_000)})
+    assert "could not start the agent: " <> rest = text
     assert byte_size(text) == 4000
+    assert rest =~ ~r/^9+$/
   end
 
   test "error_text tells a session that ended apart from a failed start" do
@@ -187,7 +150,6 @@ defmodule CodingAgentTest do
              "could not subscribe to the session: no connection to the server"
 
     assert sentence(:too_many_sessions) == "the server runs as many sessions as it can"
-    assert sentence({:start_failed, "no\nroom"}) == "no room"
     assert sentence(:timeout) == "no answer from the server"
     assert sentence(:busy) == "too many requests wait"
     assert sentence(:closed) == "no connection to the server"

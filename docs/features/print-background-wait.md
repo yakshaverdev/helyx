@@ -33,13 +33,13 @@ Decisions of this doc (the open items of #591):
 - `Helyx.Event` `:queue_update` and `Helyx.Session.Snapshot` `queue`: three new counts. `running: non_neg_integer()`, the background runs from their start answer to their end. `held: non_neg_integer()`, the background ends that wait for the next prompt and open no turn by themselves (0 while the ends do not hold). `waiting: non_neg_integer()`, the other ends that no turn took yet. A change of one of them alone emits `queue_update`. A client that does not know a key ignores it (ADR 0006). The TUI keeps only the steers and the follow-ups.
 - The result that the hands send for a background start (internal): `{:started, result, pid}` in place of `{:ok, text}`. Only the session server reads it.
 - `Helyx.Session.Queue` (internal): `started/1`, `ended/2`, and `running`; `counts/1` returns the five counts.
-- `CodingAgent.Print.run/2`: it waits for the session to settle, not for the first `turn_end`. It returns the status of the last turn, or 1 as above.
+- `CodingAgent.Print.run/5`: it waits for the session to settle, not for the first `turn_end`. It returns the status of the last turn, or 1 as above.
 
 No new public function and no new event type.
 
 ## Replaced mechanism
 
-The end rule of `CodingAgent.Print.run/2`.
+The end rule of `CodingAgent.Print.run/5`.
 
 1. Old: the first `turn_end` ends the wait. New: a `turn_end` with outcome `:done` ends the wait only when `running + waiting` is 0 or an end is held. Else print mode waits for the next `turn_start` or for a `queue_update` with `held` above 0. `:aborted` and `:error` end it as before.
 2. Old: the last assistant message of the wait is the answer. New: the last assistant message of the last turn; each `turn_start` clears it.
@@ -56,7 +56,7 @@ The end rule of `CodingAgent.Print.run/2`.
 | a whole print run | unbounded inside Helyx: a turn has no bound (owner decision of #491), and each turn can start new runs, at most 16 live at a time. The caller uses `timeout(1)`, which sends SIGTERM | a signal halts the VM | `CodingAgent.Print` |
 | wait for a sent end after `turn_end` | the answer of the provider to the steer: 2,000 ms (`@provider_reply_ms` of `Helyx.Session.Server.State`), then the kill of the provider process and its `provider_down`. A rejection queues the end and opens a turn; any other answer, and the `provider_down`, give it back, held when no turn is open (`Helyx.Session.Queue.answer/4`, #587) | a held end: print mode exits with the held-end line and 1 | `Helyx.Session.Queue`, `CodingAgent.Print` |
 | `running` | the live runs: at most 16 (`Helyx.Tool.background/0`) | the place is refused | `Helyx.Session.Queue` |
-| state of the wait in print mode | the last assistant message and the last counts | n/a | `CodingAgent.Print.run/2` |
+| state of the wait in print mode | the last assistant message and the last counts | n/a | `CodingAgent.Print.run/5` |
 | stderr lines | the lines of print mode, through `CodingAgent.clean_line/1`, as before | n/a | `CodingAgent.Print` |
 
 ## Ownership

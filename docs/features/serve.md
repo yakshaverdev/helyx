@@ -40,7 +40,7 @@ Decisions:
 
 1. **The launcher `exec` for every command.** The launcher ran `exec <release script> eval ... "$@"` for every argument list. For `serve` it now `exec`s a perl supervisor, which forks the VM into a new process group, waits for it, and ends it with SIGTERM at a signal. Every other command keeps the `exec`. Test: "installs the build under its commit and the launcher passes arguments and folder" keeps its property for a command that is not `serve`; a new test checks the serve branch with a fake release script.
 2. **A directory argument named `serve`.** `helyx serve` ran the TUI in the folder `serve`. It now runs the server. `helyx ./serve` keeps the old meaning.
-3. `CodingAgent.run/1` is not changed: it still stops Core at its end and aborts its session. The server does not call it.
+3. `CodingAgent.run/1` is not changed by this ticket: it stops Core at its end and aborts its session. The server does not call it. From the revision of 2026-11-11 print mode is a client of the server, and `CodingAgent.run/1` goes (`docs/features/print-mode.md`).
 4. **The address of a second start from the file alone** (#777). A second start named the address of the first valid server file that it read. It now names it only after `welcome` (decision 5). Tests: "a second start names an address only after the handshake with its token", "a second start reads a server file of 4096 bytes", and the slow tests "a second start with no valid server file gives up after the wait" and "a real SIGTERM stops a serve VM with 0; a start in another VM names its address".
 
 ## Bounds

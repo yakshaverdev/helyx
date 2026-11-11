@@ -1,6 +1,6 @@
 defmodule Helyx.TUI.Wire.Connection do
   @moduledoc """
-  The wire session of the TUI (`docs/features/tui-attach.md`, decision 7): one process that owns
+  The wire session of a client of the server (`docs/features/tui-attach.md`, decision 7): one process that owns
   the socket of `Helyx.TUI.Wire.connect/4` after `welcome`, sends the requests of the TUI and
   matches their replies by id, decodes each frame with the bounds and the schema of the wire
   (decisions 13 and 14), turns the events of a subscription into `Helyx.Event` structs, sends
@@ -42,6 +42,15 @@ defmodule Helyx.TUI.Wire.Connection do
   @max_waiting 16
 
   @type error :: atom() | {atom(), String.t()}
+
+  @typedoc "One session of `list_live/1`, as `Helyx.Sessions.Live` of the server."
+  @type live :: %{
+          id: String.t(),
+          instance_id: String.t(),
+          cwd: String.t(),
+          model: String.t(),
+          status: :idle | :running
+        }
 
   @doc "Starts the connection on `socket` and the WebSocket state of `Helyx.TUI.Wire.connect/4`. Returns the connection and the caller's monitor of it."
   @spec open(:gen_tcp.socket(), term()) :: {:ok, pid(), reference()}
@@ -103,6 +112,18 @@ defmodule Helyx.TUI.Wire.Connection do
   @spec list_saved(pid(), keyword()) ::
           {:ok, [Scan.Summary.t()], String.t() | nil} | {:error, error()}
   def list_saved(conn, opts \\ []), do: request(conn, "sessions.saved", params(opts))
+
+  @doc "The sessions that run in the server, as `Helyx.Sessions.list_live/1`."
+  @spec list_live(pid()) :: {:ok, [live()]} | {:error, error()}
+  def list_live(conn), do: request(conn, "sessions.live", %{})
+
+  @doc "Sends `text` to `session` as its prompt, as `Helyx.Session.prompt/2`."
+  @spec prompt(pid(), String.t(), String.t()) :: :ok | {:error, error()}
+  def prompt(conn, session, text), do: text_request(conn, "prompt", session, text)
+
+  @doc "Stops `session`, as `Helyx.Sessions.stop/1`."
+  @spec stop(pid(), String.t()) :: :ok | {:error, error()}
+  def stop(conn, session), do: request(conn, "stop", %{"session" => session})
 
   @doc "Sends `text` to `session` as a steer, as `Helyx.Session.steer/2`."
   @spec steer(pid(), String.t(), String.t()) :: :ok | {:error, error()}

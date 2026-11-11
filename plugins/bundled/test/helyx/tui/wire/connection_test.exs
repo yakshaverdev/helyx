@@ -113,12 +113,27 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
       assert {:error, :session_not_found} = Connection.follow_up(c.conn, "gone", "x")
       assert {:error, :session_not_found} = Connection.compact(c.conn, "gone", "")
       assert {:error, :session_not_found} = Connection.subscribe(c.conn, "gone")
+      assert {:error, :session_not_found} = Connection.prompt(c.conn, "gone", "x")
+      assert {:error, :session_not_found} = Connection.stop(c.conn, "gone")
       assert {:error, :bad_params} = Connection.list_saved(c.conn, limit: 0)
 
       assert {:error, {:unknown_provider, "nope"}} =
                Connection.start(c.conn, cwd: "/", model: "nope/m")
 
       assert {:error, :not_found} = Connection.resume(c.conn, id: "missing")
+    end
+
+    test "prompt runs a turn, list_live names the session, and stop ends it", c do
+      assert {:ok, id} = Connection.start(c.conn, cwd: File.cwd!(), model: "fake/echo")
+      assert {:ok, _snapshot, sub} = Connection.subscribe(c.conn, id)
+      assert :ok = Connection.prompt(c.conn, id, "hi")
+      assert_receive {:helyx_event, ^sub, %Event{type: :turn_end, data: %{outcome: :done}}}
+
+      assert {:ok, [%{id: ^id, status: :idle}]} = Connection.list_live(c.conn)
+
+      assert :ok = Connection.stop(c.conn, id)
+      assert_receive {:helyx_end, ^sub, :stopped}
+      assert {:ok, []} = Connection.list_live(c.conn)
     end
 
     test "take makes the caller the owner", c do

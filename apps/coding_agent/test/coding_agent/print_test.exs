@@ -1,28 +1,42 @@
 defmodule CodingAgent.PrintTest do
   # Not async: print mode swaps the handler of the VM's signal server, and
-  # the CLI runs Core under its default name.
+  # the CLI runs a server in this VM.
   use ExUnit.Case, async: false
+
+  import ExUnit.CaptureIO
+  import Helyx.Test.Events, only: [wait_until: 1]
+
+  alias CodingAgent.{Attach, CLI, Print}
+  alias Helyx.TUI.Wire.Connection
+
+  @moduletag :tmp_dir
 
   # Print mode never puts the VM back: it ends with a halt. In the test VM
   # the halt only reports, so each test puts the signal handler, SIGHUP,
   # and the log back itself.
-  setup do
+  setup %{tmp_dir: dir} do
     {:ok, log} = :logger.get_handler_config(:default)
+    # The skills of the host are not part of a run's stderr.
+    Application.put_env(:coding_agent, :home, dir)
+    sessions = Path.join(dir, "sessions")
+    Application.put_env(:coding_agent, :sessions_dir, sessions)
 
     on_exit(fn ->
-      if Print.Signal in :gen_event.which_handlers(:erl_signal_server) do
-        :ok =
-          :gen_event.swap_handler(
-            :erl_signal_server,
-            {Print.Signal, []},
-            {:erl_signal_handler, []}
-          )
+      Application.delete_env(:coding_agent, :home)
+      Application.delete_env(:coding_agent, :sessions_dir)
 
-        :ok = :os.set_signal(:sighup, :default)
-        :ok = :logger.remove_handler(:default)
-        :ok = :logger.add_handler(:default, :logger_std_h, log)
-      end
+      if server = Process.whereis(CodingAgent.Serve),
+        do: Task.Supervisor.terminate_child(CodingAgent.Servers, server)
+
+      # A test runs print mode once or more, and the handler of each run
+      # stays: the VM gets its one handler back, and the log.
+      reset_signal_server()
+      :ok = :os.set_signal(:sighup, :default)
+      _ = :logger.remove_handler(:default)
+      :ok = :logger.add_handler(:default, :logger_std_h, log)
     end)
+
+    %{sessions: sessions}
   end
 
   defmodule Stop do
@@ -46,6 +60,20 @@ defmodule CodingAgent.PrintTest do
            Helyx.Test.Gate.stream([:gate], gate),
            Helyx.Test.Burst.stream(20_000, opts)
          )}
+
+    # The two waves of the ack test: 10,000 deltas, the gate, 10,000 more.
+    # A wave's stream ends with its `:done`, which the first wave must not
+    # send, so the test takes its deltas only.
+    def stream("waves." <> gate, _context, opts) do
+      first = 10_000 |> Helyx.Test.Burst.stream(opts) |> Stream.take(10_000)
+
+      {:ok,
+       Stream.concat([
+         first,
+         Helyx.Test.Gate.stream([:gate], gate),
+         Helyx.Test.Burst.stream(10_000, opts)
+       ])}
+    end
 
     def stream(reason, _context, _opts) do
       stop = String.to_existing_atom(reason)
@@ -115,13 +143,9 @@ defmodule CodingAgent.PrintTest do
     end
   end
 
-  import ExUnit.CaptureIO
-  import Helyx.Test.Events, only: [wait_until: 1]
-
-  alias CodingAgent.{CLI, Print}
-
   @max Print.max_stdin_bytes()
-  # The halt after a signal waits for the abort; the margin is for a loaded machine.
+  # The halt after a signal waits for the end of the session; the margin is
+  # for a loaded machine.
   @load_ms 5_000
 
   # Runs `fun` with `input` piped on stdin, or with a terminal on stdin when
@@ -146,23 +170,52 @@ defmodule CodingAgent.PrintTest do
     {result, Device.output(device), stderr}
   end
 
-  defp start_core do
+  # A server of this VM with the providers of the tests: the CLI starts one
+  # that a print run attaches to (docs/features/print-mode.md).
+  defp server(dir) do
     core = :"print_core_#{System.unique_integer([:positive])}"
     plugins = [Stop, Helyx.Test.Gated.Loop | CodingAgent.plugins()]
-    start_supervised!({Helyx.Core, name: core, plugins: plugins})
-    core
+    start_supervised!({Helyx.Core, name: core, plugins: plugins, sessions_dir: dir})
+    transport = start_supervised!({Helyx.Transport.WebSocket, core: core, port: 0})
+    %{core: core, port: Helyx.Transport.WebSocket.port(transport)}
+  end
+
+  # Print mode as the CLI runs it: the run process connects, which makes it
+  # the owner of the events.
+  defp print_run(server, opts, test \\ self()) do
+    Print.main(
+      fn ->
+        {:ok, socket, ws} =
+          Helyx.TUI.Wire.connect(
+            {127, 0, 0, 1},
+            server.port,
+            fn -> "token" end,
+            Helyx.Test.Events.wait_ms()
+          )
+
+        CodingAgent.print(socket, ws, opts)
+      end,
+      halt(test)
+    )
   end
 
   defp signal_handlers, do: :gen_event.which_handlers(:erl_signal_server)
 
+  # Every handler that a run left in the signal server goes, and the VM's
+  # own handler comes back once.
+  defp reset_signal_server do
+    for _ <- Enum.filter(signal_handlers(), &(&1 == Print.Signal)),
+        do: :gen_event.delete_handler(:erl_signal_server, Print.Signal, [])
+
+    for _ <- Enum.filter(signal_handlers(), &(&1 == :erl_signal_handler)),
+        do: :gen_event.delete_handler(:erl_signal_server, :erl_signal_handler, [])
+
+    :ok = :gen_event.add_handler(:erl_signal_server, :erl_signal_handler, [])
+  end
+
   # A halt that reports the status to `test` and returns it, so `main/2`
   # returns the status in the test VM.
   defp halt(test), do: &(send(test, {:halt, &1}) && &1)
-
-  # `run/2` inside print mode.
-  defp run(session, prompt, test \\ self()) do
-    Print.main(fn -> Print.run(session, prompt) end, halt(test))
-  end
 
   # After a signal, `main/2` waits for the halt of the stop, which here is
   # only a message: the test ends the wait.
@@ -177,23 +230,19 @@ defmodule CodingAgent.PrintTest do
     end)
   end
 
+  # The run process of `main/2`, and the connection that it owns.
+  defp run_process(task) do
+    {:monitors, [process: run]} = Process.info(task.pid, :monitors)
+    {:monitors, [process: conn]} = Process.info(run, :monitors)
+    {run, conn}
+  end
+
+  # The sub id of the subscription that the run process holds.
+  defp subscription(conn) do
+    conn |> :sys.get_state() |> Map.fetch!(:subs) |> Map.fetch!(:subs) |> Map.keys() |> hd()
+  end
+
   describe "the CLI" do
-    @describetag :tmp_dir
-
-    setup %{tmp_dir: dir} do
-      sessions = Path.join(dir, "sessions")
-      Application.put_env(:coding_agent, :sessions_dir, sessions)
-      # The user skills of the host are not part of the CLI's stderr.
-      Application.put_env(:coding_agent, :home, dir)
-
-      on_exit(fn ->
-        Application.delete_env(:coding_agent, :sessions_dir)
-        Application.delete_env(:coding_agent, :home)
-      end)
-
-      %{sessions: sessions}
-    end
-
     test "-p prints the answer on stdout and the session id on stderr, and saves the session",
          %{tmp_dir: dir} do
       assert {0, "-x say this\n", "helyx: session " <> id} =
@@ -204,6 +253,7 @@ defmodule CodingAgent.PrintTest do
       assert_received {:halt, 0}
       assert Print.Signal in signal_handlers()
       assert Process.whereis(Helyx.Core) == nil
+      assert Process.whereis(CodingAgent.Serve) == nil
 
       # The run is a normal session: --list shows it with its prompt.
       id = String.trim_trailing(id, "\n")
@@ -212,6 +262,47 @@ defmodule CodingAgent.PrintTest do
                capture_io(fn -> CLI.main(["--list", dir]) end) |> String.split("\n", trim: true)
 
       assert line =~ ~r/^#{id}  .*  fake\/echo  -x say this$/
+    end
+
+    # A print run that found no server started one for itself; that one
+    # stops, and so does the session that the run opened.
+    test "a print run stops the session it opened", %{tmp_dir: dir, sessions: sessions} do
+      result =
+        Attach.serve(sessions, "fake/echo", fn _found ->
+          {status, out, stderr} =
+            io("", fn ->
+              CLI.main(["-p", "x say this", "--model", "fake/echo", dir], halt(self()))
+            end)
+
+          {status, out, stderr, Helyx.Sessions.list_live(Helyx.Core)}
+        end)
+
+      assert {0, "x say this\n", "helyx: session " <> _, []} = result
+      assert_received {:halt, 0}
+    end
+
+    # A session that was live before the run belongs to the other client.
+    test "a print run joins a session that another client has open, and leaves it live",
+         %{tmp_dir: dir, sessions: sessions} do
+      assert :ok =
+               Attach.serve(sessions, "fake/echo", fn _found ->
+                 {:ok, socket, ws} = Attach.connect(sessions)
+                 {:ok, conn, ref} = Connection.open(socket, ws)
+                 assert {:ok, id} = Connection.start(conn, cwd: dir, model: "fake/echo")
+                 assert {:ok, _snapshot, _sub} = Connection.subscribe(conn, id)
+
+                 assert {0, "two\n", "helyx: session " <> line} =
+                          io("", fn ->
+                            CLI.main(["-p", "two", "--session", id], halt(self()))
+                          end)
+
+                 assert String.trim_trailing(line, "\n") == id
+                 assert {:ok, [%{id: ^id, status: :idle}]} = Connection.list_live(conn)
+
+                 Process.exit(conn, :kill)
+                 Process.demonitor(ref, [:flush])
+                 :ok
+               end)
     end
 
     test "piped stdin joins the prompt as a block", %{tmp_dir: dir} do
@@ -234,6 +325,55 @@ defmodule CodingAgent.PrintTest do
       assert stderr =~ ~s(\nhelyx: the turn failed: {:no_script, "unscripted"}\n)
     end
 
+    # The model of a start is a param of the wire, and the server refuses it
+    # before Core starts a session.
+    test "a model ref that the server refuses is one stderr line and 1", %{tmp_dir: dir} do
+      line = "helyx: could not start the agent: the model ref is not valid; use provider/model\n"
+
+      assert {1, "", ^line} =
+               io("", fn -> CLI.main(["-p", "x", "--model", "not-a-ref", dir], halt(self())) end)
+
+      assert_received {:halt, 1}
+    end
+
+    # A server needs perl, as the tools do (docs/features/tui-attach.md,
+    # decision 12). With no data folder, the tool check gives the line; with
+    # one, the lock test of the folder does. The value of PATH is not shown
+    # on a failure.
+    test "with no perl on PATH a server starts for no command, and one line names perl",
+         %{tmp_dir: dir, sessions: s} do
+      path = System.get_env("PATH")
+      empty = Path.join(dir, "no-perl")
+      File.mkdir_p!(empty)
+      on_exit(fn -> System.put_env("PATH", path) end)
+      System.put_env("PATH", empty)
+
+      tool =
+        "helyx: could not start the agent: the bash tool is not available: " <>
+          "perl not found: the bash tool needs perl to watch its commands\n"
+
+      assert {1, "", ^tool} =
+               io("", fn ->
+                 CLI.main(["-p", "x", "--model", "fake/echo", dir], halt(self()))
+               end)
+
+      refute File.exists?(s)
+
+      File.mkdir_p!(s)
+      File.chmod!(s, 0o700)
+
+      lock =
+        "helyx: could not test the lock of the data folder: perl is not on the PATH; " <>
+          "Helyx needs it to lock a session\n"
+
+      for argv <- [["-p", "x", "--model", "fake/echo", dir], ["--list", dir]] do
+        assert {1, "", ^lock} = io("", fn -> CLI.main(argv, halt(self())) end)
+      end
+
+      assert Process.whereis(Helyx.Core) == nil
+      assert Process.whereis(CodingAgent.Serve) == nil
+    end
+
     test "input over the bound fails before anything starts", %{tmp_dir: dir, sessions: s} do
       line = "helyx: the piped input is over the #{@max}-byte limit\n"
 
@@ -254,7 +394,7 @@ defmodule CodingAgent.PrintTest do
       id = String.trim_trailing(line, "\n")
       [path] = Path.wildcard(Path.join([s, "*", id <> ".jsonl"]))
 
-      # Each run stops its Core, and perl frees the lock after the stop (#670).
+      # Each run stops its server, and perl frees the lock after the stop.
       Helyx.Test.SessionFile.await_lock_free(path)
 
       # --session takes the folder of the header, not the current one.
@@ -292,7 +432,10 @@ defmodule CodingAgent.PrintTest do
       end
     end
 
-    # #579: the lock take of another process holds the session.
+    # #579: an OS process holds the lock of the session. A client of the
+    # server joins a session that another client has open, but a lock that
+    # another process holds is the text of the server
+    # (docs/features/print-mode.md).
     test "a session open in another process is one line and 1, with -p and without", %{
       tmp_dir: dir,
       sessions: s
@@ -302,22 +445,22 @@ defmodule CodingAgent.PrintTest do
 
       id = String.trim_trailing(line, "\n")
       [path] = Path.wildcard(Path.join([s, "*", id <> ".jsonl"]))
-      # The run stops its Core, and perl frees the lock after the stop (#670).
+      # The run stops its server, and perl frees the lock after the stop.
       Helyx.Test.SessionFile.await_lock_free(path)
       {:ok, lock, nil} = Helyx.Session.Lock.hold(path, fn -> {:ok, nil} end)
-      expected = "helyx: session #{id} is open in another process\n"
+      expected = "helyx: could not start the agent: {:session_locked, #{inspect(id)}}\n"
 
       for argv <- [["--session", id], ["--resume", dir]] do
-        assert {1, "", ^expected} =
+        # The server of this VM logs the failed start on stderr too, and the
+        # start of the print run swaps the log there: the line is the last.
+        assert {1, "", stderr} =
                  io("", fn -> CLI.main(["-p", "two" | argv], halt(self())) end)
 
+        assert String.ends_with?(stderr, expected)
         assert_received {:halt, 1}
       end
 
-      # Without -p the TUI asks the server, whose `start_failed` holds the
-      # term (docs/features/tui-attach.md, Accepted holes).
-      wire = ~s(helyx: could not start the agent: {:session_locked, "#{id}"}\n)
-      assert {1, "", ^wire} = io("", fn -> CLI.main(["--session", id]) end)
+      assert {1, "", ^expected} = io("", fn -> CLI.main(["--session", id]) end)
       Helyx.Session.Lock.release(lock)
     end
 
@@ -382,63 +525,129 @@ defmodule CodingAgent.PrintTest do
     end
   end
 
-  describe "run/2" do
-    @tag :tmp_dir
+  describe "run/5" do
     test "an answer cut at the token limit is printed and returns 1", %{tmp_dir: dir} do
-      {:ok, session} =
-        Helyx.Session.start(start_core(), model: "stop/max_tokens", sessions_dir: dir, cwd: dir)
+      server = server(dir)
 
-      assert {1, "cut\n", stderr} = io("", fn -> run(session, "q") end)
+      assert {1, "cut\n", stderr} =
+               io("", fn ->
+                 print_run(server, prompt: "q", cwd: dir, model: "stop/max_tokens")
+               end)
+
       assert stderr =~ ~r/\Ahelyx: session \S+\nhelyx: the answer stopped at the token limit\n\z/
     end
 
-    # Past 16,384 unacked events the session would end the subscription.
-    test "print mode acks: a burst of 20,000 deltas prints the whole answer" do
-      {:ok, session} = Helyx.Session.start(start_core(), model: "stop/burst")
-      assert {0, out, _stderr} = io("", fn -> run(session, "q") end)
-      assert out == String.duplicate("x", 20_000) <> "\n"
-    end
-
-    # The print process is suspended during the burst, so it acks nothing.
-    test "print mode fails when the session ends its subscription as slow" do
+    # Past 16,384 unacked events the server ends a subscription. Over the
+    # wire an ack travels back from the client, so one burst of 20,000 can
+    # pass that bound before the first ack arrives. The provider sends two
+    # waves of 10,000 instead, and the test opens the gate only when the
+    # server has the ack of the first (docs/features/replay-ring.md,
+    # "Subscriptions").
+    test "print mode acks: two waves of 10,000 deltas print the whole answer",
+         %{tmp_dir: dir} do
+      server = server(dir)
       test = self()
       gate = Helyx.Test.Gate.open()
-      {:ok, session} = Helyx.Session.start(start_core(), model: "stop/burst." <> gate)
-      subscribers = fn -> Map.keys(:sys.get_state(Helyx.Session.pid(session)).subscribers) end
 
-      assert {1, "", stderr} =
+      {:ok, session} =
+        Helyx.Session.start(server.core,
+          model: "stop/waves." <> gate,
+          sessions_dir: dir,
+          cwd: dir
+        )
+
+      assert {0, out, _stderr} =
                io("", fn ->
-                 task = Task.async(fn -> run(session, "q", test) end)
+                 task =
+                   Task.async(fn ->
+                     print_run(server, [prompt: "q", cwd: dir, resume: session.id], test)
+                   end)
+
                  assert_receive {:waiting, model}
-                 [print] = subscribers.()
-                 true = :erlang.suspend_process(print)
+                 await_ack(session)
                  send(model, :go)
-                 wait_until(fn -> subscribers.() == [] end)
-                 true = :erlang.resume_process(print)
                  Task.await(task, :infinity)
                end)
 
-      assert stderr =~ ~r/\nhelyx: the client fell behind the session events\n\z/
+      assert out == String.duplicate("x", 20_000) <> "\n"
     end
 
-    test "a refused answer is printed with a notice and returns 0" do
-      {:ok, session} = Helyx.Session.start(start_core(), model: "stop/refused")
+    # The ack of the last multiple of 1,024 of the first wave: the print
+    # client acks only each 1,024th seq (Helyx.Session.ack/2), so the ack of
+    # the last event itself is no signal. The provider waits at the gate, so
+    # no event follows it, and the session has emitted it when its mailbox
+    # is empty.
+    defp await_ack(session) do
+      pid = Helyx.Session.pid(session)
+      wait_until(fn -> elem(Process.info(pid, :message_queue_len), 1) == 0 end)
+      last = :sys.get_state(pid).ring.seq
+      target = last - rem(last, 1_024)
+      wait_until(fn -> acked(pid) >= target end)
+    end
 
-      assert {0, "cut\n", stderr} = io("", fn -> run(session, "q") end)
+    # The acked seq of the subscription of the session
+    # (Helyx.Session.Server.Events.ack/3).
+    defp acked(pid) do
+      pid
+      |> :sys.get_state()
+      |> Map.fetch!(:subscribers)
+      |> Map.values()
+      |> Enum.map(fn {_monitor, _ref, acked, _answers?} -> acked end)
+      |> Enum.max(fn -> 0 end)
+    end
+
+    # The run process is suspended during the burst, so it acks nothing: the
+    # session ends its subscription as slow, and the server closes with 4408
+    # (docs/features/tui-attach.md, decision 11).
+    test "a print run that acks nothing gets the close of a slow client", %{tmp_dir: dir} do
+      server = server(dir)
+      test = self()
+      gate = Helyx.Test.Gate.open()
+
+      assert {1, "", stderr} =
+               io("", fn ->
+                 task =
+                   Task.async(fn ->
+                     print_run(
+                       server,
+                       [prompt: "q", cwd: dir, model: "stop/burst." <> gate],
+                       test
+                     )
+                   end)
+
+                 assert_receive {:waiting, model}
+                 {run, conn} = run_process(task)
+                 true = :erlang.suspend_process(run)
+                 send(model, :go)
+                 wait_until(fn -> not Process.alive?(conn) end)
+                 true = :erlang.resume_process(run)
+                 Task.await(task, :infinity)
+               end)
+
+      assert stderr =~ ~r/\nhelyx: the server closed a slow connection\n\z/
+    end
+
+    test "a refused answer is printed with a notice and returns 0", %{tmp_dir: dir} do
+      server = server(dir)
+
+      assert {0, "cut\n", stderr} =
+               io("", fn -> print_run(server, prompt: "q", cwd: dir, model: "stop/refused") end)
+
       assert stderr =~ "helyx: the answer stopped: the provider refused or filtered it\n"
     end
 
     # #606: the notice of a loss before the subscribe reached no client.
-    @tag :tmp_dir
-    test "a session that lost its lock before the run writes the not-saved notice on stderr", %{
-      tmp_dir: dir
-    } do
+    test "a session that lost its lock before the run writes the not-saved notice on stderr",
+         %{tmp_dir: dir} do
+      server = server(dir)
+
       {:ok, session} =
-        Helyx.Session.start(start_core(), model: "fake/echo", sessions_dir: dir, cwd: dir)
+        Helyx.Session.start(server.core, model: "fake/echo", sessions_dir: dir, cwd: dir)
 
       Helyx.Test.LostLock.kill(session)
 
-      assert {0, "q\n", stderr} = io("", fn -> run(session, "q") end)
+      assert {0, "q\n", stderr} =
+               io("", fn -> print_run(server, prompt: "q", cwd: dir, resume: session.id) end)
 
       assert stderr =~
                ~r/\Ahelyx: session \S+\nhelyx: new messages of this session are not saved\n\z/
@@ -474,14 +683,21 @@ defmodule CodingAgent.PrintTest do
       end
     end
 
-    test "SIGTERM during the turn aborts it, then halts with 143" do
+    test "SIGTERM during the turn ends the session, then halts with 143", %{tmp_dir: dir} do
+      server = server(dir)
       gate = Helyx.Test.Gate.open()
-      {:ok, session} = Helyx.Session.start(start_core(), model: "gated/" <> gate)
       test = self()
+
+      {:ok, session} =
+        Helyx.Session.start(server.core, model: "gated/" <> gate, sessions_dir: dir, cwd: dir)
 
       assert {:ok, _, stderr} =
                io("", fn ->
-                 task = Task.async(fn -> run(session, "fail", test) end)
+                 task =
+                   Task.async(fn ->
+                     print_run(server, [prompt: "fail", cwd: dir, resume: session.id], test)
+                   end)
+
                  assert_receive {:waiting, _}
                  :gen_event.notify(:erl_signal_server, :sigterm)
                  assert_receive {:halt, 143}
@@ -495,7 +711,7 @@ defmodule CodingAgent.PrintTest do
                  :ok
                end)
 
-      assert stderr =~ "\nhelyx: the turn was aborted\n"
+      assert stderr =~ ~r/\nhelyx: (the turn was aborted|the session stopped)\n/
       refute_received {:halt, _}
     end
 
@@ -520,15 +736,22 @@ defmodule CodingAgent.PrintTest do
     end
 
     @tag :slow
-    test "the wait for the abort is bounded" do
+    test "the wait for the end of the session is bounded", %{tmp_dir: dir} do
+      server = server(dir)
       gate = Helyx.Test.Gate.open()
-      {:ok, session} = Helyx.Session.start(start_core(), model: "gated/" <> gate)
       test = self()
 
+      {:ok, session} =
+        Helyx.Session.start(server.core, model: "gated/" <> gate, sessions_dir: dir, cwd: dir)
+
       io("", fn ->
-        task = Task.async(fn -> run(session, "fail", test) end)
+        task =
+          Task.async(fn ->
+            print_run(server, [prompt: "fail", cwd: dir, resume: session.id], test)
+          end)
+
         assert_receive {:waiting, gate_pid}
-        # A session that does not answer the abort.
+        # A session that does not answer the stop request.
         pid = Helyx.Session.pid(session)
         :erlang.suspend_process(pid)
         started = System.monotonic_time(:millisecond)
@@ -542,14 +765,21 @@ defmodule CodingAgent.PrintTest do
       end)
     end
 
-    test "an aborted turn prints nothing on stdout and returns 1" do
+    test "an aborted turn prints nothing on stdout and returns 1", %{tmp_dir: dir} do
+      server = server(dir)
       test = self()
       gate = Helyx.Test.Gate.open()
-      {:ok, session} = Helyx.Session.start(start_core(), model: "gated/" <> gate)
+
+      {:ok, session} =
+        Helyx.Session.start(server.core, model: "gated/" <> gate, sessions_dir: dir, cwd: dir)
 
       assert {1, "", stderr} =
                io("", fn ->
-                 task = Task.async(fn -> run(session, "fail", test) end)
+                 task =
+                   Task.async(fn ->
+                     print_run(server, [prompt: "fail", cwd: dir, resume: session.id], test)
+                   end)
+
                  assert_receive {:waiting, _}
                  :ok = Helyx.Session.abort(session)
                  Task.await(task, :infinity)
@@ -558,10 +788,13 @@ defmodule CodingAgent.PrintTest do
       assert stderr =~ ~r/\nhelyx: the turn was aborted\n\z/
     end
 
-    test "a notice goes to stderr as one line of at most 4000 bytes" do
+    test "a notice goes to stderr as one line of at most 4000 bytes", %{tmp_dir: dir} do
+      server = server(dir)
       test = self()
       gate = Helyx.Test.Gate.open()
-      {:ok, session} = Helyx.Session.start(start_core(), model: "gated/" <> gate)
+
+      {:ok, session} =
+        Helyx.Session.start(server.core, model: "gated/" <> gate, sessions_dir: dir, cwd: dir)
 
       notice = %Helyx.Event{
         type: :notice,
@@ -574,11 +807,14 @@ defmodule CodingAgent.PrintTest do
 
       assert {1, "", stderr} =
                io("", fn ->
-                 task = Task.async(fn -> run(session, "fail", test) end)
+                 task =
+                   Task.async(fn ->
+                     print_run(server, [prompt: "fail", cwd: dir, resume: session.id], test)
+                   end)
+
                  assert_receive {:waiting, gate_pid}
-                 # The run, which subscribed, is the process that `main/2` monitors.
-                 {:monitors, [process: run_pid]} = Process.info(task.pid, :monitors)
-                 send(run_pid, {:helyx_event, notice})
+                 {run, conn} = run_process(task)
+                 send(run, {:helyx_event, subscription(conn), notice})
                  send(gate_pid, :go)
                  Task.await(task, :infinity)
                end)
@@ -595,9 +831,8 @@ defmodule CodingAgent.PrintTest do
     # and answers "started"; the turns after it answer `answers`. With
     # `foreground: true` the first turn also runs a foreground bash call that
     # ends once the file `foreground` in `dir` exists.
-    defp bg_session(dir, answers, opts \\ []) do
+    defp bg_session(server, dir, answers, opts \\ []) do
       {foreground, opts} = Keyword.pop(opts, :foreground, false)
-      core = start_core()
       gate = Path.join(dir, "gate")
       call = bash_call("c1", gate, true)
 
@@ -606,16 +841,16 @@ defmodule CodingAgent.PrintTest do
           do: [call, bash_call("c2", Path.join(dir, "foreground"), false)],
           else: [call]
 
-      :ok = Helyx.Provider.Fake.script(core, "bg", [calls, ["started"] | answers])
+      :ok = Helyx.Provider.Fake.script(server.core, "bg", [calls, ["started"] | answers])
 
       {:ok, session} =
         Helyx.Session.start(
-          core,
+          server.core,
           [model: "fake/bg", cwd: dir] ++ Keyword.put_new(opts, :sessions_dir, dir)
         )
 
       {:ok, _, _} = Helyx.Session.subscribe(session)
-      %{core: core, session: session, gate: gate}
+      %{session: session, gate: gate}
     end
 
     defp bash_call(id, file, background) do
@@ -624,35 +859,24 @@ defmodule CodingAgent.PrintTest do
       %Helyx.Message.ToolCall{id: id, name: "bash", arguments: args}
     end
 
-    # The run process of `main/2` is back in its wait with an empty mailbox,
-    # after a call to the session, which orders every event sent before it.
-    # Returns its pid.
-    defp await_print_wait(task, session) do
-      :sys.get_state(Helyx.Session.pid(session))
-      {:monitors, [process: run_pid]} = Process.info(task.pid, :monitors)
-      waiting = [message_queue_len: 0, current_function: {Print, :wait, 2}]
-
-      wait_until(fn ->
-        Process.info(run_pid, [:message_queue_len, :current_function]) == waiting
-      end)
-
-      run_pid
-    end
-
     defp turn_end do
       assert_receive {:helyx_event, %Helyx.Event{type: :turn_end, data: data}}
       data
     end
 
-    @tag :tmp_dir
     test "print mode waits for a background run; its end opens the last turn", %{tmp_dir: dir} do
-      %{session: session, gate: gate} = bg_session(dir, [["finished"]])
+      server = server(dir)
+      %{session: session, gate: gate} = bg_session(server, dir, [["finished"]])
       test = self()
 
       # Had print mode ended at the first turn, stdout would hold "started".
       assert {0, "finished\n", stderr} =
                io("", fn ->
-                 task = Task.async(fn -> run(session, "q", test) end)
+                 task =
+                   Task.async(fn ->
+                     print_run(server, [prompt: "q", cwd: dir, resume: session.id], test)
+                   end)
+
                  assert turn_end() == %{outcome: :done}
                  File.write!(gate, "")
                  assert turn_end() == %{outcome: :done}
@@ -664,15 +888,19 @@ defmodule CodingAgent.PrintTest do
 
     @held_line "\nhelyx: background runs whose end did not reach the agent: 1\n"
 
-    @tag :tmp_dir
     test "an end held between turns ends print mode with the last answer, one line, and 1",
          %{tmp_dir: dir} do
-      %{session: session, gate: gate} = bg_session(dir, [])
+      server = server(dir)
+      %{session: session, gate: gate} = bg_session(server, dir, [])
       test = self()
 
       assert {1, "started\n", stderr} =
                io("", fn ->
-                 task = Task.async(fn -> run(session, "q", test) end)
+                 task =
+                   Task.async(fn ->
+                     print_run(server, [prompt: "q", cwd: dir, resume: session.id], test)
+                   end)
+
                  assert turn_end() == %{outcome: :done}
                  # The abort of the idle session sets the hold of the ends.
                  :ok = Helyx.Session.abort(session)
@@ -685,10 +913,9 @@ defmodule CodingAgent.PrintTest do
 
     # No Fake turn gives an end back held, so the test sends the count that
     # the session would send.
-    @tag :tmp_dir
-    test "a normal turn end with a held end gives the answer and 1",
-         %{tmp_dir: dir} do
-      %{session: session} = bg_session(dir, [], foreground: true)
+    test "a normal turn end with a held end gives the answer and 1", %{tmp_dir: dir} do
+      server = server(dir)
+      %{session: session} = bg_session(server, dir, [], foreground: true)
       test = self()
 
       hold = %Helyx.Event{
@@ -702,9 +929,14 @@ defmodule CodingAgent.PrintTest do
 
       assert {1, "started\n", stderr} =
                io("", fn ->
-                 task = Task.async(fn -> run(session, "q", test) end)
+                 task =
+                   Task.async(fn ->
+                     print_run(server, [prompt: "q", cwd: dir, resume: session.id], test)
+                   end)
+
                  assert_receive {:helyx_event, %Helyx.Event{type: :tool_execution_end}}
-                 send(await_print_wait(task, session), {:helyx_event, hold})
+                 {run, conn} = run_process(task)
+                 send(run, {:helyx_event, subscription(conn), hold})
                  File.write!(Path.join(dir, "foreground"), "")
                  assert turn_end() == %{outcome: :done}
                  Task.await(task, :infinity)
@@ -713,61 +945,75 @@ defmodule CodingAgent.PrintTest do
       assert stderr =~ @held_line
     end
 
-    defp one_call_session(dir, args) do
-      core = start_core()
+    defp one_call_session(server, dir, args) do
       call = %Helyx.Message.ToolCall{id: "c1", name: "bash", arguments: args}
-      :ok = Helyx.Provider.Fake.script(core, "one", [[call], ["answered"]])
-      {:ok, session} = Helyx.Session.start(core, model: "fake/one", cwd: dir, sessions_dir: dir)
+      :ok = Helyx.Provider.Fake.script(server.core, "one", [[call], ["answered"]])
+
+      {:ok, session} =
+        Helyx.Session.start(server.core, model: "fake/one", cwd: dir, sessions_dir: dir)
+
       session
     end
 
     # The session counts the runs (`Helyx.Session.Queue`); print mode reads
     # no result text.
-    @tag :tmp_dir
     test "a foreground result that opens with the start line opens no run", %{tmp_dir: dir} do
+      server = server(dir)
       line = ~s(<background id="abcdefghijkl" status="started">\\nfixture\\n)
-      session = one_call_session(dir, %{"command" => "printf '#{line}'"})
+      session = one_call_session(server, dir, %{"command" => "printf '#{line}'"})
 
-      assert {0, "answered\n", stderr} = io("", fn -> run(session, "q") end)
+      assert {0, "answered\n", stderr} =
+               io("", fn ->
+                 print_run(server, prompt: "q", cwd: dir, resume: session.id)
+               end)
+
       assert stderr =~ ~r/\Ahelyx: session \S+\n\z/
     end
 
-    @tag :tmp_dir
     test "a background call whose result is an error opens no run", %{tmp_dir: dir} do
+      server = server(dir)
       args = %{"command" => "true", "background" => true, "timeout" => 0}
-      session = one_call_session(dir, args)
+      session = one_call_session(server, dir, args)
 
-      assert {0, "answered\n", stderr} = io("", fn -> run(session, "q") end)
+      assert {0, "answered\n", stderr} =
+               io("", fn ->
+                 print_run(server, prompt: "q", cwd: dir, resume: session.id)
+               end)
+
       assert stderr =~ ~r/\Ahelyx: session \S+\n\z/
     end
 
-    @tag :tmp_dir
     test "a resumed session closes its lost runs in the prompt turn", %{tmp_dir: dir} do
-      sessions = Path.join(dir, "sessions")
-      %{core: core, session: one} = bg_session(dir, [["resumed"]], sessions_dir: sessions)
+      server = server(dir)
+      %{session: one} = bg_session(server, dir, [["resumed"]])
+
       :ok = Helyx.Session.prompt(one, "q")
       assert turn_end() == %{outcome: :done}
       Helyx.Test.SessionFile.stop(one)
 
-      {:ok, two} = Helyx.Session.resume(core, sessions_dir: sessions, cwd: dir)
-      assert {0, "resumed\n", _stderr} = io("", fn -> run(two, "again") end)
+      assert {0, "resumed\n", _stderr} =
+               io("", fn -> print_run(server, prompt: "again", cwd: dir, resume: true) end)
     end
 
     for {signal, status} <- [sigterm: 143, sighup: 129] do
-      @tag :tmp_dir
       test "#{signal} during the wait for a background run halts with #{status}",
            %{tmp_dir: dir} do
-        %{session: session} = bg_session(dir, [])
+        server = server(dir)
+        %{session: session} = bg_session(server, dir, [])
         test = self()
 
         io("", fn ->
-          task = Task.async(fn -> run(session, "q", test) end)
+          task =
+            Task.async(fn ->
+              print_run(server, [prompt: "q", cwd: dir, resume: session.id], test)
+            end)
+
           assert turn_end() == %{outcome: :done}
-          run_pid = await_print_wait(task, session)
+          {run, _conn} = run_process(task)
           :gen_event.notify(:erl_signal_server, unquote(signal))
           assert_receive {:halt, unquote(status)}
           # In the VM the halt ends the run process, which still waits.
-          Process.exit(run_pid, :kill)
+          Process.exit(run, :kill)
           end_wait(task)
         end)
 
@@ -775,14 +1021,21 @@ defmodule CodingAgent.PrintTest do
       end
     end
 
-    test "a session that stops while the turn runs returns 1" do
+    test "a session that stops while the turn runs returns 1", %{tmp_dir: dir} do
+      server = server(dir)
       test = self()
       gate = Helyx.Test.Gate.open()
-      {:ok, session} = Helyx.Session.start(start_core(), model: "gated/" <> gate)
+
+      {:ok, session} =
+        Helyx.Session.start(server.core, model: "gated/" <> gate, sessions_dir: dir, cwd: dir)
 
       assert {1, "", stderr} =
                io("", fn ->
-                 task = Task.async(fn -> run(session, "fail", test) end)
+                 task =
+                   Task.async(fn ->
+                     print_run(server, [prompt: "fail", cwd: dir, resume: session.id], test)
+                   end)
+
                  assert_receive {:waiting, _}
                  GenServer.stop(Helyx.Session.pid(session))
                  Task.await(task, :infinity)
@@ -792,7 +1045,6 @@ defmodule CodingAgent.PrintTest do
     end
   end
 
-  @tag :tmp_dir
   test "a skill command expands after the scan notices go to stderr", %{tmp_dir: dir} do
     File.mkdir_p!(Path.join(dir, ".git"))
 

@@ -6,7 +6,7 @@ defmodule Mix.Tasks.Helyx.GraphTest do
 
   test "calls prints the calls between project functions, one line each" do
     out = capture_io(fn -> Mix.Tasks.Helyx.Graph.run(["calls"]) end)
-    assert out =~ "CodingAgent.Print.run/2 -> Helyx.Session.prompt/2\n"
+    assert out =~ "CodingAgent.Print.run/5 -> Helyx.TUI.Wire.Connection.prompt/3\n"
     refute out =~ "Enum."
   end
 
