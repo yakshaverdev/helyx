@@ -367,7 +367,8 @@ defmodule Helyx.TUI.ComposerTest do
   end
 
   describe "the texts that an abort gives back" do
-    defp dropped(state, texts), do: deliver(state, :queue_dropped, %{messages: Enum.map(texts, &Helyx.Message.user/1)})
+    defp dropped(state, texts),
+      do: deliver(state, :queue_dropped, %{messages: Enum.map(texts, &Helyx.Message.user/1)})
 
     defp deliver(state, type, data) do
       event = %Event{

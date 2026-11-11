@@ -131,7 +131,10 @@ defmodule Helyx.Session.FileTest do
             "role" => "user",
             "content" => [%{"type" => "text", "text" => "hi"}]
           },
-          if(Map.has_key?(extra, "role"), do: extra, else: Map.merge(%{"origin" => %{"kind" => "user", "id" => nil}}, extra))
+          if(Map.has_key?(extra, "role"),
+            do: extra,
+            else: Map.merge(%{"origin" => %{"kind" => "user", "id" => nil}}, extra)
+          )
         )
       )
     end
@@ -139,7 +142,14 @@ defmodule Helyx.Session.FileTest do
     test "the entry id is the message id, and a user entry with no origin rejects the file",
          %{tmp_dir: dir} do
       {:ok, file} = Session.File.create(dir, "sess00000001", "/repo", "test/ok")
-      append_raw(file, user_entry("message00001", %{}) |> JSON.decode!() |> Map.delete("origin") |> JSON.encode!())
+
+      append_raw(
+        file,
+        user_entry("message00001", %{})
+        |> JSON.decode!()
+        |> Map.delete("origin")
+        |> JSON.encode!()
+      )
 
       assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo")
     end

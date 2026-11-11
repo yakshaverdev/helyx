@@ -70,14 +70,16 @@ defmodule Helyx.Session.History do
 
   defp newest_before([], _before, _newest), do: :error
 
-  defp with_next(%{messages: [first | _], older: older} = page) when older > 0, do: Map.put(page, :next, first.id)
+  defp with_next(%{messages: [first | _], older: older} = page) when older > 0,
+    do: Map.put(page, :next, first.id)
+
   defp with_next(page), do: Map.put(page, :next, nil)
 
   # `newest` is newest first. The run stops at `count` messages or before
   # the message that passes the bytes; then it starts at a user or an
   # assistant message, or it is the newest group alone.
   defp cut_newest(newest, count) do
-    {run, older} = take(newest, count, @max_bytes, [])
+    {run, _older} = take(newest, count, @max_bytes, [])
 
     case Enum.split_while(run, &(&1.role == :tool_result)) do
       {_dropped, []} ->

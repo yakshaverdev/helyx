@@ -29,6 +29,5 @@ defmodule Helyx.ModelContext do
   (`docs/features/session-model-context.md`).
   """
 
-
   @callback build(context :: Helyx.Context.t(), opts :: keyword()) :: Helyx.Context.t()
 end

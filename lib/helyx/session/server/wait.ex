@@ -39,7 +39,11 @@ defmodule Helyx.Session.Server.Wait do
           reply: reference() | nil,
           turn: String.t() | nil,
           running:
-            %{data: map(), started_ms: integer(), ui_blocks: [Helyx.Session.Server.UIBlocks.entry()]}
+            %{
+              data: map(),
+              started_ms: integer(),
+              ui_blocks: [Helyx.Session.Server.UIBlocks.entry()]
+            }
             | nil,
           settle: {:due, Helyx.Hook.settle(), map()} | :revoke | reference() | nil,
           callers: [GenServer.from()]
@@ -106,6 +110,7 @@ defmodule Helyx.Session.Server.Wait do
       end
 
     wait = if outcome == :aborted, do: interrupt(state, phase, provider), else: %__MODULE__{}
+
     running =
       if running?,
         do: %{data: data, started_ms: turn.started_ms, ui_blocks: state.phase.turn.ui_blocks}

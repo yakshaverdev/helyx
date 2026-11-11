@@ -23,7 +23,9 @@ defmodule Helyx.Tool.ReadTest do
     tools =
       for module <- modules,
           Code.ensure_loaded!(module),
-          Helyx.Tool in List.flatten(Keyword.get_values(module.module_info(:attributes), :behaviour)),
+          Helyx.Tool in List.flatten(
+            Keyword.get_values(module.module_info(:attributes), :behaviour)
+          ),
           # The fixed tools: a tool source has no name.
           function_exported?(module, :name, 0),
           do: {module, %{name: module.name()}}

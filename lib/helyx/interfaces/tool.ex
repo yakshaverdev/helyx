@@ -47,7 +47,6 @@ defmodule Helyx.Tool do
   with `deferred/2` and `activate/1` (`docs/features/mcp-client.md`).
   """
 
-
   alias Helyx.Session.ToolSpecs
 
   @type spec :: %{name: String.t(), description: String.t(), parameters: map()}

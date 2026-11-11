@@ -466,7 +466,11 @@ defmodule Helyx.Session.ProviderProcessTest do
       abort = Task.async(fn -> Session.abort(session) end)
 
       assert_receive {:helyx_event,
-                      %{type: :queue_dropped, turn_id: nil, data: %{messages: [%{content: [%{text: "two"}]}]}}}
+                      %{
+                        type: :queue_dropped,
+                        turn_id: nil,
+                        data: %{messages: [%{content: [%{text: "two"}]}]}
+                      }}
 
       # The call waits for the wait: the hands hold the provider_down.
       assert Task.yield(abort, 0) == nil
@@ -490,7 +494,11 @@ defmodule Helyx.Session.ProviderProcessTest do
       abort = Task.async(fn -> Session.abort(session) end)
 
       assert_receive {:helyx_event,
-                      %{type: :queue_dropped, turn_id: nil, data: %{messages: [%{content: [%{text: "two"}]}]}}}
+                      %{
+                        type: :queue_dropped,
+                        turn_id: nil,
+                        data: %{messages: [%{content: [%{text: "two"}]}]}
+                      }}
 
       assert Task.yield(abort, 0) == nil
       :erlang.resume_process(hands)
@@ -985,7 +993,12 @@ defmodule Helyx.Session.ProviderProcessTest do
       events = collect_until(:turn_end)
       [turn_start | _] = events
 
-      assert [%{turn_id: turn_id, data: %{messages: [%{content: [%{text: "s"}]}, %{content: [%{text: "f"}]}]}}] =
+      assert [
+               %{
+                 turn_id: turn_id,
+                 data: %{messages: [%{content: [%{text: "s"}]}, %{content: [%{text: "f"}]}]}
+               }
+             ] =
                Enum.filter(events, &(&1.type == :queue_dropped))
 
       assert turn_id == turn_start.turn_id

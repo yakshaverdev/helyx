@@ -205,7 +205,12 @@ defmodule Helyx.TUI.ViewModel do
 
   defp fold(vm, %Event{type: :steer_unconfirmed, data: data}) do
     %{message: message} = data
-    add_cell(vm, {:notice, "the steer was not confirmed; send it again if needed: " <> Helyx.Message.text(message)})
+
+    add_cell(
+      vm,
+      {:notice,
+       "the steer was not confirmed; send it again if needed: " <> Helyx.Message.text(message)}
+    )
   end
 
   defp fold(vm, %Event{type: :resume_id, data: data}) do

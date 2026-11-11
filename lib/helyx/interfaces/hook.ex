@@ -46,7 +46,6 @@ defmodule Helyx.Hook do
   change nothing and are not written.
   """
 
-
   @type point :: :before_tool | :after_tool | :before_settle
   @type call :: %{
           tool: String.t(),

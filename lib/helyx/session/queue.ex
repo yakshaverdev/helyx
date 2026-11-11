@@ -206,7 +206,8 @@ defmodule Helyx.Session.Queue do
   @spec answer(t(), reference(), term(), boolean()) :: {t(), [effect()]}
   def answer(%__MODULE__{} = queue, from, reply, open?) do
     case Enum.find(queue.sent, &(&1.from == from)) do
-      %Sent{status: status} = entry when reply == :rejected and status not in [:accepted, :taken, :resolved] ->
+      %Sent{status: status} = entry
+      when reply == :rejected and status not in [:accepted, :taken, :resolved] ->
         {requeue(delete(queue, from), entry.item), []}
 
       %Sent{status: :pending} = entry ->

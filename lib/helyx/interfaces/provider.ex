@@ -35,7 +35,6 @@ defmodule Helyx.Provider do
       owner of a call id").
   """
 
-
   @type stop_reason :: Helyx.Message.stop_reason()
 
   @type stream_event ::

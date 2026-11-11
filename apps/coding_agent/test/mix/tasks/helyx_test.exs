@@ -88,7 +88,9 @@ defmodule Mix.Tasks.HelyxTest do
 
     test "a tagged text: an exception message of many lines",
          %{tmp_dir: dir, path: path, leaf: leaf} do
-      line = ~s({"type":"message","id":"message00001","parent_id":"#{leaf}","role":"user","origin":{"kind":"user","id":null}}\n)
+      line =
+        ~s({"type":"message","id":"message00001","parent_id":"#{leaf}","role":"user","origin":{"kind":"user","id":null}}\n)
+
       File.write!(path, line, [:append])
 
       assert node_message(cwd: dir, resume: true) =~
