@@ -1,7 +1,7 @@
 defmodule Helyx.Session.History do
   @moduledoc false
-  # The tail of a snapshot and the history pages: the limit check of the
-  # client options and the cut of the transcript
+  # The tail of a snapshot and the history pages: the limit check of the client
+  # options and the cut of the transcript
   # (docs/features/session-snapshot.md, "Tail", "Cut", "History").
 
   alias Helyx.Message
@@ -18,8 +18,8 @@ defmodule Helyx.Session.History do
 
   # The option list of `Helyx.Session.subscribe/2`: `tail`, `after`, and
   # `answers`, each at most once (docs/features/replay-ring.md,
-  # docs/features/question-tool.md). `length/1` fails the guard of an
-  # improper list.
+  # docs/features/question-tool.md). `length/1` fails the guard of an improper
+  # list.
   def subscribe(opts) when is_list(opts) and length(opts) <= 3 do
     {after_opts, opts} = Enum.split_with(opts, &match?({:after, _}, &1))
     {answers_opts, tail_opts} = Enum.split_with(opts, &match?({:answers, _}, &1))
@@ -53,8 +53,8 @@ defmodule Helyx.Session.History do
   # The newest messages of `transcript`, at most `count` of them, as a page.
   def cut(transcript, count), do: cut_newest(Enum.reverse(transcript), count)
 
-  # The page before the message `before` of the live transcript, with the
-  # id of its first message as the next cursor while older messages exist.
+  # The page before the message `before` of the live transcript, with the id of
+  # its first message as the next cursor while older messages exist.
   def page(transcript, before, count) do
     case newest_before(transcript, before, []) do
       {:ok, newest} -> {:ok, with_next(cut_newest(newest, count))}
@@ -75,9 +75,9 @@ defmodule Helyx.Session.History do
 
   defp with_next(page), do: Map.put(page, :next, nil)
 
-  # `newest` is newest first. The run stops at `count` messages or before
-  # the message that passes the bytes; then it starts at a user or an
-  # assistant message, or it is the newest group alone.
+  # `newest` is newest first. The run stops at `count` messages or before the
+  # message that passes the bytes; then it starts at a user or an assistant
+  # message, or it is the newest group alone.
   defp cut_newest(newest, count) do
     {run, _older} = take(newest, count, @max_bytes, [])
 
@@ -102,10 +102,10 @@ defmodule Helyx.Session.History do
 
   defp take(newest, _count, _bytes, run), do: {run, newest}
 
-  # The last user or assistant message and the messages after it. A
-  # transcript has a user or an assistant message before each tool result
-  # (`Helyx.Session.Transcript.repair/1`, `Records`), so only an empty one
-  # has none.
+  # The last user or assistant message and the messages after it. A transcript
+  # has a user or an assistant message before each tool result
+  # (`Helyx.Session.Transcript.repair/1`, `Records`), so only an empty one has
+  # none.
   defp group([]), do: %{messages: [], older: 0}
 
   defp group(newest) do
