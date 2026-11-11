@@ -139,8 +139,6 @@ defmodule Helyx.Hub.Store.SQLite do
     case one(db, "PRAGMA user_version", []) do
       {:ok, [@version]} -> :ok
       {:ok, [0]} -> empty(db)
-      # #921 migrates a store of version 1 in `schema/1`.
-      {:ok, [1]} -> :ok
       {:ok, [n]} -> {:error, {:store_version, n}}
       {:error, _} = error -> error
     end
@@ -160,17 +158,12 @@ defmodule Helyx.Hub.Store.SQLite do
     case one(db, "PRAGMA user_version", []) do
       {:ok, [@version]} -> :ok
       {:ok, [0]} -> transaction(db, :infinity, fn -> create_schema(db) end)
-      {:ok, [1]} -> transaction(db, :infinity, fn -> upgrade_schema(db) end)
       {:error, _} = error -> error
     end
   end
 
   defp create_schema(db) do
     with :ok <- exec(db, Schema.sql()), do: exec(db, "PRAGMA user_version = #{@version}")
-  end
-
-  defp upgrade_schema(db) do
-    with :ok <- exec(db, Schema.upgrade()), do: exec(db, "PRAGMA user_version = #{@version}")
   end
 
   @impl true
