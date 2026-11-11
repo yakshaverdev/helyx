@@ -191,6 +191,24 @@ defmodule Helyx.Tool.ArgsTest do
     assert Args.check(%{"path" => "a"}, schema) == {:ok, %{"path" => "a"}}
   end
 
+  test "additionalProperties false refuses a key that the properties do not name" do
+    schema =
+      schema(%{
+        "worktree" => %{
+          "type" => "object",
+          "properties" => %{"branch" => %{"type" => "string"}},
+          "required" => ["branch"],
+          "additionalProperties" => false
+        }
+      })
+
+    assert Args.check(%{"worktree" => %{"branch" => "a"}}, schema) ==
+             {:ok, %{"worktree" => %{"branch" => "a"}}}
+
+    assert Args.check(%{"worktree" => %{"branch" => "a", "extra" => 1}}, schema) ==
+             {:error, "worktree.extra is not a known argument"}
+  end
+
   test "an unknown keyword raises at the first call" do
     schema = schema(%{"path" => %{"type" => "string", "pattern" => "^a"}})
 
