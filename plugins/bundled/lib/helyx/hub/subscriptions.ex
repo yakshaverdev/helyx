@@ -6,9 +6,8 @@ defmodule Helyx.Hub.Subscriptions do
   # checked the params and ran the existence check of decision 8; each
   # request first checks the credential, as `Helyx.Hub.Rules`.
   #
-  # The secret leaves the Hub process only twice: once as the text of the
-  # create reply, and then into `Helyx.Hub.Webhook`, which computes the HMAC
-  # of a payload with it. No listing and no log carries it.
+  # The secret leaves the Hub process only as the text of the create reply,
+  # and into `Helyx.Hub.Webhook`; no listing and no log carries it.
 
   alias Helyx.Hub.Rules
 

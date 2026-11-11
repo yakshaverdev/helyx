@@ -106,11 +106,7 @@ defmodule Helyx.Hub do
   @doc """
   Saves a prompt that Hub sends to a session of the user `user_id` at a
   time, with the rules of `hub.schedules.create` (`docs/features/hub.md`,
-  decisions 11 and 12). `params` is the params map of the wire:
-  `"session"`, `"at"` (POSIX seconds, from now to now + 366 days),
-  `"every"` (optional, 300 to 2,678,400 seconds), and `"prompt"` (1 to
-  16,384 bytes of UTF-8). The user must own the session; a session that it
-  may not read gives `:session_not_found`, as a missing one.
+  decisions 11 and 12); `params` is the params map of the wire.
   """
   @spec schedule(hub(), String.t(), map()) ::
           {:ok, map()}

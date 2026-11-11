@@ -4,8 +4,7 @@ defmodule Helyx.Hub.Delivery do
   # at most once. It runs under the task supervisor of its Hub, linked to
   # the Hub process, and every write goes through a Hub call to
   # `Helyx.Hub.Wake`, which applies it only while the row holds what the
-  # start of this Task wrote. The send comes only after the write of step 2,
-  # which forbids a second one, answered `:ok`.
+  # start of this Task wrote.
   #
   # The Task holds the prompt of its row, at most 16,384 bytes, and no
   # subscription; the Hub kills it 120,000 ms after its start.

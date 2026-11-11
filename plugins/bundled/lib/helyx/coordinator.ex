@@ -1,10 +1,7 @@
 defmodule Helyx.Coordinator do
   @moduledoc false
-  # What the coordinator tools share (`docs/features/coordinator.md`): the
-  # Hub of the Core of the call, the user of the calling session, the modes
-  # of the product, the origin of a text that a tool sends, and the text of
-  # an error for the model. A helper of `plugins/bundled`, not a plugin
-  # (ADR 0005).
+  # What the coordinator tools share (`docs/features/coordinator.md`), a
+  # helper of `plugins/bundled` (ADR 0005).
 
   alias Helyx.Session
 
@@ -13,9 +10,8 @@ defmodule Helyx.Coordinator do
   @max_id_bytes 64
   @mode_keys [:model, :model_context, :tools]
 
-  # The context of the call, its Hub, and the user of its session: the
-  # user whose start or resume through Hub made the coordinator session,
-  # while that user owns it (`Helyx.Hub.actor/2`, decision 3).
+  # The context of the call, its Hub, and the user of its session
+  # (`Helyx.Hub.actor/2`, decision 3).
   def setup do
     context = Helyx.Tool.context()
 

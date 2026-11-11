@@ -3,16 +3,12 @@ defmodule Helyx.Hub.Live do
   # The live set and the reserved places of a Hub (`docs/features/hub.md`,
   # decision 14), in the state of the Hub process.
   #
-  # `live`: monitor ref => session id, the session processes that a start or
-  # resume through Hub made or attached to, and every live session of the
-  # Core at the start of Hub. `reserved`: caller pid => place, a start or a
-  # resume that `check` passed and whose `result` has not come, with a
-  # monitor of the caller and a timer. A place ends at `result` (which adds
-  # the session to the live set), at `release`, at the `:DOWN` of its
-  # caller, or @place_ms after its `check`. `starters`: session id => the
-  # user whose start or resume through Hub made or attached to the entry of
-  # the session; the coordinator tools act for that user only
-  # (`docs/features/coordinator.md`, decision 3). A seeded entry has none.
+  # `live`: monitor ref => session id. `reserved`: caller pid => place, with
+  # a monitor of the caller and a timer; a place ends at `result`, at
+  # `release`, at the `:DOWN` of its caller, or @place_ms after its `check`.
+  # `starters`: session id => the user whose start or resume through Hub made
+  # or attached to the entry, for whom the coordinator tools act
+  # (`docs/features/coordinator.md`, decision 3); a seeded entry has none.
 
   alias Helyx.Hub.Rules
 

@@ -3,17 +3,14 @@ defmodule Helyx.Hub.Wake do
   # The wake-ups of a Hub (`docs/features/hub.md`, decision 12), in the
   # state of the Hub process: the poll of the due rows, the delivery Tasks
   # (`Helyx.Hub.Delivery`), and the writes that a Task asks for in its Hub
-  # calls. The store holds the state of every wake-up, so a restart of Hub
-  # needs no recovery step: a row is pending, with its `next_try_at`, or its
-  # run has an outcome.
+  # calls.
   #
-  # `tasks`: the monitor ref of a Task => `%{task, schedule, session, owner,
-  # subscription, timer}`, at most 4, one for each session. The kill of a
-  # Task past its 120,000 ms keeps its entry to its `:DOWN`: a Hub call that
-  # the Task sent before the kill comes before its `:DOWN`, so it is taken
-  # while the entry still holds the session, and no second Task of the
-  # session starts first. `subscription` is nil for a schedule and the
-  # subscription id for the delivery of a webhook.
+  # `tasks`: the monitor ref of a Task => its entry, at most 4, one for each
+  # session. `subscription` is nil for a schedule and the subscription id for
+  # the delivery of a webhook. The kill of a Task past its 120,000 ms keeps
+  # its entry to its `:DOWN`: a Hub call that the Task sent before the kill
+  # comes before its `:DOWN`, so it is taken while the entry still holds the
+  # session, and no second Task of the session starts first.
 
   alias Helyx.Hub.{Delivery, Live, Rules, Schedules}
 

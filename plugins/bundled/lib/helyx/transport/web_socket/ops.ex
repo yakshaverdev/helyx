@@ -26,11 +26,11 @@ defmodule Helyx.Transport.WebSocket.Ops do
 
   # The facts of one operation of the wire: `params` is a map from a key to
   # `{required | optional, type}`, nil when the op checks its own params in
-  # its `check/3` clause; `deadline` is `:infinity` for an op with no
-  # deadline, and the others have theirs in `Bounds.deadline/1`; `slot` says that the result takes the
-  # encoder slot of the connection; `result`, `release`, and `run` are the
-  # facts of an authority (`Helyx.Transport.WebSocket.Authorize`). Every
-  # `hub.*` op is the `run` of an authority.
+  # its `check/3` clause; `deadline` overrides `Bounds.deadline/1`; `slot`
+  # says that the result takes the encoder slot of the connection; `result`,
+  # `release`, and `run` are the facts of an authority
+  # (`Helyx.Transport.WebSocket.Authorize`). Every `hub.*` op is the `run` of
+  # an authority.
   @ops Map.new(@hub_ops, &{&1, [run: true]})
        |> Map.merge(%{
          "sessions.live" => [params: nil, result: true],

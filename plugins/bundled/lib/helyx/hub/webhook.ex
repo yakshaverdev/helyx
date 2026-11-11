@@ -4,10 +4,6 @@ defmodule Helyx.Hub.Webhook do
   # the Hub process: the subscription of the path, the HMAC of the raw body,
   # the prompt that the payload becomes, and the one-run delivery row that
   # the wake-up machinery of decision 12 sends.
-  #
-  # The endpoint path is the secret of the subscription: an unknown id, a
-  # missing signature, and a wrong signature all answer 404, and each pays
-  # one HMAC, so a probe learns nothing about the id.
 
   alias Helyx.Hub.Params
   alias Helyx.Hub.Schedules
