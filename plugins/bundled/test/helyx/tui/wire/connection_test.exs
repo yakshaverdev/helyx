@@ -417,7 +417,7 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
       instance_id: "i1",
       turn_id: nil,
       seq: 1,
-      data: %{messages: messages, texts: List.duplicate(text, 64)}
+      data: %{messages: messages}
     }
 
     {_conn, _ref} =

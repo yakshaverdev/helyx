@@ -130,37 +130,29 @@ defmodule Helyx.Tool.Args do
     min = schema["minimum"]
     max = schema["maximum"]
 
-    cond do
-      min != nil and max != nil and (value < min or value > max) ->
-        {:error, "#{path} must be #{article} from #{min} to #{max}"}
-
-      min != nil and value < min ->
-        {:error, "#{path} must be #{article} of #{min} or more"}
-
-      max != nil and value > max ->
-        {:error, "#{path} must be #{article} of #{max} or less"}
-
-      true ->
-        :ok
+    case side(min, max, value) do
+      :ok -> :ok
+      :both -> {:error, "#{path} must be #{article} from #{min} to #{max}"}
+      :min -> {:error, "#{path} must be #{article} of #{min} or more"}
+      :max -> {:error, "#{path} must be #{article} of #{max} or less"}
     end
   end
+
+  # Which bound `n` breaks: `:both` names the two bounds of a schema that has both.
+  defp side(nil, nil, _n), do: :ok
+  defp side(min, nil, n), do: if(n < min, do: :min, else: :ok)
+  defp side(nil, max, n), do: if(n > max, do: :max, else: :ok)
+  defp side(min, max, n), do: if(n < min or n > max, do: :both, else: :ok)
 
   defp size(schema, path, length, noun, unit) do
     min = schema["minLength"] || schema["minItems"]
     max = schema["maxLength"] || schema["maxItems"]
 
-    cond do
-      min != nil and max != nil and (length < min or length > max) ->
-        {:error, "#{path} must be #{noun} of #{min} to #{max} #{plural(max, unit)}"}
-
-      min != nil and length < min ->
-        {:error, "#{path} must be #{noun} of at least #{min} #{plural(min, unit)}"}
-
-      max != nil and length > max ->
-        {:error, "#{path} must be #{noun} of at most #{max} #{plural(max, unit)}"}
-
-      true ->
-        :ok
+    case side(min, max, length) do
+      :ok -> :ok
+      :both -> {:error, "#{path} must be #{noun} of #{min} to #{max} #{plural(max, unit)}"}
+      :min -> {:error, "#{path} must be #{noun} of at least #{min} #{plural(min, unit)}"}
+      :max -> {:error, "#{path} must be #{noun} of at most #{max} #{plural(max, unit)}"}
     end
   end
 

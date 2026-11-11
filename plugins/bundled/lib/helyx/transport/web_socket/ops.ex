@@ -256,16 +256,18 @@ defmodule Helyx.Transport.WebSocket.Ops do
   defp typed(core, spec, params) do
     if Enum.all?(spec, fn {key, {need, _}} -> need == :optional or Map.has_key?(params, key) end) and
          Enum.all?(Map.keys(params), &Map.has_key?(spec, &1)) do
-      Enum.reduce_while(params, {:ok, %{}}, fn {key, value}, {:ok, values} ->
-        {_need, type} = Map.fetch!(spec, key)
-
-        case cast(core, type, value) do
-          {:ok, value} -> {:cont, {:ok, Map.put(values, key, value)}}
-          :bad_params -> {:halt, :bad_params}
-        end
-      end)
+      Enum.reduce_while(params, {:ok, %{}}, &cast_param(core, spec, &1, &2))
     else
       :bad_params
+    end
+  end
+
+  defp cast_param(core, spec, {key, value}, {:ok, values}) do
+    {_need, type} = Map.fetch!(spec, key)
+
+    case cast(core, type, value) do
+      {:ok, value} -> {:cont, {:ok, Map.put(values, key, value)}}
+      :bad_params -> {:halt, :bad_params}
     end
   end
 

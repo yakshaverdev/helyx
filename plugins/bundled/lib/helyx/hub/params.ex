@@ -188,18 +188,20 @@ defmodule Helyx.Hub.Params do
   defp values(params, specs) do
     Enum.reduce_while(specs, {:ok, %{}, nil}, fn {key, field, type, presence},
                                                  {:ok, acc, large} ->
-      with {:ok, value} <- fetch(params, key, presence) do
-        case value(type, value) do
-          :large -> {:cont, {:ok, Map.put(acc, field, value), :text_too_large}}
-          :bad_params -> {:halt, :bad_params}
-          {:ok, checked} -> {:cont, {:ok, Map.put(acc, field, checked), large}}
-        end
-      else
+      case checked(type, fetch(params, key, presence)) do
+        {:large, value} -> {:cont, {:ok, Map.put(acc, field, value), :text_too_large}}
+        {:ok, checked} -> {:cont, {:ok, Map.put(acc, field, checked), large}}
         :absent -> {:cont, {:ok, acc, large}}
         :bad_params -> {:halt, :bad_params}
       end
     end)
   end
+
+  defp checked(type, {:ok, value}) do
+    with :large <- value(type, value), do: {:large, value}
+  end
+
+  defp checked(_type, missing), do: missing
 
   defp fetch(params, key, :required) do
     case Map.fetch(params, key) do

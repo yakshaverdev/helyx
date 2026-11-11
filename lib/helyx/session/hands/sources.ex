@@ -72,11 +72,9 @@ defmodule Helyx.Session.Hands.Sources do
   # The plugin of the source process `source`, or nil: a source that ended
   # since it sent a launch starts nothing.
   defp plugin(state, source) do
-    Enum.find_value(state.tasks, fn {_ref, entry} ->
-      case entry.kind do
-        {:source, plugin} -> if entry.task.pid == source, do: plugin
-        _kind -> nil
-      end
+    Enum.find_value(state.tasks, fn
+      {_ref, %{kind: {:source, plugin}, task: %{pid: ^source}}} -> plugin
+      _other -> nil
     end)
   end
 

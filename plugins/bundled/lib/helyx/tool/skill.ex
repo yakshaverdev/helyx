@@ -40,18 +40,19 @@ defmodule Helyx.Tool.Skill do
   def run(args, cwd) do
     with {:ok, args} <- Args.check(args, parameters()) do
       name = args["name"]
-
-      case Skills.find(Skills.scan(cwd), name) do
-        nil ->
-          {:error,
-           "unknown skill: #{Helyx.Text.cap(name, @max_echo_bytes, :head)}; " <>
-             "the skills are listed in the system prompt"}
-
-        skill ->
-          if Skills.loaded?(Helyx.Tool.transcript(), name),
-            do: {:ok, Skills.note(skill)},
-            else: {:ok, Skills.text(skill)}
-      end
+      found(Skills.find(Skills.scan(cwd), name), name)
     end
+  end
+
+  defp found(nil, name) do
+    {:error,
+     "unknown skill: #{Helyx.Text.cap(name, @max_echo_bytes, :head)}; " <>
+       "the skills are listed in the system prompt"}
+  end
+
+  defp found(skill, name) do
+    if Skills.loaded?(Helyx.Tool.transcript(), name),
+      do: {:ok, Skills.note(skill)},
+      else: {:ok, Skills.text(skill)}
   end
 end

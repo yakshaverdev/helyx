@@ -114,6 +114,7 @@ defmodule Helyx.Tool.MCP.Server do
     end
   end
 
+  @spec exit_status(map()) :: no_return()
   defp exit_status(%{phase: :serving} = state), do: exited(state)
   defp exit_status(state), do: fail(state, "the server exited")
 
