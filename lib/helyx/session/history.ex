@@ -12,7 +12,6 @@ defmodule Helyx.Session.History do
 
   @type history_page :: %{
           messages: [Message.t()],
-          more: boolean(),
           older: non_neg_integer(),
           next: String.t() | nil
         }
@@ -71,7 +70,7 @@ defmodule Helyx.Session.History do
 
   defp newest_before([], _before, _newest), do: :error
 
-  defp with_next(%{messages: [first | _], more: true} = page), do: Map.put(page, :next, first.id)
+  defp with_next(%{messages: [first | _], older: older} = page) when older > 0, do: Map.put(page, :next, first.id)
   defp with_next(page), do: Map.put(page, :next, nil)
 
   # `newest` is newest first. The run stops at `count` messages or before
@@ -86,7 +85,7 @@ defmodule Helyx.Session.History do
 
       # A dropped result has its call in `older`, so `older` is not empty then.
       {_dropped, messages} ->
-        %{messages: messages, more: older != [], older: length(newest) - length(messages)}
+        %{messages: messages, older: length(newest) - length(messages)}
     end
   end
 
@@ -105,10 +104,10 @@ defmodule Helyx.Session.History do
   # transcript has a user or an assistant message before each tool result
   # (`Helyx.Session.Transcript.repair/1`, `Records`), so only an empty one
   # has none.
-  defp group([]), do: %{messages: [], more: false, older: 0}
+  defp group([]), do: %{messages: [], older: 0}
 
   defp group(newest) do
     {results, [head | older]} = Enum.split_while(newest, &(&1.role == :tool_result))
-    %{messages: [head | Enum.reverse(results)], more: older != [], older: length(older)}
+    %{messages: [head | Enum.reverse(results)], older: length(older)}
   end
 end

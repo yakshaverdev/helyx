@@ -73,12 +73,12 @@ defmodule Helyx.Session.ReplayTest do
     last = List.last(events).seq
     assert last > Ring.max_count() + 1
 
-    assert {:ok, %Snapshot{seq: ^last, more: false}, _} =
+    assert {:ok, %Snapshot{seq: ^last}, _} =
              Session.subscribe(session, after: {"another", 0})
 
     assert {:ok, %Snapshot{seq: ^last}, _} = Session.subscribe(session, after: {id, last + 1})
     # The fallback snapshot is the one of `tail`.
-    assert {:ok, %Snapshot{seq: ^last, messages: [_], more: true}, _} =
+    assert {:ok, %Snapshot{seq: ^last, messages: [_]}, _} =
              Session.subscribe(session, after: {id, 0}, tail: 1)
 
     # The ring holds the newest 1,024 events.

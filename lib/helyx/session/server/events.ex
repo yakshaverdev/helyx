@@ -71,13 +71,12 @@ defmodule Helyx.Session.Server.Events do
     page =
       if tail,
         do: History.cut(state.transcript, tail),
-        else: %{messages: state.transcript, more: false, older: 0}
+        else: %{messages: state.transcript, older: 0}
 
     %Snapshot{
       instance_id: state.instance_id,
       seq: state.ring.seq,
       messages: page.messages,
-      more: page.more,
       older: page.older,
       turn: turn(state.phase),
       model: ModelRef.to_string(state.model),

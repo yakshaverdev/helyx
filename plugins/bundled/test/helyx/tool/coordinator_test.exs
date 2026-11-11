@@ -293,7 +293,7 @@ defmodule Helyx.Tool.CoordinatorTest do
 
     test "the render keeps the newest messages within the budget" do
       messages = for n <- 1..50, do: Message.user("message #{n} " <> String.duplicate("é", 100))
-      snapshot = %{messages: messages, more: false, turn: nil}
+      snapshot = %{messages: messages, older: 0, turn: nil}
 
       for budget <- [300, 1_000, 5_000] do
         text = Helyx.Tool.SessionRead.render("id", snapshot, budget)

@@ -143,7 +143,7 @@ defmodule Helyx.Tool.SessionRead do
     head = "session #{id}, #{state}\n\n"
     room = budget - byte_size(head) - byte_size(@left_out)
     {parts, cut?} = newest(Enum.reverse(snapshot.messages), room, [])
-    left_out = if cut? or snapshot.more, do: @left_out, else: ""
+    left_out = if cut? or snapshot.older > 0, do: @left_out, else: ""
     IO.iodata_to_binary([head, left_out | parts])
   end
 

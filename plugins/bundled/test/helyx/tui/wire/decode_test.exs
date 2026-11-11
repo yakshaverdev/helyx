@@ -143,7 +143,6 @@ defmodule Helyx.TUI.Wire.DecodeTest do
       instance_id: "i1",
       seq: 3,
       messages: [user("hi"), assistant(), result()],
-      more: true,
       turn: %{id: "t1", partial: partial(), elapsed_ms: 12},
       model: "fake/echo",
       queue: @queue,
@@ -157,7 +156,6 @@ defmodule Helyx.TUI.Wire.DecodeTest do
     empty = %{
       snapshot
       | messages: [],
-        more: false,
         turn: nil,
         context: nil,
         asks: [],
@@ -427,7 +425,6 @@ defmodule Helyx.TUI.Wire.DecodeTest do
       instance_id: "i1",
       seq: 0,
       messages: messages,
-      more: false,
       turn: nil,
       model: "fake/echo",
       queue: @queue,

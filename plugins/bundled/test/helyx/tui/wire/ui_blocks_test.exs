@@ -31,7 +31,6 @@ defmodule Helyx.TUI.Wire.UIBlocksTest do
       instance_id: "i1",
       seq: 3,
       messages: messages,
-      more: false,
       turn: %{id: "t1", partial: nil, elapsed_ms: 0},
       model: "fake/echo",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},

@@ -276,7 +276,6 @@ defmodule Helyx.TUI.QuestionTest do
       model: "fake/m",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
       persisting: true,
-      more: false,
       usage: %Helyx.Session.Totals{},
       context: nil,
       asks: [other]

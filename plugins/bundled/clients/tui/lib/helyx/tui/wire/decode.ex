@@ -312,7 +312,6 @@ defmodule Helyx.TUI.Wire.Decode do
            "instance_id" => instance_id,
            "seq" => seq,
            "messages" => messages,
-           "more" => more,
            "turn" => turn,
            "model" => model,
            "queue" => queue,
@@ -324,7 +323,7 @@ defmodule Helyx.TUI.Wire.Decode do
            "activated" => activated
          } = wire
        )
-       when is_binary(instance_id) and count?(seq) and is_list(messages) and is_boolean(more) and
+       when is_binary(instance_id) and count?(seq) and is_list(messages) and
               is_boolean(persisting) and is_list(asks) and is_list(ui_blocks) do
     # Additive: an older server sends none, and the client shows no notice.
     older = Map.get(wire, "older", 0)
@@ -334,7 +333,6 @@ defmodule Helyx.TUI.Wire.Decode do
       instance_id: instance_id,
       seq: seq,
       messages: Enum.map(messages, &message!/1),
-      more: more,
       older: older,
       turn: turn(turn),
       model: model!(model),

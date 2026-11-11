@@ -196,7 +196,6 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
       instance_id: "i1",
       seq: 0,
       messages: [],
-      more: false,
       turn: nil,
       model: "fake/echo",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},

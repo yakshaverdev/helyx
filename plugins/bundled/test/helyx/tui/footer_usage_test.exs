@@ -66,7 +66,6 @@ defmodule Helyx.TUI.FooterUsageTest do
       model: model,
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
       persisting: true,
-      more: false,
       usage: usage,
       context: context
     })
@@ -282,7 +281,6 @@ defmodule Helyx.TUI.FooterUsageTest do
           instance_id: "i",
           seq: 0,
           messages: [Message.user("two")],
-          more: true,
           turn: nil,
           model: @model,
           queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},
@@ -304,7 +302,6 @@ defmodule Helyx.TUI.FooterUsageTest do
         instance_id: "i",
         seq: 0,
         messages: messages,
-        more: false,
         turn: nil,
         model: @model,
         queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},

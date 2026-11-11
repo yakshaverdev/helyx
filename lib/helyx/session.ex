@@ -157,7 +157,7 @@ defmodule Helyx.Session do
   @doc """
   A page of the live transcript before the message with id `before`, oldest
   first, `limit: n` (1 to 1,000, default 200) in place of `tail`. `next` is
-  the id to pass for the page before it, nil when `more` is false
+  the id to pass for the page before it, nil when `older` is 0
   (`docs/features/session-snapshot.md`, "Tail").
   """
   @spec history(t(), String.t(), String.t(), keyword()) ::

@@ -25,7 +25,6 @@ defmodule Helyx.Transport.WebSocket.WireTest do
       instance_id: "i1",
       seq: 3,
       messages: [],
-      more: false,
       turn: nil,
       model: "fake/echo",
       queue: %{steers: 0, follow_ups: 0, running: 0, held: 0, waiting: 0},

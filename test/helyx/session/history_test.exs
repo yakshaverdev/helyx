@@ -71,10 +71,10 @@ defmodule Helyx.Session.HistoryTest do
   end
 
   test "the tail takes the newest messages up to the count" do
-    assert History.cut(transcript(), 6) == %{messages: transcript(), more: false, older: 0}
-    assert History.cut(transcript(), 1_000) == %{messages: transcript(), more: false, older: 0}
+    assert History.cut(transcript(), 6) == %{messages: transcript(), older: 0}
+    assert History.cut(transcript(), 1_000) == %{messages: transcript(), older: 0}
     assert ids(History.cut(transcript(), 2)) == ["u2", "a2"]
-    assert History.cut(transcript(), 2).more
+    assert History.cut(transcript(), 2).older > 0
     assert History.cut(transcript(), 2).older == 4
     assert ids(History.cut(transcript(), 1)) == ["a2"]
     assert History.cut(transcript(), 1).older == 5
@@ -85,13 +85,11 @@ defmodule Helyx.Session.HistoryTest do
     # includes the results that the move drops.
     assert History.cut(transcript(), 4) == %{
              messages: Enum.take(transcript(), -2),
-             more: true,
              older: 4
            }
 
     assert History.cut(transcript(), 3) == %{
              messages: Enum.take(transcript(), -2),
-             more: true,
              older: 4
            }
 
@@ -103,13 +101,13 @@ defmodule Helyx.Session.HistoryTest do
     group = [assistant("a1", ["c1", "c2"]), result("r1", "c1"), result("r2", "c2")]
     messages = [user("u1") | group]
 
-    assert History.cut(messages, 1) == %{messages: group, more: true, older: 1}
-    assert History.cut(messages, 2) == %{messages: group, more: true, older: 1}
-    assert History.cut(group, 1) == %{messages: group, more: false, older: 0}
+    assert History.cut(messages, 1) == %{messages: group, older: 1}
+    assert History.cut(messages, 2) == %{messages: group, older: 1}
+    assert History.cut(group, 1) == %{messages: group, older: 0}
   end
 
   test "an empty transcript is an empty page" do
-    assert History.cut([], 200) == %{messages: [], more: false, older: 0}
+    assert History.cut([], 200) == %{messages: [], older: 0}
   end
 
   describe "the bytes of the tail" do
@@ -127,23 +125,21 @@ defmodule Helyx.Session.HistoryTest do
 
       assert History.cut([sized("o", half), sized("n", half)], 10) == %{
                messages: [sized("o", half), sized("n", half)],
-               more: false,
                older: 0
              }
 
       assert ids(History.cut([sized("o", half - 1), sized("n", half)], 10)) == ["o", "n"]
       assert ids(History.cut([sized("o", half + 1), sized("n", half)], 10)) == ["n"]
       assert History.cut([sized("o", half + 1), sized("n", half)], 10).older == 1
-      assert History.cut([sized("o", half + 1), sized("n", half)], 10).more
+      assert History.cut([sized("o", half + 1), sized("n", half)], 10).older > 0
     end
 
     test "a newest message over the limit goes alone, and its content is whole" do
       big = sized("n", @max_bytes + 1)
-      assert History.cut([user("o"), big], 10) == %{messages: [big], more: true, older: 1}
+      assert History.cut([user("o"), big], 10) == %{messages: [big], older: 1}
 
       assert History.cut([sized("n", @max_bytes)], 10) == %{
                messages: [sized("n", @max_bytes)],
-               more: false,
                older: 0
              }
     end
@@ -154,7 +150,6 @@ defmodule Helyx.Session.HistoryTest do
 
       assert History.cut([user("u") | group], 1_000) == %{
                messages: group,
-               more: true,
                older: 1
              }
     end
@@ -163,23 +158,23 @@ defmodule Helyx.Session.HistoryTest do
   describe "a page" do
     test "the messages before `before`, with the cut, and the next cursor" do
       assert History.page(transcript(), "a2", 1) ==
-               {:ok, %{messages: [user("u2")], more: true, older: 4, next: "u2"}}
+               {:ok, %{messages: [user("u2")], older: 4, next: "u2"}}
 
       # Two before u2 start at r2: the cut gives the group of a1.
-      assert {:ok, %{messages: messages, more: true, older: 1, next: "a1"}} =
+      assert {:ok, %{messages: messages, older: 1, next: "a1"}} =
                History.page(transcript(), "u2", 2)
 
       assert Enum.map(messages, & &1.id) == ["a1", "r1", "r2"]
 
       assert History.page(transcript(), "a1", 200) ==
-               {:ok, %{messages: [user("u1")], more: false, older: 0, next: nil}}
+               {:ok, %{messages: [user("u1")], older: 0, next: nil}}
 
       assert History.page(transcript(), "u1", 200) ==
-               {:ok, %{messages: [], more: false, older: 0, next: nil}}
+               {:ok, %{messages: [], older: 0, next: nil}}
     end
 
     test "the pages from the tail to the oldest give every message once, in order" do
-      %{messages: [first | _] = tail, more: true} = History.cut(transcript(), 1)
+      %{messages: [first | _] = tail} = History.cut(transcript(), 1)
 
       pages =
         Stream.unfold(first.id, fn
