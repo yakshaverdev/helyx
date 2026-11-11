@@ -101,9 +101,16 @@ defmodule Helyx.Test.HubWake do
     :ok =
       in_hub(
         hub,
-        &Exqlite.Sqlite3.execute(&1.db, "UPDATE schedules SET #{sets} WHERE id = '#{id}'")
+        &Exqlite.Sqlite3.execute(
+          conn(&1.db),
+          "UPDATE schedules SET #{sets} WHERE id = '#{id}'"
+        )
       )
   end
+
+  # The connection inside the handle of the store, for the row of a schedule
+  # that only SQL writes.
+  defp conn(%{db: db}), do: db
 
   def poll(hub), do: send(hub, :wake_poll)
 

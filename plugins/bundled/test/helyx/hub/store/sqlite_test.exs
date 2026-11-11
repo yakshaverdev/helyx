@@ -48,7 +48,8 @@ defmodule Helyx.Hub.Store.SQLiteTest do
 
   test "a query that cannot run answers :failed" do
     {:ok, db} = SQLite.open(path: nil)
-    :ok = Exqlite.Sqlite3.execute(db, "DROP TABLE tokens")
+    %{db: connection} = db
+    :ok = Exqlite.Sqlite3.execute(connection, "DROP TABLE tokens")
     assert SQLite.tokens(db, "u") == {:error, :failed}
     assert SQLite.add_token(db, token("t1", "u"), 2, :infinity) == {:error, :failed}
     :ok = SQLite.close(db)
@@ -174,6 +175,47 @@ defmodule Helyx.Hub.Store.SQLiteTest do
     assert SQLite.open(path: path) == {:error, :store_locked}
 
     Port.close(port)
+  end
+
+  # A POSIX lock of a file belongs to the OS process, so any open and close of
+  # `hub.db` in this VM drops the lock that SQLite holds on it: the `read` tool
+  # on the path is enough. The store's lock is an `flock` on another file,
+  # which a close of a descriptor of the database does not drop.
+  @tag :slow
+  test "an open and close of the file in this VM does not drop the lock", %{tmp_dir: dir} do
+    path = Path.join(dir, "hub.db")
+    {:ok, db} = SQLite.open(path: path)
+
+    File.close(File.open!(path, [:read, :binary]))
+
+    assert open_elsewhere(path) == :store_locked
+
+    :ok = SQLite.close(db)
+    assert open_elsewhere(path) == :opened
+  end
+
+  # The store of a second OS process, which takes the lock of the path: its
+  # answer is the one that a held file gives.
+  defp open_elsewhere(path) do
+    paths = Enum.flat_map(:code.get_path(), &["-pa", to_string(&1)])
+
+    script = """
+    case Helyx.Hub.Store.SQLite.open(path: #{inspect(path)}) do
+      {:ok, _store} -> IO.puts("opened")
+      {:error, :store_locked} -> IO.puts("store_locked")
+      other -> IO.puts(inspect(other))
+    end
+    """
+
+    {out, 0} =
+      System.cmd(System.find_executable("elixir"), paths ++ ["-e", script],
+        stderr_to_stdout: true
+      )
+
+    case out |> String.split("\n", trim: true) |> List.last() do
+      "opened" -> :opened
+      "store_locked" -> :store_locked
+    end
   end
 
   # The output of the holder can come in parts; it holds the lock once it says so.

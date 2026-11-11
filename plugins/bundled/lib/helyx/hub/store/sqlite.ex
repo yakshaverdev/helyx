@@ -3,15 +3,19 @@ defmodule Helyx.Hub.Store.SQLite do
   The SQLite store of `Helyx.Hub` (`docs/features/hub.md`, decision 9 and
   "Store schema"), with `exqlite`.
 
-  A file store holds the SQLite write lock from its open to its close
-  (`locking_mode = EXCLUSIVE`), so a second store on the file, in this node
-  or in another OS process, fails its open with `{:error, :store_locked}`
-  when it has not taken the lock 5,000 ms after the start of the open; of
-  several opens at once, one takes it. The file and the WAL, SHM, and journal
-  files beside it have mode 0600; each is a regular file with one name or
-  nothing, else the open gives `{:error, {:invalid_option, :path}}`. The
-  journal is WAL. With no `:path` the store is a database in memory that ends with its
-  connection.
+  A file store holds an `flock` of `<path>.lock` from its open to its close,
+  so a second store on the file, in this node or in another OS process, fails
+  its open with `{:error, :store_locked}`; of several opens at once, one takes
+  it. The lock guarantees that one store opens the file and that the OS drops
+  it when the process that holds it ends; it does not stop a program that
+  ignores the lock file and writes the database itself. The database holds
+  the SQLite write lock too (`locking_mode = EXCLUSIVE`), which a second
+  writer of the file must take as well.
+
+  The file and the WAL, SHM, and journal files beside it have mode 0600; each
+  is a regular file with one name or nothing, else the open gives
+  `{:error, {:invalid_option, :path}}`. The journal is WAL. With no `:path`
+  the store is a database in memory that ends with its connection.
   """
 
   @behaviour Helyx.Hub.Store
@@ -20,15 +24,17 @@ defmodule Helyx.Hub.Store.SQLite do
 
   alias Exqlite.Sqlite3
   alias Helyx.Hub.Store.SQLite.{Disk, Projects, Records, Schedules, Schema, Subscriptions, Tables}
+  alias Helyx.Session.Lock
 
   @version Schema.version()
 
   @users Tables.select_sql(:users)
   @tokens Tables.select_sql(:tokens)
 
-  # The busy wait of every query, and the time an open tries the lock (Bounds).
+  # The busy wait of every query, and the time an open tries the SQLite lock
+  # of the file (Bounds).
   @busy_ms 5_000
-  # The longest pause between two tries of the lock at the open.
+  # The longest pause between two tries of that lock.
   @lock_pause_ms 20
 
   @impl true
@@ -41,25 +47,60 @@ defmodule Helyx.Hub.Store.SQLite do
 
   defp open_memory do
     {:ok, db} = Sqlite3.open(":memory:")
-    started(db, [&settings/1, &schema/1])
+
+    case started(db, [&settings/1, &schema/1]) do
+      {:ok, db} -> {:ok, %{db: db, lock: nil}}
+      error -> error
+    end
   end
 
   # The order of decision 9: every name is checked before any change, a
-  # missing file is made, the lock is taken with no write, the file and its
-  # version are checked again under the lock, and only then does the store
-  # set the modes and write. So a refused start writes nothing.
+  # missing file is made, the lock of the file is taken with no write, the
+  # file and its version are checked again under the lock, and only then does
+  # the store set the modes and write. So a refused start writes nothing.
   defp open_file(path) do
     deadline = System.monotonic_time(:millisecond) + @busy_ms
 
     with :ok <- prepare(path),
-         {:ok, db} <- locked_open(path, deadline) do
-      started(db, [
-        &settings/1,
-        &version/1,
-        fn _db -> Disk.own(path) end,
-        &exec(&1, "PRAGMA journal_mode = WAL"),
-        &schema/1
-      ])
+         {:ok, lock} <- take_lock(path) do
+      held(path, lock, deadline)
+    end
+  end
+
+  # The lock is held from here to the close, and given back at once when the
+  # open fails after it.
+  defp held(path, lock, deadline) do
+    opened =
+      with {:ok, db} <- locked_open(path, deadline) do
+        started(db, [
+          &settings/1,
+          &version/1,
+          fn _db -> Disk.own(path) end,
+          &exec(&1, "PRAGMA journal_mode = WAL"),
+          &schema/1
+        ])
+      end
+
+    case opened do
+      {:ok, db} ->
+        {:ok, %{db: db, lock: lock}}
+
+      error ->
+        Lock.release(lock)
+        error
+    end
+  end
+
+  # The lock of the file: an `flock` of `<path>.lock`, held by a perl program
+  # for the life of the store. A POSIX lock of `hub.db` itself would go with
+  # the first close of a descriptor of the file in this VM, which a read of
+  # the path makes; a close of a descriptor of another file does not drop
+  # this one.
+  defp take_lock(path) do
+    case Lock.take(path <> ".lock") do
+      {:ok, port} -> {:ok, port}
+      {:error, {:session_locked, _name}} -> {:error, :store_locked}
+      {:error, {:lock_failed, _text} = error} -> {:error, error}
     end
   end
 
@@ -170,8 +211,9 @@ defmodule Helyx.Hub.Store.SQLite do
   end
 
   @impl true
-  def close(db) do
+  def close(%{db: db, lock: lock}) do
     :ok = Sqlite3.close(db)
+    Lock.release(lock)
   end
 
   @impl true
