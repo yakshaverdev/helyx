@@ -19,6 +19,7 @@ mod reconcile;
 pub mod seq;
 pub mod transcript;
 pub mod ui_block;
+pub mod usage;
 pub mod vocabulary;
 
 pub use check::{Broken, Checked};
