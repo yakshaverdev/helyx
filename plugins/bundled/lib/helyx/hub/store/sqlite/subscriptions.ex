@@ -78,13 +78,11 @@ defmodule Helyx.Hub.Store.SQLite.Subscriptions do
     do:
       delete(db, deadline, "DELETE FROM subscriptions WHERE id = ?1 AND owner = ?2", [id, owner])
 
-  # Only a final outcome moves the delivery state; a put-back never calls
-  # this. Once `refused` is stored, no later outcome replaces it: the
-  # endpoint of the subscription stays gone until a delete (decision 17).
-  @final_outcomes ~w(delivered refused missed unconfirmed)
-
-  def subscription_sent(db, id, at, outcome, deadline)
-      when outcome in @final_outcomes do
+  # Only a final outcome moves the delivery state (`Wake.settle/5`); a
+  # put-back never calls this. Once `refused` is stored, no later outcome
+  # replaces it: the endpoint of the subscription stays gone until a delete
+  # (decision 17).
+  def subscription_sent(db, id, at, outcome, deadline) do
     transaction(db, deadline, fn ->
       run(
         db,
@@ -94,6 +92,4 @@ defmodule Helyx.Hub.Store.SQLite.Subscriptions do
       )
     end)
   end
-
-  def subscription_sent(_db, _id, _at, _outcome, _deadline), do: :ok
 end
