@@ -1,4 +1,4 @@
-//! The server frames of protocol 8 after the handshake: `res`, `event`, and
+//! The server frames of protocol 9 after the handshake: `res`, `event`, and
 //! `session_end`, each checked by the schema of `docs/features/wire-protocol.md`.
 //! A `res` is read by the op of its request, which the caller keeps by `id`.
 
@@ -121,6 +121,9 @@ const ERROR_CODES: &[&str] = &[
     // The codes of the schedules of a Hub (protocol 7, #870).
     "too_many_schedules",
     "unknown_schedule",
+    // The codes of the event subscriptions of a Hub (protocol 9, #921).
+    "too_many_event_subscriptions",
+    "unknown_subscription",
 ];
 
 /// Checks a frame after `welcome`. `op_of` gives the op of the request with

@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 const CHALLENGE: &str =
     r#"{"type":"challenge","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}"#;
-const WELCOME: &str = r#"{"type":"welcome","protocol":8}"#;
+const WELCOME: &str = r#"{"type":"welcome","protocol":9}"#;
 
 /// The frames that the client sends among `outputs`, decoded.
 fn sent(outputs: &[Output]) -> Vec<Value> {
@@ -31,7 +31,7 @@ fn sent(outputs: &[Output]) -> Vec<Value> {
 fn welcomed(client: &mut Client) -> Vec<Output> {
     client.connect();
     let hello = client.receive(CHALLENGE).unwrap();
-    assert_eq!(sent(&hello), [json!({"type": "hello", "protocol": 8})]);
+    assert_eq!(sent(&hello), [json!({"type": "hello", "protocol": 9})]);
     let outputs = client.receive(WELCOME).unwrap();
     assert_eq!(outputs[0], Output::Welcome);
     outputs
@@ -230,8 +230,8 @@ fn after_a_welcome_a_failed_open_reconnects() {
     assert_eq!(client.closed(None), Next::Reconnect);
     client.connect();
     client.receive(CHALLENGE).unwrap();
-    let refused = r#"{"type":"refused","code":"protocol","server_protocol":9}"#;
-    assert_eq!(client.receive(refused).unwrap(), [Output::Refused(9)]);
+    let refused = r#"{"type":"refused","code":"protocol","server_protocol":10}"#;
+    assert_eq!(client.receive(refused).unwrap(), [Output::Refused(10)]);
     assert_eq!(client.closed(Some(4426)), Next::Stop);
     let mut client = following(4);
     assert!(client.receive(&notice(9)).is_err());

@@ -20,7 +20,12 @@ defmodule Helyx.Transport.WebSocket do
   address that is not loopback needs one of the two. The authority closes a
   connection with `4401` (no credential), `4503` (no answer at the `hello`),
   or `4403` (its access changed, also through `close/2`). With no authority,
-  an operation whose name starts with `hub.` answers `unknown_op`.
+  an operation whose name starts with `hub.` answers `unknown_op`. An
+  authority may also export `webhook/3`: the server then answers
+  `POST /hooks/<id>` with the status that the authority decides, after it
+  read the body within 1,048,576 bytes; with no authority, or one without
+  the callback, every path under `/hooks` answers 404
+  (`docs/features/hub.md`, decision 17).
   `:origins` lists the allowed values of the `Origin` header, none
   by default: an upgrade with an `Origin` outside the list gets HTTP 403,
   and an upgrade over the 64 connections of the server HTTP 503.
@@ -35,10 +40,14 @@ defmodule Helyx.Transport.WebSocket do
 
   # The protocol number and the SHA-256 of the schema in
   # `docs/features/wire-protocol.md`; a schema change needs a new number.
-  @protocol 8
-  @schema_sha256 "92c58343f19ce148ca6b8b3461d4c2efba1e115d1548a087bea48d35fbf7125e"
+  @protocol 9
+  @schema_sha256 "648155dc9e086a40e2b30a56dbe350651bde2434c3f12fc4a15771f66f714d50"
 
   @max_connections 64
+  # The webhook endpoint of a Hub (decision 17): one request reads at most
+  # one payload, and at most 16 requests handle theirs at once.
+  @max_webhooks 16
+  @max_payload 1_048_576
 
   @doc "The protocol number of the server."
   @spec protocol() :: pos_integer()
@@ -84,7 +93,8 @@ defmodule Helyx.Transport.WebSocket do
           key: key && fn -> key end,
           origins: origins,
           authority: authority,
-          gate: nil
+          gate: nil,
+          webhook_gate: nil
         }
 
         start(config, ip, Keyword.fetch!(opts, :port))
@@ -99,7 +109,18 @@ defmodule Helyx.Transport.WebSocket do
 
     with {:ok, gate} <-
            Supervisor.start_child(sup, {Helyx.Transport.WebSocket.Gate, @max_connections}),
-         {:ok, bandit} <- Supervisor.start_child(sup, bandit(%{config | gate: gate}, ip, port)),
+         {:ok, webhook_gate} <-
+           Supervisor.start_child(
+             sup,
+             Supervisor.child_spec({Helyx.Transport.WebSocket.Gate, @max_webhooks},
+               id: :webhook_gate
+             )
+           ),
+         {:ok, bandit} <-
+           Supervisor.start_child(
+             sup,
+             bandit(%{config | gate: gate, webhook_gate: webhook_gate}, ip, port)
+           ),
          {:ok, _drain} <-
            Supervisor.start_child(sup, {Helyx.Transport.WebSocket.Drain, {bandit, gate}}) do
       {:ok, sup}
@@ -212,6 +233,82 @@ defmodule Helyx.Transport.WebSocket do
 
   @impl Plug
   def call(conn, config) do
+    if webhook_path?(conn) do
+      webhook(conn, config)
+    else
+      websocket(conn, config)
+    end
+  end
+
+  # The endpoint of an event subscription (decision 17): `POST /hooks/<id>`
+  # goes to the authority, which owns the signature, the prompt, and the
+  # delivery. Anything else on the path is 404, and so is the whole path
+  # under an authority without the callback.
+  defp webhook(conn, config) do
+    with "POST" <- conn.method,
+         ["hooks", id] <- conn.path_info,
+         true <- byte_size(id) in 1..64,
+         {:ok, authority} <- webhook_authority(config),
+         :ok <- Helyx.Transport.WebSocket.Gate.enter(config.webhook_gate) do
+      answer(authority, id, read_body(conn))
+    else
+      :full ->
+        conn |> Plug.Conn.send_resp(503, "") |> Plug.Conn.halt()
+
+      _ ->
+        conn |> Plug.Conn.send_resp(404, "") |> Plug.Conn.halt()
+    end
+  end
+
+  defp webhook_path?(%Plug.Conn{path_info: ["hooks" | _]}), do: true
+  defp webhook_path?(%Plug.Conn{}), do: false
+
+  defp webhook_authority(%{authority: {mod, _arg} = authority}) do
+    if Code.ensure_loaded?(mod) and function_exported?(mod, :webhook, 3),
+      do: {:ok, authority},
+      else: :error
+  end
+
+  defp webhook_authority(_config), do: :error
+
+  # The body within the payload bound; a longer one is 413 before the
+  # authority sees it.
+  defp read_body(conn) do
+    case Plug.Conn.read_body(conn,
+           length: @max_payload,
+           read_length: @max_payload,
+           read_timeout: 30_000
+         ) do
+      {:ok, body, conn} -> {:ok, body, conn}
+      {:more, _partial, conn} -> {:over, conn}
+      {:error, _reason} -> {:error, conn}
+    end
+  end
+
+  defp answer({mod, arg}, id, {:ok, body, read}) do
+    request = %{headers: read.req_headers, body: body}
+
+    try do
+      case mod.webhook(arg, id, request) do
+        {:ok, status, text} when status in 200..599 -> respond(read, status, text)
+        _other -> respond(read, 503, "")
+      end
+    catch
+      :exit, _reason -> respond(read, 503, "")
+    end
+  end
+
+  defp answer(_authority, _id, {:over, read}), do: respond(read, 413, "")
+  defp answer(_authority, _id, {:error, read}), do: respond(read, 400, "")
+
+  defp respond(conn, status, text) do
+    conn
+    |> Plug.Conn.put_resp_content_type("application/json")
+    |> Plug.Conn.send_resp(status, text)
+    |> Plug.Conn.halt()
+  end
+
+  defp websocket(conn, config) do
     cond do
       not origin?(Plug.Conn.get_req_header(conn, "origin"), config.origins) ->
         conn |> Plug.Conn.send_resp(403, "") |> Plug.Conn.halt()

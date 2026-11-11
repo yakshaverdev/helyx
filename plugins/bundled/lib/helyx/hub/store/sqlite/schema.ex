@@ -1,11 +1,30 @@
 defmodule Helyx.Hub.Store.SQLite.Schema do
   @moduledoc false
-  # The schema of the SQLite store, `user_version` 1 (`docs/features/hub.md`,
-  # "Store schema"). A file of another version is refused; the first build
-  # has no migration.
+  # The schema of the SQLite store, `user_version` 2 (`docs/features/hub.md`,
+  # "Store schema"). A file of version 1 gets the tables and the column of
+  # the event subscriptions (decision 17); a file of another version is
+  # refused.
+
+  # The event subscriptions of decision 17, in a new file and in a file of
+  # version 1.
+  @subscriptions """
+  CREATE TABLE subscriptions (
+    id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    template TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    secret TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_at INTEGER,
+    last_outcome TEXT CHECK (last_outcome IN ('delivered', 'missed', 'refused', 'unconfirmed'))
+  ) STRICT;
+  CREATE INDEX subscriptions_owner ON subscriptions (owner);
+  CREATE INDEX subscriptions_session ON subscriptions (session_id);
+  """
 
   @doc false
-  def version, do: 1
+  def version, do: 2
 
   @doc false
   def sql do
@@ -58,6 +77,8 @@ defmodule Helyx.Hub.Store.SQLite.Schema do
       PRIMARY KEY (session_id, label)
     ) STRICT;
 
+    #{@subscriptions}
+
     CREATE TABLE schedules (
       id TEXT PRIMARY KEY,
       owner TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -71,11 +92,25 @@ defmodule Helyx.Hub.Store.SQLite.Schema do
       next_try_at INTEGER,
       last_at INTEGER,
       last_outcome TEXT CHECK (last_outcome IN ('delivered', 'missed', 'refused', 'unconfirmed')),
-      created_at INTEGER NOT NULL
+      created_at INTEGER NOT NULL,
+      subscription_id TEXT REFERENCES subscriptions(id) ON DELETE CASCADE
     ) STRICT;
     CREATE INDEX schedules_at ON schedules (at);
     CREATE INDEX schedules_next_try ON schedules (next_try_at);
     CREATE INDEX schedules_session ON schedules (session_id);
+    CREATE INDEX schedules_subscription ON schedules (subscription_id);
+    """
+  end
+
+  @doc false
+  # A store of version 1: the event subscriptions (decision 17) and the
+  # one-run delivery rows of their webhooks in `schedules`.
+  def upgrade do
+    """
+    #{@subscriptions}
+    ALTER TABLE schedules ADD COLUMN subscription_id TEXT
+      REFERENCES subscriptions(id) ON DELETE CASCADE;
+    CREATE INDEX schedules_subscription ON schedules (subscription_id);
     """
   end
 end

@@ -8,18 +8,16 @@ defmodule Helyx.Hub do
   `:default_owner` (required, a user name; made at the start when the store
   does not hold it), `:server_token` (a 0-arity closure that returns the
   server token text), `:path` (the store file, default
-  `<sessions_dir>/hub.db`, a store in memory for a Core with no data
-  folder), `:store` (default `Helyx.Hub.Store.SQLite`),
+  `<sessions_dir>/hub.db`, memory for a Core with no data folder), `:store` (default SQLite),
   `:max_live_sessions` (1 to 64, default 64), and `:name`. A bad option, a
   `:core` that names no running Core, and a `:path` (or a WAL, SHM, or
-  journal file beside it) that is not a regular file with one name or
-  nothing give `{:error, {:invalid_option, key}}`, a store file that another Hub
-  holds `{:error, :store_locked}`, and a folder of the file that its group
-  or other users can write `{:error, :unsafe_folder}`.
-
-  Every user and token function here is a Hub call: a call with a timeout of 5,000 ms,
-  sent only while the mailbox of Hub holds fewer than 1,024 messages, else
-  `{:error, :busy}` at once (decision 5). Hub drops a call that it takes at
+  journal file beside it) that is not a regular file with one name or nothing give
+  `{:error, {:invalid_option, key}}`, a store file that another Hub holds
+  `{:error, :store_locked}`, and a folder of the file that its group or other users can write
+  `{:error, :unsafe_folder}`.
+  Every user and token function here is a Hub call: a call with a timeout of 5,000 ms, sent only
+  while the mailbox of Hub holds fewer than 1,024 messages, else `{:error, :busy}` at once
+  (decision 5). Hub drops a call that it takes at
   or past its deadline before it reads or writes, and rolls back a write
   that ends at or past it; the deadline is 4,000 ms after the send, and the
   caller waits it and a margin of 1,000 ms for the answer, so a caller that got a timeout gets no late
@@ -133,7 +131,40 @@ defmodule Helyx.Hub do
              | :failed}
   def schedule(hub, user_id, params) when is_binary(user_id) and is_map(params) do
     with {:ok, config} <- call(hub, :authority),
-         do: Helyx.Hub.Access.schedule(Map.put(config, :hub, hub), user_id, params)
+         do: Helyx.Hub.Access.Schedules.schedule(Map.put(config, :hub, hub), user_id, params)
+  end
+
+  @doc "Creates an event subscription; the reply holds its secret once (decision 17)."
+  @spec subscribe(hub(), String.t(), map()) ::
+          {:ok, map()}
+          | {:error,
+             :bad_params
+             | :text_too_large
+             | :session_not_found
+             | :forbidden
+             | :too_many_event_subscriptions
+             | :unknown_user
+             | :busy
+             | :timeout
+             | :failed}
+  def subscribe(hub, user_id, params) when is_binary(user_id) and is_map(params) do
+    with {:ok, arg} <- api_arg(hub), do: Helyx.Hub.Api.subscribe(arg, user_id, params)
+  end
+
+  @doc "The event subscriptions of a user, of one session or all (decision 17)."
+  @spec subscriptions(hub(), String.t(), String.t() | nil) ::
+          {:ok, [map()]}
+          | {:error, :session_not_found | :unknown_user | :busy | :timeout | :failed}
+  def subscriptions(hub, user_id, session_id)
+      when is_binary(user_id) and (is_binary(session_id) or is_nil(session_id)) do
+    with {:ok, arg} <- api_arg(hub), do: Helyx.Hub.Api.subscriptions(arg, user_id, session_id)
+  end
+
+  @doc "Deletes an event subscription of a user (decision 17)."
+  @spec unsubscribe(hub(), String.t(), String.t()) ::
+          :ok | {:error, :unknown_subscription | :unknown_user | :busy | :timeout | :failed}
+  def unsubscribe(hub, user_id, id) when is_binary(user_id) and is_binary(id) do
+    with {:ok, arg} <- api_arg(hub), do: Helyx.Hub.Api.unsubscribe(arg, user_id, id)
   end
 
   @doc """

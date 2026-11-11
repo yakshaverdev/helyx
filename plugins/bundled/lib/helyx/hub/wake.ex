@@ -8,10 +8,12 @@ defmodule Helyx.Hub.Wake do
   # run has an outcome.
   #
   # `tasks`: the monitor ref of a Task => `%{pid, schedule, session, owner,
-  # timer}`, at most 4, one for each session. The kill of a Task past its
-  # 120,000 ms keeps its entry to its `:DOWN`: a Hub call that the Task sent
-  # before the kill comes before its `:DOWN`, so it is taken while the entry
-  # still holds the session, and no second Task of the session starts first.
+  # subscription, timer}`, at most 4, one for each session. The kill of a
+  # Task past its 120,000 ms keeps its entry to its `:DOWN`: a Hub call that
+  # the Task sent before the kill comes before its `:DOWN`, so it is taken
+  # while the entry still holds the session, and no second Task of the
+  # session starts first. `subscription` is nil for a schedule and the
+  # subscription id for the delivery of a webhook.
 
   alias Helyx.Hub.{Delivery, Live, Rules, Schedules}
 
@@ -63,7 +65,13 @@ defmodule Helyx.Hub.Wake do
   defp due(row, now, state) do
     cond do
       past_life?(row, now) ->
-        _ = write(state, row, outcome(row, "missed", now), :infinity)
+        at = now()
+
+        case write(state, row, outcome(row, "missed", at), :infinity) do
+          :ok -> _ = settle(state, row, "missed", at, :infinity)
+          _stale -> :ok
+        end
+
         state
 
       busy?(state.wake.tasks, row.session_id) ->
@@ -86,7 +94,15 @@ defmodule Helyx.Hub.Wake do
         row = %{row | next_try_at: now + @hold_s}
         task = Task.Supervisor.async(state.wake.sup, Delivery, :run, [self(), state.core, row])
         timer = Process.send_after(self(), {:wake_kill, task.ref}, @task_ms)
-        entry = %{pid: task.pid, schedule: row.id, session: row.session_id, owner: row.owner}
+
+        entry = %{
+          pid: task.pid,
+          schedule: row.id,
+          session: row.session_id,
+          owner: row.owner,
+          subscription: row.subscription_id
+        }
+
         put_in(state.wake.tasks[task.ref], Map.put(entry, :timer, timer))
 
       {:error, _} ->
@@ -122,16 +138,27 @@ defmodule Helyx.Hub.Wake do
       next_try_at: nil
     }
 
-  # A write on the row as the start of its Task left it.
-  defp write(state, row, changes, deadline),
-    do:
-      state.store.update_schedule(
-        state.db,
-        row.id,
-        Map.take(row, [:run, :next_try_at]),
-        changes,
-        deadline
-      )
+  # A write on the row as the start of its Task left it. The delivery state
+  # of the subscription of a webhook moves only with a final outcome, in
+  # `settle/5` (decision 17); the decide marker does not move it.
+  defp write(state, row, changes, deadline) do
+    state.store.update_schedule(
+      state.db,
+      row.id,
+      Map.take(row, [:run, :next_try_at]),
+      changes,
+      deadline
+    )
+  end
+
+  # Only a final outcome moves the subscription: a put-back changes
+  # nothing, and the store keeps a `refused` (decision 17).
+  defp settle(state, %{subscription_id: sub}, outcome, at, deadline)
+       when is_binary(sub) do
+    state.store.subscription_sent(state.db, sub, at, outcome, deadline)
+  end
+
+  defp settle(_state, _row, _outcome, _at, _deadline), do: :ok
 
   # The Hub calls of a delivery Task; `row` is the row as the start of the
   # Task wrote it, and the caller is the Task.
@@ -180,13 +207,16 @@ defmodule Helyx.Hub.Wake do
   # authorized (Store schema); `head` is the prompt cut to 1,024 bytes.
   defp answered(state, row, sent, {:delivered, head}, deadline) do
     %{store: mod, db: db} = state
+    changes = %{last_outcome: "delivered"}
+    at = now()
 
-    with :ok <- mod.update_schedule(db, row.id, sent, %{last_outcome: "delivered"}, deadline),
-         do: mod.touch_record(db, row.session_id, now(), head, deadline)
+    with :ok <- mod.update_schedule(db, row.id, sent, changes, deadline),
+         :ok <- settle(state, row, "delivered", at, deadline),
+         do: mod.touch_record(db, row.session_id, at, head, deadline)
   end
 
   # The session took nothing: the row as it was before step 2, tried again
-  # later.
+  # later. A put-back changes nothing on the subscription (decision 17).
   defp answered(state, row, sent, :back, deadline) do
     before = Map.take(row, [:at, :run, :delivery_id, :due_at, :last_at, :last_outcome])
     changes = Map.put(before, :next_try_at, now() + @retry_s)
@@ -195,8 +225,16 @@ defmodule Helyx.Hub.Wake do
 
   defp answered(state, row, sent, :refused, deadline) do
     changes = Map.drop(refused(row, now()), [:run, :last_at])
-    state.store.update_schedule(state.db, row.id, sent, changes, deadline)
+
+    with :ok <- state.store.update_schedule(state.db, row.id, sent, changes, deadline),
+         do: settle(state, row, "refused", now(), deadline)
   end
+
+  # The prompt call went out with no answer that proves the session took
+  # nothing: the row keeps `unconfirmed`, and that final outcome moves the
+  # subscription.
+  defp answered(state, row, _sent, :unconfirmed, deadline),
+    do: settle(state, row, "unconfirmed", now(), deadline)
 
   # Whether the row still holds what the start of this Task wrote.
   defp holds(%{store: mod, db: db}, row) do
@@ -223,7 +261,13 @@ defmodule Helyx.Hub.Wake do
   # started before the end of its life: the resume can take 30,000 ms.
   defp alive(state, row, deadline) do
     if past_life?(row, now()) do
-      _ = write(state, row, outcome(row, "missed", now()), deadline)
+      at = now()
+
+      case write(state, row, outcome(row, "missed", at), deadline) do
+        :ok -> _ = settle(state, row, "missed", at, deadline)
+        _stale -> :ok
+      end
+
       {:error, :missed}
     else
       :ok
@@ -239,7 +283,13 @@ defmodule Helyx.Hub.Wake do
 
   # Every refusal answers `{:error, :refused}`, so the Task sends nothing.
   defp refuse(state, row, deadline) do
-    _ = write(state, row, refused(row, now()), deadline)
+    at = now()
+
+    case write(state, row, refused(row, at), deadline) do
+      :ok -> _ = settle(state, row, "refused", at, deadline)
+      _stale -> :ok
+    end
+
     {:error, :refused}
   end
 

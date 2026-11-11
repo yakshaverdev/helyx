@@ -189,7 +189,7 @@ fn a_failed_send_after_a_binary_frame_is_a_break() {
     let (server, stub) = stub::one(move |mut ws| {
         challenge(&mut ws);
         let _hello = next_text(&mut ws);
-        let welcome = br#"{"type":"welcome","protocol":8}"#;
+        let welcome = br#"{"type":"welcome","protocol":9}"#;
         let mut bytes = vec![0x81, welcome.len() as u8];
         bytes.extend(welcome);
         bytes.extend([0x02, 0x01, b'x']);
@@ -227,7 +227,7 @@ fn a_failed_send_keeps_the_frames_read_before_it() {
     let (server, stub) = stub::one(move |mut ws| {
         challenge(&mut ws);
         let _hello = next_text(&mut ws);
-        let welcome = br#"{"type":"welcome","protocol":8}"#;
+        let welcome = br#"{"type":"welcome","protocol":9}"#;
         let mut bytes = vec![0x81, welcome.len() as u8];
         bytes.extend(welcome);
         // The subscribe of the follow takes id 0 at the welcome, and

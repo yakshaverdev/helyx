@@ -33,7 +33,7 @@ defmodule Helyx.Tool.ReadTest do
 
     coordinator =
       ~w(schedule schedule_delete schedule_list session_create session_read session_send
-         session_wait)
+         session_wait subscription_delete subscription_list)
 
     assert Helyx.Tool.concurrent(tools) == MapSet.new(["agent", "read" | coordinator])
 
@@ -46,7 +46,9 @@ defmodule Helyx.Tool.ReadTest do
              Helyx.Tool.SessionCreate,
              Helyx.Tool.SessionRead,
              Helyx.Tool.SessionSend,
-             Helyx.Tool.SessionWait
+             Helyx.Tool.SessionWait,
+             Helyx.Tool.SubscriptionDelete,
+             Helyx.Tool.SubscriptionList
            ]
   end
 

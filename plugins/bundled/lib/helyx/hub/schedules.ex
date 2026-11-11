@@ -32,7 +32,8 @@ defmodule Helyx.Hub.Schedules do
         next_try_at: fields.at,
         last_at: nil,
         last_outcome: nil,
-        created_at: System.os_time(:second)
+        created_at: System.os_time(:second),
+        subscription_id: nil
       }
 
       with :ok <- mod.put_schedule(db, row, @per_session, @per_user, deadline), do: {:ok, row}

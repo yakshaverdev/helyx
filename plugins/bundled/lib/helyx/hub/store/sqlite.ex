@@ -19,7 +19,7 @@ defmodule Helyx.Hub.Store.SQLite do
   import Helyx.Hub.Store.SQLite.Query
 
   alias Exqlite.Sqlite3
-  alias Helyx.Hub.Store.SQLite.{Disk, Projects, Records, Schedules, Schema}
+  alias Helyx.Hub.Store.SQLite.{Disk, Projects, Records, Schedules, Schema, Subscriptions}
 
   @version Schema.version()
 
@@ -139,6 +139,8 @@ defmodule Helyx.Hub.Store.SQLite do
     case one(db, "PRAGMA user_version", []) do
       {:ok, [@version]} -> :ok
       {:ok, [0]} -> empty(db)
+      # #921 migrates a store of version 1 in `schema/1`.
+      {:ok, [1]} -> :ok
       {:ok, [n]} -> {:error, {:store_version, n}}
       {:error, _} = error -> error
     end
@@ -158,12 +160,17 @@ defmodule Helyx.Hub.Store.SQLite do
     case one(db, "PRAGMA user_version", []) do
       {:ok, [@version]} -> :ok
       {:ok, [0]} -> transaction(db, :infinity, fn -> create_schema(db) end)
+      {:ok, [1]} -> transaction(db, :infinity, fn -> upgrade_schema(db) end)
       {:error, _} = error -> error
     end
   end
 
   defp create_schema(db) do
     with :ok <- exec(db, Schema.sql()), do: exec(db, "PRAGMA user_version = #{@version}")
+  end
+
+  defp upgrade_schema(db) do
+    with :ok <- exec(db, Schema.upgrade()), do: exec(db, "PRAGMA user_version = #{@version}")
   end
 
   @impl true
@@ -316,4 +323,16 @@ defmodule Helyx.Hub.Store.SQLite do
   defdelegate due(db, now, limit), to: Schedules
   @impl true
   defdelegate update_schedule(db, id, expect, changes, deadline), to: Schedules
+  @impl true
+  defdelegate put_delivery(db, row, per_pending, per_hour, window_s, now, deadline), to: Schedules
+  @impl true
+  defdelegate put_subscription(db, row, per_session, per_user, deadline), to: Subscriptions
+  @impl true
+  defdelegate subscriptions(db, owner, session_id), to: Subscriptions
+  @impl true
+  defdelegate subscription(db, id), to: Subscriptions
+  @impl true
+  defdelegate delete_subscription(db, owner, id, deadline), to: Subscriptions
+  @impl true
+  defdelegate subscription_sent(db, id, at, outcome, deadline), to: Subscriptions
 end

@@ -12,7 +12,7 @@ defmodule Helyx.Hub.Access do
   @behaviour Helyx.Transport.WebSocket.Authority
 
   alias Helyx.Hub
-  alias Helyx.Hub.{Params, Saved, Schedules}
+  alias Helyx.Hub.{Params, Saved}
 
   # The deadline of the find of the existence check (decision 8).
   @find_ms 5_000
@@ -29,7 +29,8 @@ defmodule Helyx.Hub.Access do
   @write_ops ~w(abort set_model compact answer stop)
   @param_ops ~w(hub.records.get hub.records.update hub.records.delete hub.records.search
                 hub.projects.create hub.projects.update hub.projects.delete
-                hub.schedules.create hub.schedules.list hub.schedules.delete)
+                hub.schedules.create hub.schedules.list hub.schedules.delete
+                hub.subscriptions.create hub.subscriptions.list hub.subscriptions.delete)
   @bad_params {:error, "bad_params", "a param is missing, of the wrong type, or unknown"}
 
   # The Hub call registers the connection for the closes of decision 13; a
@@ -119,6 +120,11 @@ defmodule Helyx.Hub.Access do
   # file the find confirms.
   @doc false
   def exists?(arg, id), do: running?(arg, id) or found(arg, id) != nil
+
+  # The existence check of the schedule and subscription operations: a
+  # session whose file the find confirms, or that runs with no file.
+  @doc false
+  def found?(arg, id), do: found(arg, id) != nil
 
   # The process of a session, which the live set monitors after the start
   # or resume that made or attached to it (decision 14).
@@ -265,55 +271,24 @@ defmodule Helyx.Hub.Access do
   defp hub_op(arg, auth, "hub.projects.delete", id),
     do: empty(Hub.call(arg.hub, {:project_delete, auth, id}, arg.until))
 
-  defp hub_op(arg, auth, "hub.schedules.create", {id, fields}) do
-    case create(arg, auth, id, fields) do
-      {:ok, schedule} -> {:ok, %{"schedule" => wire(schedule)}}
-      other -> error(other)
-    end
-  end
+  defp hub_op(arg, auth, "hub.schedules.create", parsed),
+    do: Helyx.Hub.Access.Schedules.create(arg, auth, parsed)
 
-  defp hub_op(arg, auth, "hub.schedules.list", id) do
-    case list(arg, auth, id) do
-      {:ok, rows} -> {:ok, %{"schedules" => Enum.map(rows, &wire(Schedules.view(&1)))}}
-      other -> error(other)
-    end
-  end
+  defp hub_op(arg, auth, "hub.schedules.list", id),
+    do: Helyx.Hub.Access.Schedules.list(arg, auth, id)
 
   defp hub_op(arg, auth, "hub.schedules.delete", id),
     do: empty(Hub.call(arg.hub, {:schedule_delete, auth, id}, arg.until))
 
-  # `hub.schedules.list`, also for `Helyx.Hub.schedules/3`: the schedules of
-  # one session need the existence check; all need none.
-  @doc false
-  def list(arg, auth, id) do
-    exists? = id != nil and found(arg, id) != nil
-    Hub.call(arg.hub, {:schedule_list, auth, id, exists?}, Map.get(arg, :until, :infinity))
-  end
+  # The event subscriptions of decision 17, in `Helyx.Hub.Access.Subscriptions`.
+  defp hub_op(arg, auth, "hub.subscriptions.create", parsed),
+    do: Helyx.Hub.Access.Subscriptions.create(arg, auth, parsed)
 
-  defp create(arg, auth, id, fields) do
-    request = {:schedule_create, auth, id, found(arg, id) != nil, fields}
+  defp hub_op(arg, auth, "hub.subscriptions.list", id),
+    do: Helyx.Hub.Access.Subscriptions.list(arg, auth, id)
 
-    with {:ok, row} <- Hub.call(arg.hub, request, Map.get(arg, :until, :infinity)),
-         do: {:ok, Schedules.view(row)}
-  end
-
-  # `Helyx.Hub.schedule/3`: `hub.schedules.create` for the user `user_id`,
-  # with the same checks in the same order.
-  @doc false
-  def schedule(arg, user_id, params) do
-    case Params.check("hub.schedules.create", params) do
-      {:ok, {id, fields}} ->
-        case create(arg, %{user: user_id, token: nil}, id, fields) do
-          :revoked -> {:error, :unknown_user}
-          other -> other
-        end
-
-      code ->
-        {:error, code}
-    end
-  end
-
-  defp wire(schedule), do: Map.new(schedule, fn {key, value} -> {Atom.to_string(key), value} end)
+  defp hub_op(arg, auth, "hub.subscriptions.delete", id),
+    do: empty(Hub.call(arg.hub, {:subscription_delete, auth, id}, arg.until))
 
   defp token(token),
     do: %{"id" => token.id, "name" => token.name, "created_at" => token.created_at}
@@ -326,6 +301,11 @@ defmodule Helyx.Hub.Access do
 
   defp project_answer({:ok, project}), do: {:ok, %{"project" => project(project)}}
   defp project_answer(other), do: error(other)
+
+  # A map with atom keys as the wire shows it, shared with
+  # `Helyx.Hub.Access.Schedules` and `Helyx.Hub.Access.Subscriptions`.
+  @doc false
+  def wire(map), do: Map.new(map, fn {key, value} -> {Atom.to_string(key), value} end)
 
   defp project(p), do: %{"id" => p.id, "name" => p.name, "created_at" => p.created_at}
 
@@ -348,18 +328,25 @@ defmodule Helyx.Hub.Access do
   # of the code; a name that another project of the user has is
   # `bad_params` (`hub.projects.*`).
   @codes ~w(session_not_found forbidden too_many_records too_many_projects unknown_project
-            unknown_token invalid_cwd too_many_schedules unknown_schedule text_too_large)a
+            unknown_token invalid_cwd too_many_schedules unknown_schedule text_too_large
+            too_many_event_subscriptions unknown_subscription)a
 
-  defp error(:revoked), do: {:close, 4403}
-  defp error({:error, :busy}), do: {:error, "busy", "too many requests in flight"}
-  defp error({:error, :timeout}), do: {:error, "timeout", "the operation passed its deadline"}
-  defp error({:error, :name_taken}), do: @bad_params
-  defp error({:error, :bad_params}), do: @bad_params
+  # The reply of a Hub call as an error of the wire, shared with
+  # `Helyx.Hub.Access.Subscriptions`.
+  @doc false
+  def error(:revoked), do: {:close, 4403}
+  def error({:error, :busy}), do: {:error, "busy", "too many requests in flight"}
+  def error({:error, :timeout}), do: {:error, "timeout", "the operation passed its deadline"}
+  def error({:error, :name_taken}), do: @bad_params
+  def error({:error, :bad_params}), do: @bad_params
 
-  defp error({:error, code}) when code in @codes,
+  def error({:error, code}) when code in @codes,
     do: {:error, Atom.to_string(code), String.replace(Atom.to_string(code), "_", " ")}
 
-  defp error({:error, _}), do: {:error, "failed", "the operation failed"}
+  def error({:error, _}), do: {:error, "failed", "the operation failed"}
+
+  @impl true
+  def webhook(arg, id, request), do: Helyx.Hub.Access.Subscriptions.webhook(arg, id, request)
 
   @impl true
   def result(arg, auth, "sessions.live", _params, %{"sessions" => lines} = result) do

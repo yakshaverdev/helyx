@@ -21,7 +21,7 @@ defmodule Helyx.ModelContext.CoordinatorTest do
     assert system =~ "You are a coordinator."
 
     for tool <- ~w(session_create session_wait session_read session_send schedule schedule_list
-                   schedule_delete),
+                   schedule_delete subscription_list subscription_delete),
         do: assert(system =~ "\n- #{tool} ")
 
     assert system =~ "\nModes: coding, review\n"

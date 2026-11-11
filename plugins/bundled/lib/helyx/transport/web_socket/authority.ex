@@ -67,4 +67,20 @@ defmodule Helyx.Transport.WebSocket.Authority do
 
   @doc "A `start` or `resume` that `check` passed failed or exited."
   @callback release(arg(), auth(), op :: String.t(), params :: map()) :: :ok
+
+  @doc """
+  A request of the webhook path of the transport, `POST /hooks/<id>`
+  (`docs/features/hub.md`, decision 17). The transport read the body within
+  its bound and checked nothing else: `id` is the path segment, `headers`
+  the request headers with lower-case names, and `body` the raw bytes. The
+  answer is the HTTP status and the body of the response. A transport whose
+  authority does not export this callback answers 404 on the path.
+  """
+  @callback webhook(arg(), id :: String.t(), %{
+              headers: [{String.t(), String.t()}],
+              body: binary()
+            }) ::
+              {:ok, status :: 200..599, body :: String.t()}
+
+  @optional_callbacks webhook: 3
 end
