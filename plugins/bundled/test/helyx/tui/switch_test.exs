@@ -131,7 +131,7 @@ defmodule Helyx.TUI.SwitchTest do
 
   defp finish(%{switch: %Switch{task: %Task{ref: task}}} = state) do
     receive do
-      {:helyx_event, _event} = message -> finish(info(message, state))
+      {:helyx_event, _sub, _event} = message -> finish(info(message, state))
       {:helyx_end, _sub, _reason} = message -> finish(info(message, state))
       {^task, _result} = message -> finish(info(message, state))
     after
@@ -141,8 +141,8 @@ defmodule Helyx.TUI.SwitchTest do
 
   # Feeds session events until one that `match?` takes.
   defp until(state, match?) do
-    assert_receive {:helyx_event, %Event{} = event}, 5_000
-    state = info({:helyx_event, event}, state)
+    assert_receive {:helyx_event, sub, %Event{} = event}, 5_000
+    state = info({:helyx_event, sub, event}, state)
     if match?.(event), do: state, else: until(state, match?)
   end
 
@@ -164,7 +164,7 @@ defmodule Helyx.TUI.SwitchTest do
     state = mount!(old, opts)
     :ok = Session.set_model(old, "fake/other")
     state = until(state, &(&1.type == :model_change))
-    old_instance = state.instance_id
+    old_sub = state.session_ref
     # The Ctrl+O toggle is client state: it stays across a switch.
     {:noreply, state} =
       TUI.handle_event(%Key{code: "o", kind: "press", modifiers: ["ctrl"]}, state)
@@ -188,17 +188,17 @@ defmodule Helyx.TUI.SwitchTest do
     assert ViewModel.cells(state.vm) == [{:infos, ["new session"]}]
     assert File.exists?(Helyx.Session.File.path(sessions, dir, state.session.id))
 
-    # An event of the old instance that is still in the mailbox goes.
+    # An event of the sub that the switch left, still in the mailbox, goes.
     event = %Event{
       type: :notice,
       session_id: old.id,
-      instance_id: old_instance,
+      instance_id: state.vm.instance_id,
       turn_id: nil,
       seq: 9,
       data: %{text: "old"}
     }
 
-    assert info({:helyx_event, event}, state) == state
+    assert info({:helyx_event, old_sub, event}, state) == state
   end
 
   test "/new during a turn leaves the turn running, keeps the draft, and sends no text",
@@ -245,7 +245,7 @@ defmodule Helyx.TUI.SwitchTest do
     # The old session runs on, and the other client still gets its events.
     assert Process.alive?(old_pid)
     assert :ok = Link.send_text(other, "still here", false)
-    assert_receive {:helyx_event, %Event{session_id: id}}, 5_000
+    assert_receive {:helyx_event, _sub, %Event{session_id: id}}, 5_000
     assert id == old.id
     refute_received {:helyx_end, ^other_sub, _}
 
@@ -324,7 +324,7 @@ defmodule Helyx.TUI.SwitchTest do
     dropped = %Event{
       type: :queue_dropped,
       session_id: current.id,
-      instance_id: state.instance_id,
+      instance_id: state.vm.instance_id,
       turn_id: nil,
       seq: 0,
       data: %{messages: [Helyx.Message.user("queued")]}

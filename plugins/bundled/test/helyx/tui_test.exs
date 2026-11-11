@@ -52,7 +52,7 @@ defmodule Helyx.TUITest do
   # The TUI uses only the wire (docs/features/tui-attach.md, decision 12):
   # the mount takes a new connection of the test process to a transport of
   # the Core of `:session`, so the events come to the test process as
-  # `{:helyx_event, event}`, decoded.
+  # `{:helyx_event, sub, event}`, decoded.
   # No terminal: the default size function forks and can block in a test (#730).
   # A clean folder is the cwd and the home of the mount, so the skills scan
   # finds nothing: the machine's own `~/.agents/skills` would otherwise add
@@ -131,8 +131,8 @@ defmodule Helyx.TUITest do
   # Feeds arriving session events through handle_info until turn_end.
   defp drain(state) do
     receive do
-      {:helyx_event, %Event{} = event} ->
-        {:noreply, state} = TUI.handle_info({:helyx_event, event}, state)
+      {:helyx_event, sub, %Event{} = event} ->
+        {:noreply, state} = TUI.handle_info({:helyx_event, sub, event}, state)
         if event.type == :turn_end, do: branch_reply(state), else: drain(state)
     after
       Helyx.Test.Events.wait_ms() -> flunk("no turn_end; view model: #{inspect(state.vm)}")
@@ -150,7 +150,7 @@ defmodule Helyx.TUITest do
 
     state = state |> press("g") |> press("o") |> press("enter")
 
-    assert_receive {:helyx_event,
+    assert_receive {:helyx_event, _sub,
                     %Event{type: :message_end, data: %{message: %{role: :assistant}}}}
 
     for n <- 1..32, do: :ok = Session.steer(core_session(state, core), "s#{n}")
@@ -198,7 +198,7 @@ defmodule Helyx.TUITest do
       assert ExRatatui.textarea_get_value(state.composer.input) == text
     end
 
-    refute_received {:helyx_event, _}
+    refute_received {:helyx_event, _sub, _event}
     assert_no_event(state, core)
   end
 
@@ -255,7 +255,7 @@ defmodule Helyx.TUITest do
     state = mounted(core, "later", [["Done."]])
 
     state = press(state, "enter")
-    refute_received {:helyx_event, _}
+    refute_received {:helyx_event, _sub, _event}
     assert_no_event(state, core)
 
     state = state |> press("g") |> press("o") |> press("enter", ["alt"])
@@ -276,7 +276,7 @@ defmodule Helyx.TUITest do
     # handled it, and the session sends its events before its reply.
     assert_receive {:trace, ^pid, :receive, {:"$gen_call", _from, :abort}}
     :sys.get_state(pid)
-    refute_received {:helyx_event, %Event{type: :turn_end}}
+    refute_received {:helyx_event, _sub, %Event{type: :turn_end}}
     assert_no_event(state, core)
   end
 
@@ -309,13 +309,13 @@ defmodule Helyx.TUITest do
       event = %Event{
         type: :queue_dropped,
         session_id: state.session.id,
-        instance_id: state.instance_id,
+        instance_id: state.vm.instance_id,
         turn_id: nil,
         seq: state.vm.seq + 1,
         data: %{messages: [Helyx.Message.user("dropped")]}
       }
 
-      {:noreply, state} = TUI.handle_info({:helyx_event, event}, state)
+      {:noreply, state} = TUI.handle_info({:helyx_event, state.session_ref, event}, state)
       assert value(state) == "dropped"
       refute status_text(state) =~ "Ctrl+C again to quit"
     end
@@ -410,7 +410,7 @@ defmodule Helyx.TUITest do
       :erlang.trace(tui, true, [:receive, :call])
       :erlang.trace_pattern({TUI, :handle_info, 2}, true, [])
       :ok = Session.steer(session, "go")
-      assert_receive {:trace, ^tui, :receive, {:helyx_event, %Event{type: :turn_start}}}
+      assert_receive {:trace, ^tui, :receive, {:helyx_event, _sub, %Event{type: :turn_start}}}
       assert [%{id: :busy, active?: true}] = ExRatatui.Runtime.snapshot(tui).subscriptions
 
       # The runtime delivers the tick to handle_info/2 as :busy_tick.
@@ -427,7 +427,7 @@ defmodule Helyx.TUITest do
       end
 
       :ok = Session.abort(session)
-      assert_receive {:trace, ^tui, :receive, {:helyx_event, %Event{type: :turn_end}}}
+      assert_receive {:trace, ^tui, :receive, {:helyx_event, _sub, %Event{type: :turn_end}}}
       assert ExRatatui.Runtime.snapshot(tui).subscription_count == 0
       turn_branch_reply(tui, false)
     end
@@ -439,7 +439,7 @@ defmodule Helyx.TUITest do
       receive do
         {:trace, ^tui, :call, {TUI, :handle_info, [message, state]}} ->
           case message do
-            {:helyx_event, %Event{type: :turn_end}} -> turn_branch_reply(tui, true)
+            {:helyx_event, _sub, %Event{type: :turn_end}} -> turn_branch_reply(tui, true)
             {ref, _branch} when ended? and ref == state.branch_ref -> :ok
             _ -> turn_branch_reply(tui, ended?)
           end
@@ -937,7 +937,7 @@ defmodule Helyx.TUITest do
       event = %Event{
         type: type,
         session_id: "s",
-        instance_id: state.instance_id,
+        instance_id: state.vm.instance_id,
         turn_id: "t",
         # The fold applies each seq once.
         seq: state.vm.seq + 1,
@@ -946,7 +946,7 @@ defmodule Helyx.TUITest do
 
       # The seq goes back, so the events of the real session of the test
       # still apply.
-      {:noreply, folded} = TUI.handle_info({:helyx_event, event}, state)
+      {:noreply, folded} = TUI.handle_info({:helyx_event, state.session_ref, event}, state)
       put_in(folded.vm.seq, state.vm.seq)
     end
 
@@ -1472,8 +1472,8 @@ defmodule Helyx.TUITest do
     end
 
     defp fold_model_change(state) do
-      assert_receive {:helyx_event, %Event{type: :model_change} = event}
-      {:noreply, state} = TUI.handle_info({:helyx_event, event}, state)
+      assert_receive {:helyx_event, sub, %Event{type: :model_change} = event}
+      {:noreply, state} = TUI.handle_info({:helyx_event, sub, event}, state)
       state
     end
 
@@ -1522,7 +1522,7 @@ defmodule Helyx.TUITest do
         assert snapshot(state, core).model == "fake/stay"
       end
 
-      refute_received {:helyx_event, _}
+      refute_received {:helyx_event, _sub, _event}
       assert_no_event(state, core)
     end
 
@@ -1537,7 +1537,7 @@ defmodule Helyx.TUITest do
         assert ExRatatui.textarea_get_value(state.composer.input) != ""
       end
 
-      refute_received {:helyx_event, _}
+      refute_received {:helyx_event, _sub, _event}
       assert_no_event(state, core)
 
       # A slash elsewhere, or another first word, is a message.
@@ -1556,13 +1556,13 @@ defmodule Helyx.TUITest do
       state = mounted(core, "busy", [[call]])
       state = submit(state, "go")
 
-      assert_receive {:helyx_event,
+      assert_receive {:helyx_event, _sub,
                       %Event{type: :message_end, data: %{message: %{role: :assistant}}}}
 
       for {text, model} <- [{"/model other/any", "other/any"}, {"/model fake/busy", "fake/busy"}] do
         {:noreply, _} = TUI.handle_event(%ExRatatui.Event.Paste{content: text}, state)
         press(state, "enter", if(model == "other/any", do: ["alt"], else: []))
-        assert_receive {:helyx_event, %Event{type: :model_change, data: %{model: ^model}}}
+        assert_receive {:helyx_event, _sub, %Event{type: :model_change, data: %{model: ^model}}}
         assert ExRatatui.textarea_get_value(state.composer.input) == ""
       end
 
@@ -1571,7 +1571,7 @@ defmodule Helyx.TUITest do
       state = press(state, "enter", ["alt"])
       assert {:notice, "unknown provider: nope"} = List.last(ViewModel.cells(state.vm))
       assert ExRatatui.textarea_get_value(state.composer.input) == "/model nope/x"
-      refute_received {:helyx_event, %Event{type: :queue_update}}
+      refute_received {:helyx_event, _sub, %Event{type: :queue_update}}
       assert %{steers: 0, follow_ups: 0} = snapshot(state, core).queue
 
       :ok = Session.abort(core_session(state, core))
@@ -1607,10 +1607,13 @@ defmodule Helyx.TUITest do
 
       for text <- ["/model\u200Bother/any", "\u2003 /model\u180E other/any"] do
         :ok = Session.set_model(core_session(state, core), "fake/bom")
-        assert_receive {:helyx_event, %Event{type: :model_change}}
+        assert_receive {:helyx_event, _sub, %Event{type: :model_change}}
         ExRatatui.textarea_set_value(state.composer.input, "")
         submit(state, text)
-        assert_receive {:helyx_event, %Event{type: :model_change, data: %{model: "other/any"}}}
+
+        assert_receive {:helyx_event, _sub,
+                        %Event{type: :model_change, data: %{model: "other/any"}}}
+
         assert ExRatatui.textarea_get_value(state.composer.input) == ""
       end
 
@@ -1625,7 +1628,7 @@ defmodule Helyx.TUITest do
         assert ExRatatui.textarea_get_value(state.composer.input) == text
       end
 
-      refute_received {:helyx_event, _}
+      refute_received {:helyx_event, _sub, _event}
       assert_no_event(state, core, seq)
     end
   end
@@ -1652,7 +1655,7 @@ defmodule Helyx.TUITest do
       state = submit(state, text)
       assert {:notice, "not sent: over 4 MiB"} = List.last(ViewModel.cells(state.vm))
       assert ExRatatui.textarea_get_value(state.composer.input) == text
-      refute_received {:helyx_event, _}
+      refute_received {:helyx_event, _sub, _event}
       assert_no_event(state, core)
     end
 
@@ -1661,7 +1664,7 @@ defmodule Helyx.TUITest do
       state = submit(state, "/compactly")
       assert {:notice, "usage: /compact [instructions]"} = List.last(ViewModel.cells(state.vm))
       assert ExRatatui.textarea_get_value(state.composer.input) == "/compactly"
-      refute_received {:helyx_event, _}
+      refute_received {:helyx_event, _sub, _event}
       assert_no_event(state, core)
     end
   end
@@ -1682,7 +1685,7 @@ defmodule Helyx.TUITest do
       for key <- ["Alt+Enter", "Escape", "PgUp", "Ctrl+O", "Ctrl+F", "Ctrl+C"],
           do: assert(help =~ key)
 
-      refute_received {:helyx_event, _}
+      refute_received {:helyx_event, _sub, _event}
       assert_no_event(state, core)
     end
 
@@ -1695,7 +1698,7 @@ defmodule Helyx.TUITest do
         assert_no_event(state, core)
       end
 
-      refute_received {:helyx_event, _}
+      refute_received {:helyx_event, _sub, _event}
     end
   end
 
@@ -1904,14 +1907,17 @@ defmodule Helyx.TUITest do
       ExRatatui.textarea_set_value(state.composer.input, "")
 
       state = state |> paste("/model\tother/any") |> press("enter")
-      assert_receive {:helyx_event, %Event{type: :model_change, data: %{model: "other/any"}}}
+
+      assert_receive {:helyx_event, _sub,
+                      %Event{type: :model_change, data: %{model: "other/any"}}}
+
       assert value(state) == ""
 
       # A new line is whitespace: before the ref it separates, after it the
       # trim drops it. Text on a later line makes the ref invalid.
       for {text, model} <- [{"/model\nfake/r", "fake/r"}, {"/model fake/q\n", "fake/q"}] do
         state = state |> paste(text) |> press("enter")
-        assert_receive {:helyx_event, %Event{type: :model_change, data: %{model: ^model}}}
+        assert_receive {:helyx_event, _sub, %Event{type: :model_change, data: %{model: ^model}}}
         assert value(state) == ""
       end
 
@@ -1967,7 +1973,10 @@ defmodule Helyx.TUITest do
 
       ExRatatui.textarea_set_value(state.composer.input, "/model other/any")
       state = press(state, "enter")
-      assert_receive {:helyx_event, %Event{type: :model_change, data: %{model: "other/any"}}}
+
+      assert_receive {:helyx_event, _sub,
+                      %Event{type: :model_change, data: %{model: "other/any"}}}
+
       assert value(state) == "draft"
       assert state.composer.recall == nil
     end

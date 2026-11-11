@@ -62,7 +62,7 @@ defmodule Helyx.TUI.Wire.Subscriptions do
         :broken
 
       live?(state, sub) ->
-        send(owner, {:helyx_event, event})
+        send(owner, {:helyx_event, sub, event})
         {:ok, state}
 
       true ->

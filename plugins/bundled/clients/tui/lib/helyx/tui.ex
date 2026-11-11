@@ -80,7 +80,6 @@ defmodule Helyx.TUI do
       # The session and its subscription: `Helyx.TUI.Switch.bind/3`.
       session: nil,
       session_ref: nil,
-      instance_id: nil,
       vm: nil,
       reconnect: opts[:reconnect],
       switch: nil,
@@ -122,7 +121,8 @@ defmodule Helyx.TUI do
   def handle_info({:DOWN, _ref, :process, conn, reason}, %{session: %Link{conn: conn}} = state),
     do: {:noreply, settle(sync_busy(read_branch(Switch.reconnect(state, reason))))}
 
-  def handle_info({:helyx_event, %{instance_id: id} = event}, %{instance_id: id} = state) do
+  # An event of the current subscription; a switch drops the events of the sub it left here.
+  def handle_info({:helyx_event, sub, event}, %{session_ref: sub} = state) do
     # A turn can change the branch; an event at or below the seq of the fold changes nothing.
     branch? = event.type == :turn_end and event.seq > state.vm.seq
     state = Switch.apply_event(state, event)

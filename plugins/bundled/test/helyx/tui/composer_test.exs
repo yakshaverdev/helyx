@@ -34,7 +34,6 @@ defmodule Helyx.TUI.ComposerTest do
       busy: nil,
       session: %Helyx.TUI.Link{conn: nil, id: "s"},
       session_ref: nil,
-      instance_id: "i",
       switch: nil,
       question: nil
     }
@@ -381,7 +380,7 @@ defmodule Helyx.TUI.ComposerTest do
         data: data
       }
 
-      {:noreply, state} = TUI.handle_info({:helyx_event, event}, state)
+      {:noreply, state} = TUI.handle_info({:helyx_event, state.session_ref, event}, state)
       state
     end
 
@@ -446,8 +445,8 @@ defmodule Helyx.TUI.ComposerTest do
 
   defp drain(state) do
     receive do
-      {:helyx_event, %Event{} = event} ->
-        {:noreply, state} = TUI.handle_info({:helyx_event, event}, state)
+      {:helyx_event, _sub, %Event{} = event} ->
+        {:noreply, state} = TUI.handle_info({:helyx_event, state.session_ref, event}, state)
         if event.type == :turn_end, do: branch_reply(state), else: drain(state)
     after
       Helyx.Test.Events.wait_ms() -> flunk("no turn_end; view model: #{inspect(state.vm)}")

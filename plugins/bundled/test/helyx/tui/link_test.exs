@@ -117,8 +117,8 @@ defmodule Helyx.TUI.LinkTest do
 
   # Feeds session events until one that `match?` takes.
   defp until(state, match?) do
-    assert_receive {:helyx_event, %Event{} = event}
-    state = info({:helyx_event, event}, state)
+    assert_receive {:helyx_event, sub, %Event{} = event}
+    state = info({:helyx_event, sub, event}, state)
     state = if event.type == :turn_end, do: branch_reply(state), else: state
     if match?.(event), do: state, else: until(state, match?)
   end
@@ -139,7 +139,7 @@ defmodule Helyx.TUI.LinkTest do
 
   defp finish(%{switch: %Switch{task: %Task{ref: task}}} = state) do
     receive do
-      {:helyx_event, _event} = message -> finish(info(message, state))
+      {:helyx_event, _sub, _event} = message -> finish(info(message, state))
       {:helyx_end, _sub, _reason} = message -> finish(info(message, state))
       {^task, _result} = message -> finish(info(message, state))
     after
@@ -333,7 +333,7 @@ defmodule Helyx.TUI.LinkTest do
   defp turn_ends(0), do: :ok
 
   defp turn_ends(n) do
-    assert_receive {:helyx_event, %Event{type: type}}, wait_ms()
+    assert_receive {:helyx_event, _sub, %Event{type: type}}, wait_ms()
     turn_ends(if type == :turn_end, do: n - 1, else: n)
   end
 
@@ -443,14 +443,14 @@ defmodule Helyx.TUI.LinkTest do
     reconnect = fn -> Wire.connect({127, 0, 0, 1}, c.port, fn -> "token" end, wait_ms()) end
     state = mount!(%Link{conn: conn, id: id}, c.cwd, reconnect: reconnect)
     state = state |> command("one") |> until(&(&1.type == :turn_end))
-    instance = state.instance_id
+    instance = state.vm.instance_id
 
     # The events of the turn of another client come in the replay.
     down = lose(state)
     other_turn(c, id, "two")
     state = branch_reply(info(down, state))
     refute state.session.conn == conn
-    assert state.instance_id == instance
+    assert state.vm.instance_id == instance
     assert texts(state, :user) == ["one", "two"]
     assert texts(state, :assistant) == ["one", "two"]
     assert List.last(ViewModel.cells(state.vm)) == {:infos, ["reconnected"]}
@@ -474,7 +474,7 @@ defmodule Helyx.TUI.LinkTest do
         data: data
       }
 
-      assert info({:helyx_event, again}, state) == state
+      assert info({:helyx_event, state.session_ref, again}, state).vm == state.vm
     end
 
     # A resume makes a new instance: the reconnect gets a snapshot.
@@ -483,7 +483,7 @@ defmodule Helyx.TUI.LinkTest do
     {other, _ref} = connect(c.port)
     {:ok, ^id} = Connection.resume(other, id: id)
     state = branch_reply(info(down, state))
-    refute state.instance_id == instance
+    refute state.vm.instance_id == instance
     assert texts(state, :user) == ["one", "two", "three"]
     assert List.last(ViewModel.cells(state.vm)) == {:infos, ["reconnected"]}
 

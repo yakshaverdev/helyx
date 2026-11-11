@@ -9,8 +9,9 @@ defmodule Helyx.TUI.Wire.Connection do
 
   The process that calls `open/1` owns the connection, which ends with it; `take/1` makes another
   process the owner. The owner gets the events of its subscriptions as a client in the node gets
-  them from `Helyx.Session.subscribe/2`: `{:helyx_event, event}` for each event, then
-  `{:helyx_end, sub, reason}` at the end of the session, with `reason` `:stopped` or `:crashed`.
+  them from `Helyx.Session.subscribe/2`, with the sub that sent each: `{:helyx_event, sub, event}`
+  for each event, then `{:helyx_end, sub, reason}` at the end of the session, with `reason`
+  `:stopped` or `:crashed`.
   It passes each event that it applied to `ack/3`. The connection ends with `{:shutdown,
   :broken}` at a frame that the contract does not allow, and with `{:shutdown, {:closed, code}}`
   when the server closes it, `code` nil for a close with no code: a close of TCP, a close frame

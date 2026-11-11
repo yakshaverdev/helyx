@@ -35,7 +35,9 @@ defmodule Helyx.TUI.WireIntegrationTest do
     text = String.duplicate("é", Frame.max_frame())
     assert :ok = Connection.steer(conn, id, text)
 
-    assert_receive {:helyx_event, %Helyx.Event{type: :message_end, data: %{message: message}}}
+    assert_receive {:helyx_event, _sub,
+                    %Helyx.Event{type: :message_end, data: %{message: message}}}
+
     assert Helyx.Message.text(message) == text
   end
 
