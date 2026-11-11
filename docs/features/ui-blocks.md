@@ -65,6 +65,15 @@ An input block: the request of an ask (ADR 0011 §4). The approval gate, `Helyx.
 - Fallback: a client that cannot render an approval shows `text` and gives no answer; the ask stays open for another client, and the limit of the gate or the abort ends it.
 - Answer: `%{"decision" => "allow"}` or `%{"decision" => "deny"}`. Any other answer is a deny.
 
+### `todo`
+
+The plan of the current task. The `todo` tool sends the block with its result, not as the request of an ask (`docs/features/todo-tool.md`).
+
+- Fields: `items`, a list of 1 to `Helyx.Tool.Todo.max_items/0` items, each with `text` of 1 to `Helyx.Tool.Todo.max_item_bytes/0` bytes and no new line, and `status` (`pending`, `in_progress`, or `done`), with at most one item `in_progress`.
+- `text`: one line for each item, `[x] <text>` for done, `[>] <text>` for in progress, `[ ] <text>` for pending, then a line `<done>/<total> done`.
+- Fallback: a client that cannot render a `todo` shows `text`, which reads as the checklist.
+- No answer: the block rides on a result, so no client sends anything back.
+
 ### Later kinds
 
 The candidates after `form` and `approval` are `choice`, `diff`, `table`, `progress`, and `link`. Each gets its entry here with the ticket that builds it.

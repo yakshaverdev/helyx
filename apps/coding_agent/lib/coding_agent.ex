@@ -26,6 +26,7 @@ defmodule CodingAgent do
     Helyx.Tool.Agent,
     Helyx.Tool.Skill,
     Helyx.Tool.Question,
+    Helyx.Tool.Todo,
     Helyx.Tool.ToolSearch,
     Helyx.Tool.MCP
   ]
