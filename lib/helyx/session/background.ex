@@ -63,8 +63,6 @@ defmodule Helyx.Session.Background do
   def ended(%__MODULE__{} = places, {:background, id}),
     do: %{places | waiting: [id | places.waiting]}
 
-  def ended(%__MODULE__{} = places, _call_id), do: places
-
   # The id of a lost run, from an earlier session, has no place here and frees
   # nothing.
   @spec taken(t(), String.t()) :: t()

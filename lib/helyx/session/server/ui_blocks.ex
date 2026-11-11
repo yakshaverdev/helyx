@@ -75,8 +75,6 @@ defmodule Helyx.Session.Server.UIBlocks do
   def result_blocks(%State{phase: %{turn: %Turn{held_results: held}}}, call_id),
     do: Map.get(held, call_id, [])
 
-  def result_blocks(_state, _call_id), do: []
-
   def call_end(%State{phase: %{turn: %Turn{} = turn}} = state, call_id) do
     blocks = Enum.reject(turn.ui_blocks, &of_call?(&1, call_id))
 
@@ -86,8 +84,6 @@ defmodule Helyx.Session.Server.UIBlocks do
         held_results: Map.delete(turn.held_results, call_id)
     })
   end
-
-  def call_end(state, _call_id), do: state
 
   # A block of a Helyx call (`Helyx.Tool.show/2`) from the Task `pid`, which
   # waits for the reply: `:ok`, `{:error, :not_running}`,

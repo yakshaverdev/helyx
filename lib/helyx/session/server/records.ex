@@ -291,8 +291,6 @@ defmodule Helyx.Session.Server.Records do
   # Persistence goes off for the rest of the session: after a disk failure,
   # and after the loss of the writer lock. One notice tells the clients, the
   # snapshot says `persisting: false`, and the log has the detail.
-  def stop_saving(%State{save: :never} = state, _cause, _detail), do: state
-  def stop_saving(%State{save: {:stopped, _from, _lock}} = state, _cause, _detail), do: state
 
   def stop_saving(%State{save: {:saving, _file, lock}} = state, cause, detail) do
     Logger.warning("#{cause}, persistence off: #{detail}")

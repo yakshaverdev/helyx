@@ -135,8 +135,6 @@ defmodule Helyx.Session.Server.Asks do
     state |> drop_askers(&of_call?(&1, call_id)) |> call_end(call_id)
   end
 
-  def result_joined(state, _call_id), do: state
-
   defp of_call?({_pid, {_ref, {_kind, id}}}, call_id), do: id == call_id
 
   # The records that `drop?` picks go, with their monitors.
