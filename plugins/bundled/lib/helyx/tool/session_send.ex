@@ -3,8 +3,11 @@ defmodule Helyx.Tool.SessionSend do
   The coordinator tool `session_send`: sends a text to a session that the
   user of the calling session owns, as a prompt, a steer, or a follow-up
   (`Helyx.Session.prompt/3`, `steer/3`, `follow_up/3`), after the check of
-  the wire (`Helyx.Hub.authorize/4`). The text has the bound of any prompt,
-  `Helyx.Session.max_text_bytes/0`. See `docs/features/coordinator.md`.
+  the wire (`Helyx.Hub.authorize/4`). A session that its idle stop unloaded
+  loads first through `Helyx.Hub.resume/3`, so it takes the place of the
+  user and binds the starter (`docs/features/idle-unload.md`). The text has
+  the bound of any prompt, `Helyx.Session.max_text_bytes/0`. See
+  `docs/features/coordinator.md`.
   """
 
   @behaviour Helyx.Tool
@@ -66,15 +69,26 @@ defmodule Helyx.Tool.SessionSend do
   end
 
   defp send_text(env, id, text, disposition) do
-    session = Coordinator.session(env, id)
     params = %{"session" => id, "text" => text}
 
     with :ok <- Helyx.Hub.authorize(env.hub, env.user, disposition, params),
+         {:ok, session} <- loaded(env, id),
          :ok <- deliver(disposition, session, text, Coordinator.origin(env)) do
       {:ok, "sent to session #{id} as #{disposition}"}
     else
       {:error, reason} -> {:error, "session_send: " <> Coordinator.text(reason)}
     end
+  end
+
+  # A session that its idle stop unloaded loads first, through the Hub, as a
+  # wire client does: the place of the user's live sessions and the starter
+  # (docs/features/idle-unload.md).
+  defp loaded(env, id) do
+    session = Coordinator.session(env, id)
+
+    if Session.pid(session),
+      do: {:ok, session},
+      else: Helyx.Hub.resume(env.hub, env.user, id)
   end
 
   defp deliver("prompt", session, text, opts), do: Session.prompt(session, text, opts)

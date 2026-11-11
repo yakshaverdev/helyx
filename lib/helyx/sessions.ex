@@ -6,7 +6,9 @@ defmodule Helyx.Sessions do
   The server configuration is the start options of `Helyx.Core`:
   `:sessions_dir` and the default `:model`. A Core runs at most 64
   sessions; a start or a resume over the cap gives
-  `{:error, :too_many_sessions}`. A resume of a session that runs in the
+  `{:error, :too_many_sessions}`. A session that no client watches and that
+  has no work stops for idleness and frees its place
+  (`docs/features/idle-unload.md`). A resume of a session that runs in the
   Core attaches to it, also at the cap, and concurrent resumes of one id
   get one result; an attach with other `:provider_opts` than the running
   session's gives `{:error, :provider_opts_differ}`.

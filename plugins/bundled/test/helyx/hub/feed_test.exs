@@ -8,6 +8,7 @@ defmodule Helyx.Hub.FeedTest do
   alias Helyx.Hub.Live
   alias Helyx.Provider.Fake
   alias Helyx.Test.Events
+  alias Helyx.Test.Idle
   alias Helyx.Test.WireClient, as: Client
   alias Helyx.Transport.WebSocket
 
@@ -15,12 +16,22 @@ defmodule Helyx.Hub.FeedTest do
 
   @server_token "the server token"
 
-  defp serve(%{tmp_dir: dir} = context, opts \\ [], before \\ fn _context -> :ok end) do
+  defp serve(
+         %{tmp_dir: dir} = context,
+         opts \\ [],
+         before \\ fn _context -> :ok end,
+         core_opts \\ []
+       ) do
     core = :"core_#{System.unique_integer([:positive])}"
     data = Path.join(dir, "data")
     File.mkdir_p!(data)
     File.chmod!(data, 0o700)
-    start_supervised!({Helyx.Core, name: core, plugins: [Fake], sessions_dir: data}, id: :core)
+
+    start_supervised!(
+      {Helyx.Core, [name: core, plugins: [Fake], sessions_dir: data] ++ core_opts},
+      id: :core
+    )
+
     context = Map.merge(context, %{core: core, data: data})
     before.(context)
 
@@ -157,6 +168,47 @@ defmodule Helyx.Hub.FeedTest do
     assert %{"error" => %{"code" => "too_many_sessions"}} = start(owner)
   end
 
+  # A session that stops for idleness leaves the live set at its `:DOWN`; its
+  # row stays, and a prompt loads it again (docs/features/idle-unload.md).
+  test "a session that stops for idleness keeps its row and leaves the live set", context do
+    context = serve(context, [], fn _context -> :ok end, idle_stop_ms: Idle.idle_ms())
+    owner = open(context.port)
+
+    %{"result" => %{"session" => id}} = start(owner)
+    Events.wait_until(fn -> not Live.running?(:sys.get_state(context.hub), id) end)
+    wait_listed(owner, id)
+
+    assert %{"result" => %{"record" => %{"stored" => true}}} =
+             req(owner, "hub.records.get", %{"session" => id})
+
+    # The prompt loads the session, and the feed puts it in the live set again.
+    assert %{"ok" => true} = req(owner, "prompt", %{"session" => id, "text" => "again"})
+    Events.wait_until(fn -> Live.running?(:sys.get_state(context.hub), id) end)
+  end
+
+  # A text op under a Hub loads a stopped session as the wire `resume` does:
+  # the place of the user's live sessions and the starter
+  # (docs/features/idle-unload.md).
+  test "a prompt to a stopped session takes the place of the user and binds the starter",
+       context do
+    context =
+      serve(context, [max_live_sessions: 1], fn _context -> :ok end, idle_stop_ms: Idle.idle_ms())
+
+    owner = open(context.port)
+    %{"result" => %{"session" => id}} = start(owner)
+    Events.wait_until(fn -> not Live.running?(:sys.get_state(context.hub), id) end)
+
+    assert %{"ok" => true} = req(owner, "prompt", %{"session" => id, "text" => "again"})
+    assert Live.running?(:sys.get_state(context.hub), id)
+
+    # The load took the place of the user, so a start at the cap is refused.
+    assert %{"error" => %{"code" => "too_many_sessions"}} = start(owner)
+
+    {:ok, users} = Helyx.Hub.users(context.hub)
+    owner_id = Enum.find(users, &(&1.name == "owner")).id
+    assert Helyx.Hub.actor(context.hub, id) == {:ok, owner_id}
+  end
+
   # The tests arm no poll timer (`test_helper.exs`), so the poll of this test
   # is the only one after the start of Hub.
   test "a notice that the feed dropped is repaired at the next poll", context do
@@ -170,10 +222,12 @@ defmodule Helyx.Hub.FeedTest do
     :ok = :sys.suspend(hub)
     for _ <- 1..Helyx.Sessions.max_feed_queue(), do: send(hub, :filler)
     {:ok, session} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
-    :ok = :sys.resume(hub)
 
-    # The counter of the watch, which the session owns, counts the drop.
+    # The counter of the watch, which the session owns, counts the drop. The
+    # Hub stays suspended until the drop, so the notice meets its full mailbox
+    # however the session process is scheduled (#958).
     Events.wait_until(fn -> Helyx.Sessions.dropped(counter) > 0 end)
+    :ok = :sys.resume(hub)
     refute Live.running?(:sys.get_state(hub), session.id)
 
     # The poll reads the live sessions again, as the start of Hub does.

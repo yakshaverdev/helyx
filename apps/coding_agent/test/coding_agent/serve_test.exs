@@ -161,6 +161,11 @@ defmodule CodingAgent.ServeTest do
     handlers = :gen_event.which_handlers(:erl_signal_server)
     task = serve(["--model", "fake/echo"])
     info = ready(file)
+
+    # The server gives Core the idle stop of `Serve.idle_stop_ms/0`
+    # (docs/features/idle-unload.md).
+    assert Helyx.Core.config(Helyx.Core, :idle_stop_ms) == Serve.idle_stop_ms()
+
     # The server leaves the signal server as it is.
     assert :gen_event.which_handlers(:erl_signal_server) == handlers
 

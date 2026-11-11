@@ -38,7 +38,10 @@ defmodule Helyx.Core do
   configuration of `Helyx.Sessions` adds `:sessions_dir`, the folder of the
   session files, and `:model`, the default model ref; a path that is not
   absolute and valid, or a model that does not parse, refuses the start with
-  `{:invalid_option, key}`. Core runs at most 64 sessions
+  `{:invalid_option, key}`. `:idle_stop_ms` is the time with no work after
+  which a session of the Core stops, a positive integer or nil, default nil;
+  any other value refuses the start with `{:invalid_option, :idle_stop_ms}`
+  (`docs/features/idle-unload.md`). Core runs at most 64 sessions
   (`docs/features/server-management.md`).
 
   Several Core instances can run in one node under different names. Sessions
@@ -61,7 +64,7 @@ defmodule Helyx.Core do
   # The live sessions of one Core (server-management.md, "Bounds").
   @max_sessions 64
 
-  @doc "Child spec for a product's supervision tree. Takes `name:`, `plugins:`, `recall_ms:`, `sessions_dir:`, and `model:`."
+  @doc "Child spec for a product's supervision tree. Takes `name:`, `plugins:`, `recall_ms:`, `sessions_dir:`, `model:`, and `idle_stop_ms:`."
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
     %{
@@ -77,9 +80,11 @@ defmodule Helyx.Core do
     name = Keyword.get(opts, :name, __MODULE__)
     plugins = Keyword.get(opts, :plugins, [])
     recall_ms = Keyword.get(opts, :recall_ms, @recall_ms)
+    idle_stop_ms = Keyword.get(opts, :idle_stop_ms)
 
     with :ok <- check(:sessions_dir, opts[:sessions_dir]),
          :ok <- check(:model, opts[:model]),
+         :ok <- check_idle_stop_ms(idle_stop_ms),
          {:ok, table} <- Helyx.Core.Plugins.resolve(plugins),
          {:ok, providers} <- providers(table),
          {:ok, ids} <- Helyx.Core.Plugins.provider_ids(providers),
@@ -94,7 +99,8 @@ defmodule Helyx.Core do
         hooks: hooks,
         recall_ms: recall_ms,
         sessions_dir: opts[:sessions_dir],
-        model: opts[:model]
+        model: opts[:model],
+        idle_stop_ms: idle_stop_ms
       ]
 
       case Supervisor.start_link(__MODULE__, {name, plugins, meta}, name: name) do
@@ -112,6 +118,12 @@ defmodule Helyx.Core do
       do: :ok,
       else: {:error, {:invalid_recall_ms, ms}}
   end
+
+  # The idle stop of a session, in ms: a positive integer, or nil for no rule
+  # (docs/features/idle-unload.md).
+  defp check_idle_stop_ms(nil), do: :ok
+  defp check_idle_stop_ms(ms) when is_integer(ms) and ms > 0, do: :ok
+  defp check_idle_stop_ms(_ms), do: {:error, {:invalid_option, :idle_stop_ms}}
 
   # The folder goes into file paths, as the cwd of a session does. A
   # relative folder would move with the working directory of the node.
@@ -213,7 +225,7 @@ defmodule Helyx.Core do
 
   @doc false
   # An option of the server configuration, or nil.
-  @spec config(name(), :sessions_dir | :model) :: String.t() | nil
+  @spec config(name(), :sessions_dir | :model | :idle_stop_ms) :: String.t() | pos_integer() | nil
   def config(name, key), do: meta!(name, key)
 
   # Every Core sets these meta keys at start, so `:error` gets the answer of a

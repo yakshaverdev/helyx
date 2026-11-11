@@ -6,7 +6,7 @@ defmodule Helyx.Session.Server.Calls do
 
   alias Helyx.{Message, ModelRef}
   alias Helyx.Session.{History, Input}
-  alias Helyx.Session.Server.{Asks, Compaction, Events, Feed, Records, Sources, State}
+  alias Helyx.Session.Server.{Asks, Compaction, Events, Feed, IdleStop, Records, Sources, State}
   alias Helyx.Session.Server.{TurnLoop, UIBlocks}
 
   require Logger
@@ -26,7 +26,9 @@ defmodule Helyx.Session.Server.Calls do
   def handle({op, text, origin}, _from, %State{} = state)
       when op in [:prompt, :steer, :follow_up] do
     {reply, state} = TurnLoop.admit(op, Message.user(text, origin), state)
-    {:reply, reply, state}
+    # A prompt starts a turn, and a steer or a follow-up queues: no idle stop
+    # (docs/features/idle-unload.md).
+    {:reply, reply, IdleStop.arm(state)}
   end
 
   def handle({:compact, text}, _from, %State{} = state) do
@@ -51,7 +53,8 @@ defmodule Helyx.Session.Server.Calls do
 
   def handle({:answer, ask_id, answer}, _from, %State{} = state) do
     {reply, state} = Asks.answer(state, ask_id, answer)
-    {:reply, reply, state}
+    # The answer can end the last ask of the turn (docs/features/idle-unload.md).
+    {:reply, reply, IdleStop.arm(state)}
   end
 
   # A page reads the transcript only (docs/features/session-snapshot.md).

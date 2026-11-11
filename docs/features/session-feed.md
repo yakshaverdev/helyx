@@ -117,7 +117,7 @@ store schema does not change.
 ## Out of scope
 
 - `session_wait` and the search index on the feed: follow-ups.
-- Idle unload of a session: its own ticket.
+- Idle unload of a session: `docs/features/idle-unload.md`.
 - A stop notice: the monitor of the session process gives the end.
 - The `starters` actor semantics of `coordinator.md`, decision 3.
 - A reconcile scan at the start of Hub: the seed and the repair path cover it.

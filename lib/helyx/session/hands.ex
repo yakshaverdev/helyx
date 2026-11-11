@@ -90,6 +90,14 @@ defmodule Helyx.Session.Hands do
   def stop(hands, deadline, timeout), do: GenServer.call(hands, {:stop, deadline}, timeout)
 
   @doc """
+  The number of live background runs of the session: each Task place from its
+  call to the end of its run. A call, because only the hands know them; the
+  caller bounds it (docs/features/idle-unload.md).
+  """
+  @spec live_runs(pid(), timeout()) :: non_neg_integer()
+  def live_runs(hands, timeout), do: GenServer.call(hands, :live_runs, timeout)
+
+  @doc """
   Frees the place of the background run `id`, whose end a turn took. An id with
   no place changes nothing. A cast, as `run/4`
   (docs/features/background-bash.md).
@@ -160,6 +168,10 @@ defmodule Helyx.Session.Hands do
       error -> {:reply, error, state}
     end
   end
+
+  # The idle stop of the session counts the live background runs before it
+  # unloads (docs/features/idle-unload.md).
+  defp call(:live_runs, _from, state), do: {:reply, State.live_runs(state), state}
 
   # The start answer of a background run: the result of its call. The Task
   # leaves its turn but keeps its id, so the abort or the failure of the turn

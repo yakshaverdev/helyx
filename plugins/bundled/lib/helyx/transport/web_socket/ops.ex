@@ -139,6 +139,35 @@ defmodule Helyx.Transport.WebSocket.Ops do
     :exit, {:timeout, _call} -> Outbound.error("timeout")
   end
 
+  # A text op to a session that a stop unloaded loads it first, so a client
+  # sends to a session, not to an id (docs/features/idle-unload.md). A running
+  # session costs one Registry lookup. The load runs before the deadline of
+  # the op, as a `resume` does: a load of a file has the bound of the session
+  # open (#834). A missing file answers `session_not_found`, and any other
+  # error answers `failed`.
+  @spec load(Helyx.Core.name(), String.t(), map()) ::
+          :ok | {:error, String.t(), String.t()}
+  def load(core, op, %{"session" => id}) when op in ~w(prompt steer follow_up) do
+    session = %Session{id: id, core: core}
+
+    if Session.pid(session) do
+      :ok
+    else
+      case Helyx.Sessions.resume(core, id: id) do
+        {:ok, _resumed} ->
+          :ok
+
+        {:error, reason} when reason in [:not_found, :invalid_id] ->
+          error(op, "session_not_found")
+
+        {:error, _reason} ->
+          Outbound.error("failed")
+      end
+    end
+  end
+
+  def load(_core, _op, _params), do: :ok
+
   # The Core call of a request as a closure of its checked params, run by
   # `run/1`, or `:bad_params` or `:unknown_op`.
   def check(core, "sessions.live", params) do
@@ -290,9 +319,21 @@ defmodule Helyx.Transport.WebSocket.Ops do
 
   defp cast(_core, _type, _value), do: :bad_params
 
-  # The checked values as a keyword list for an option list.
+  # The checked values as a keyword list for an option list. The keys of the
+  # table make the atoms, so a key of a frame never makes one, and a VM that
+  # loads no module of a key, such as `:answers`, still answers
+  # (docs/features/wire-protocol.md, "Bounds").
+  @keys %{
+    "after" => :after,
+    "answers" => :answers,
+    "cwd" => :cwd,
+    "limit" => :limit,
+    "model" => :model,
+    "tail" => :tail
+  }
+
   defp keyword(values),
-    do: Enum.map(values, fn {key, value} -> {String.to_existing_atom(key), value} end)
+    do: Enum.map(values, fn {key, value} -> {Map.fetch!(@keys, key), value} end)
 
   defp origin(%{"origin" => origin}) when origin != nil, do: [origin: origin]
   defp origin(_values), do: []

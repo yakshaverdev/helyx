@@ -7,7 +7,7 @@ defmodule Helyx.Session.Server.Open do
   # docs/features/session-lock.md).
 
   alias Helyx.Session.{Background, Hands, Id, Input, Killer, Queue, Transcript}
-  alias Helyx.Session.Server.{Sources, State}
+  alias Helyx.Session.Server.{IdleStop, Sources, State}
 
   # `open` is nil with no session file, or `{path, fun}`: the session runs
   # `fun` to make or read the file. Past the deadline of the load the
@@ -168,7 +168,9 @@ defmodule Helyx.Session.Server.Open do
             Process.demonitor(monitor, [:flush])
             state = state |> init_hands() |> Sources.start() |> Helyx.Session.Sync.open()
             send(caller, {ref, :ok})
-            {:noreply, state}
+            # The save fact holds from here: a session with a file and no
+            # work arms its idle stop (docs/features/idle-unload.md).
+            {:noreply, IdleStop.arm(state)}
         end
 
       # The reason reaches the attaches that wait (`attach/3`).

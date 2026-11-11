@@ -104,6 +104,58 @@ defmodule Helyx.Hub.Access do
   def check(arg, auth, op, %{"session" => id} = params) when op in @write_ops,
     do: passed(Hub.call(arg.hub, {:session, auth, :write, id, running?(arg, id), nil}), params)
 
+  # A text op to a session that a stop unloaded resumes it as the `resume` op
+  # does: the place of the user's live sessions, the Core resume, and the
+  # starter (docs/features/idle-unload.md). A session that runs needs none.
+  @impl true
+  def load(arg, auth, op, %{"session" => id}) when op in @text_ops do
+    if running?(arg, id), do: :ok, else: load_resume(arg, auth, id)
+  end
+
+  def load(_arg, _auth, _op, _params), do: :ok
+
+  defp load_resume(arg, auth, id) do
+    case check(arg, auth, "resume", %{"id" => id}) do
+      {:ok, params} -> load_core(arg, auth, params, id)
+      error -> load_error(error)
+    end
+  end
+
+  defp load_core(arg, auth, params, id) do
+    case Helyx.Sessions.resume(arg.core, id: id) do
+      {:ok, session} ->
+        case result(arg, auth, "resume", params, %{"session" => id}) do
+          {:ok, _result} ->
+            :ok
+
+          error ->
+            # A session with no starter acts for no user, so it stops.
+            _ = Helyx.Sessions.stop(session)
+            release(arg, auth, "resume", params)
+            load_error(error)
+        end
+
+      {:error, reason} ->
+        release(arg, auth, "resume", params)
+        load_error(reason)
+    end
+  end
+
+  # A client of a text op knows these errors; a load that fails for another
+  # reason answers `failed`, so no client meets a code that its text does not
+  # name. A revoked credential still closes the connection.
+  defp load_error({:close, 4403} = close), do: close
+  defp load_error({:error, "not_found"}), do: {:error, "session_not_found"}
+
+  defp load_error({:error, code})
+       when code in ~w(session_not_found forbidden busy timeout failed),
+       do: {:error, code}
+
+  defp load_error(reason) when reason in [:not_found, :invalid_id],
+    do: {:error, "session_not_found"}
+
+  defp load_error(_reason), do: {:error, "failed"}
+
   # The existence check of decision 8, before the Hub call. An operation
   # that needs a running session asks the Registry.
   defp running?(arg, id), do: session_pid(arg, id) != nil

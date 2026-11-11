@@ -6,6 +6,7 @@ defmodule Helyx.Transport.WebSocketTest do
 
   alias Helyx.Provider.Fake
   alias Helyx.Test.Events
+  alias Helyx.Test.Idle
   alias Helyx.Test.WireClient, as: Client
   alias Helyx.Transport.WebSocket
   alias Helyx.Transport.WebSocket.{Frame, Ops, Outbound}
@@ -602,6 +603,43 @@ defmodule Helyx.Transport.WebSocketTest do
 
     assert %{"ok" => true, "result" => %{"items" => [%{"id" => ^id, "mtime" => 0}]}} =
              Client.request(Client.open(port), "1", "sessions.saved", %{})
+  end
+
+  # A text op loads a session that a stop unloaded; a subscribe does not
+  # (docs/features/idle-unload.md).
+  @tag :tmp_dir
+  test "a prompt to a session that stopped for idleness loads it, and a subscribe does not",
+       %{tmp_dir: dir} = context do
+    %{core: core, port: port} =
+      serve(context, [], sessions_dir: dir, idle_stop_ms: Idle.idle_ms())
+
+    socket = Client.open(port)
+
+    %{"ok" => true, "result" => %{"session" => id}} =
+      Client.request(socket, "1", "start", %{"cwd" => File.cwd!(), "model" => "fake/echo"})
+
+    # The session has no subscriber, so it stops for idleness.
+    Events.wait_until(fn -> Helyx.Sessions.list_live(core) == [] end)
+
+    assert %{"ok" => false, "error" => %{"code" => "session_not_found"}} =
+             Client.request(socket, "2", "subscribe", %{"session" => id})
+
+    assert %{"ok" => true} =
+             Client.request(socket, "3", "prompt", %{"session" => id, "text" => "again"})
+
+    assert Enum.any?(Helyx.Sessions.list_live(core), &(&1.id == id))
+  end
+
+  @tag :tmp_dir
+  test "a prompt to an id with no file answers session_not_found", %{tmp_dir: dir} = context do
+    %{port: port} = serve(context, [], sessions_dir: dir)
+    socket = Client.open(port)
+
+    assert %{"ok" => false, "error" => %{"code" => "session_not_found"}} =
+             Client.request(socket, "1", "prompt", %{
+               "session" => "zzzzzzzzzzzz",
+               "text" => "hi"
+             })
   end
 
   # The idle check reads the clock, and a deadline timer fires, within this

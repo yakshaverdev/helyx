@@ -5,7 +5,7 @@ defmodule Helyx.Session.Server do
 
   alias Helyx.Reason
   alias Helyx.Session.{ApprovalChains, Turn}
-  alias Helyx.Session.Server.{Approvals, Asks, Calls, Events, Feed, Flow, Open, Records}
+  alias Helyx.Session.Server.{Approvals, Asks, Calls, Events, Feed, Flow, IdleStop, Open, Records}
   alias Helyx.Session.Server.Flow.Up
   alias Helyx.Session.Server.{Settle, Sources, State, Steering}
   alias Helyx.Session.Server.{Stop, Summary, ToolRuns, TurnLoop, UIBlocks, Wait}
@@ -190,6 +190,12 @@ defmodule Helyx.Session.Server do
   # The timer of a caller of `Helyx.Tool.deferred/2` (`Sources.deferred/4`).
   defp info({:timeout, _timer, {:deferred, ref}}, state),
     do: {:noreply, Sources.timeout(state, ref)}
+
+  # The idle stop of a session that no one watches and that has no work
+  # (docs/features/idle-unload.md). A timer that a fact change cancelled has
+  # an old ref and is dropped; the facts decide again at the fire.
+  defp info({:timeout, ref, :idle_stop}, %State{idle_stop: ref} = state),
+    do: IdleStop.fired(state)
 
   # A notice of the sync worker of this instance.
   defp info({:memory_notice, pid, text}, %State{sync: pid} = state),

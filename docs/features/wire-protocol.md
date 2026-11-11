@@ -79,6 +79,8 @@ Every `req` gets one `res`: `ok: true` with the result, or `ok: false` with an e
 
 Every operation can also answer `unknown_op`, `bad_params`, `busy`, `timeout`, and `failed`.
 
+A `prompt`, `steer`, or `follow_up` to a session that a stop unloaded loads it first from its file, with the bound of a `resume`, before the deadline of the operation: the text goes to a session, not to an id. A missing file answers `session_not_found`, and any other load error answers `failed` (`docs/features/idle-unload.md`). A `subscribe` is no load: a session that does not run answers `session_not_found`.
+
 Under a Hub, the `hub.*` operations and their errors are in `docs/features/hub.md`, "Wire schema additions", and their bounds in its "Bounds". The session operations reach only the sessions that the user may read: a session of another user that the user may not read answers as one that does not exist, a write to a shared session that the user does not own answers `forbidden`, and a `start` over the records of the user answers `too_many_records` (`docs/features/hub.md`, decisions 6 and 7).
 
 - `live_session` is `{id, instance_id, cwd, model, status}`. `status` is `"idle"` when the session has no turn and no wait, else `"running"`.

@@ -29,7 +29,12 @@ defmodule Helyx.Tool.CoordinatorTest do
     File.chmod!(data, 0o700)
     core = :"core_#{System.unique_integer([:positive])}"
     plugins = [Fake, Block | @tools]
-    start_supervised!({Helyx.Core, name: core, plugins: plugins, sessions_dir: data}, id: :core)
+    core_opts = if ms = context[:idle_stop_ms], do: [idle_stop_ms: ms], else: []
+
+    start_supervised!(
+      {Helyx.Core, [name: core, plugins: plugins, sessions_dir: data] ++ core_opts},
+      id: :core
+    )
 
     hub_opts = [
       core: core,
@@ -273,6 +278,32 @@ defmodule Helyx.Tool.CoordinatorTest do
         ])
 
       assert Message.text(sent) == "sent to session #{session.id} as prompt"
+    end
+
+    # A coordinator could reach a session that it started at any later time
+    # before the idle stop; the load keeps that (docs/features/idle-unload.md).
+    @tag idle_stop_ms: Helyx.Test.Idle.idle_ms()
+    test "a session that its idle stop unloaded gets the text, and keeps the starter", context do
+      session = echo_session(context, context.ann)
+      wait_until(fn -> Session.pid(session) == nil end, 500)
+
+      [sent, missing] =
+        coordinate(context, context.ann, [
+          call("session_send", %{"id" => session.id, "text" => "again"}),
+          call("session_send", %{"id" => @missing, "text" => "x"})
+        ])
+
+      assert Message.text(sent) == "sent to session #{session.id} as prompt"
+      assert Message.text(missing) =~ "no such session runs"
+
+      # The load took the place of the user and bound the starter, as the
+      # wire `resume` does.
+      assert Hub.actor(context.hub, session.id) == {:ok, context.ann}
+
+      # The echo turn of the text ran.
+      {:ok, _snapshot, _ref} = Session.subscribe(session)
+      wait_until(fn -> length(messages(session)) == 4 end, 500)
+      assert [_, _, %Message{origin: %{kind: :product}, role: :user}, _] = messages(session)
     end
   end
 

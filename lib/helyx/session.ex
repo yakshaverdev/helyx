@@ -12,7 +12,9 @@ defmodule Helyx.Session do
   The turn and the late calls are in `docs/features/session-lifecycle.md`; the
   subscription is in `docs/features/session-subscribers.md`; every message has
   an id and every user message an origin
-  (`docs/features/message-identity.md`).
+  (`docs/features/message-identity.md`). A session that no client watches and
+  that has no work stops for idleness after the Core option `:idle_stop_ms`,
+  and its file resumes it (`docs/features/idle-unload.md`).
   """
 
   alias Helyx.ModelRef
@@ -74,7 +76,15 @@ defmodule Helyx.Session do
          concurrent = Helyx.Tool.concurrent(tools),
          {:ok, {ref, provider}} <- Input.model(core, Keyword.fetch!(opts, :model), limit),
          :ok <- mkdir(dir, cwd, parent) do
-      state = %State{id: id, core: core, model: ref, provider: provider, cwd: cwd}
+      state = %State{
+        id: id,
+        core: core,
+        model: ref,
+        provider: provider,
+        cwd: cwd,
+        idle_stop_ms: Helyx.Core.config(core, :idle_stop_ms)
+      }
+
       init = %{provider_opts: provider_opts, max_output_tokens: limit}
 
       Server.create(
@@ -109,7 +119,16 @@ defmodule Helyx.Session do
          concurrent = Helyx.Tool.concurrent(tools),
          {:ok, path, cwd} <- Helyx.Session.File.pick(dir, cwd, Keyword.take(opts, [:id])) do
       id = Path.basename(path, ".jsonl")
-      state = %State{id: id, core: core, model: nil, provider: nil, cwd: cwd}
+
+      state = %State{
+        id: id,
+        core: core,
+        model: nil,
+        provider: nil,
+        cwd: cwd,
+        idle_stop_ms: Helyx.Core.config(core, :idle_stop_ms)
+      }
+
       state = %{state | init: %{state.init | provider_opts: provider_opts}}
       Server.start(state, {tools, concurrent, sources}, {path, &Server.Open.load(&1, path)})
     end
