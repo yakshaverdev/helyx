@@ -91,10 +91,10 @@ The invariant sentence copies the invariant of the worker's report word for word
 
 Judge every finding yourself. Reproduce it or read the code. A reviewer's claim is not a fact. Reject a finding whose reproduction enters below the boundary with a value no caller can pass; a fix for it would add defensive code. Record the rejection with the boundary that already covers the value. Reject a finding that asks for a case-specific handler of contract-breaking provider output when no real provider shows that output: a contract break gets the generic answer (the provider stops, the turn fails), and its own handler needs evidence (`docs/agents/review-checklist.md`, "Inputs from plugins"). Record the rejection with this rule. A finding that the generic failure path does not fire, a race between Core processes, and a broken safety bound stay findings. The invariant sentence also names the boundaries of the change, so the reviewer knows which checks are the designed ones.
 
-- **Confirmed:** send it to the worker, as a follow-up on its session, with the reproduction. The worker fixes it through `/ship` rules: a code fix gets its rerun round. Then run the Codex review again.
+- **Confirmed:** send it to the worker, as a follow-up on its session, with the reproduction. The worker applies the same rule as `/ship`: fix every `observed` finding and every `constructed` safety finding; dismiss the other `constructed` findings in the review record with one line each. The worker fixes it through `/ship` rules: a code fix gets its rerun round. Then run the Codex review again.
 - **Rejected:** record it in the review record with the reason.
 
-The gate is a Codex round with no confirmed finding. Three rounds without that: park.
+The gate is a Codex round with no open `observed` finding and no open safety finding. Three rounds without that: park.
 
 When Codex gives no verdict (a parse error of its last message, or "flagged for possible cybersecurity risk"), run it once more with a shorter sentence; a run with no verdict is not a round (#471). When Codex cannot run the boundary that the change crosses (its sandbox refuses loopback listeners with `:eperm`), the gate round is a `general-purpose` agent of the strongest model, in the foreground, on a real loopback socket, with its own `MIX_BUILD_PATH` under `/tmp`. Its findings are confirmed or rejected by the rules above (#660, #763).
 

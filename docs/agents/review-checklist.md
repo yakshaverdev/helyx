@@ -4,6 +4,8 @@ Invariants the review axes check on every diff. Add one when a review or a PR co
 
 A line that a review adds for one case ends with its source: the issue or the run that found the case, and the class of its input. The class is observed (a real provider, program, or user sent the input), constructed (a probe or a test made it), or not verified. The class guides the next reviewer; it does not decide whether the line stays. When a mechanism changes, review each line about it, whatever its class. Source: the joint review of 2026-10-16 (#642).
 
+Each finding states its evidence class: `observed` (a real run, a bug report, a research note, or a real producer in the code makes the input) or `constructed` (only the reviewer built the input). A `constructed` finding is fixed only if it is a safety bound (data loss, corruption, resource growth); otherwise it is dismissed with one line.
+
 A class of defect that the reviews find a second time gets a mechanical check: its line names the check that could find it, or says why none can. Source: #660 and #763, where a secret in buffered frames took a defect in each round.
 
 ## Specs and bounds
