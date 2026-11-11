@@ -42,6 +42,8 @@ pub fn snapshot(shared: &mut Shared) -> ffi::Snapshot {
 }
 
 fn state(state: &State) -> ffi::SessionState {
+    let asks: Vec<ffi::Ask> = state.asks.iter().map(ask).collect();
+    let answering = crate::blocks::answering(&asks);
     ffi::SessionState {
         instance_id: state.instance_id.clone(),
         seq: state.seq.to_u64(),
@@ -56,7 +58,8 @@ fn state(state: &State) -> ffi::SessionState {
             waiting: state.queue.waiting,
         },
         notices: state.notices.clone(),
-        asks: state.asks.iter().map(ask).collect(),
+        asks,
+        answering,
         rows: rows(&state.messages).into_iter().map(row).collect(),
         partial: state.partial.as_ref().map(message),
         ui_blocks: state.ui_blocks.iter().map(shown).collect(),

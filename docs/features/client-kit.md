@@ -85,6 +85,10 @@ A method that sends an operation gives the number of its send, 1 for the first a
 
 The gate and the bindings: `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked` in `clients/rust` cover both new crates on every host, and `ffi/tests/connection.rs` drives the object against the stub server of the network layer through a listener implemented in Rust, so the surface is proven without Swift. Only a Mac with Xcode checks the iOS build of the crate (`mise exec -- cargo build -p helyx-client-ffi --target aarch64-apple-ios-sim`) and that the generated Swift compiles in an app; the gate checks neither, because it builds no app.
 
+## The iOS app
+
+`clients/ios/` is the SwiftUI app of #919, slice 1 (`docs/features/ios-app.md`): it draws the snapshot of one `Connection`, and every rule that the desktop app also makes stays in Rust. The bindings gain `read_block(json)`, `form_answer(items)`, and `approval_answer(allow)` for the UI blocks and the answers, and `SessionState.answering` names the ask that the host answers now, the rule of `app/src/ask.rs` (`Panel::answering`). The new tests are `ffi/tests/blocks.rs`. No wire, fixture, core, or Elixir change.
+
 ## Pairing
 
 The session pairs each tool result with its call: a live result follows its call, and at read `Helyx.Session.Transcript.repair/1` drops a second result of one call. That is a rule of the server, and the fixtures are the contract, so a client enforces at its boundary only what keeps it whole: the shape of each frame by the schema, and the bounds, so that it never crashes and never grows without a bound. It does not enforce the pairing, which needs state that only the server holds in full (a tail snapshot can start after a call). It shows what it gets:
@@ -207,7 +211,7 @@ Decided while building #931, for the owner:
 
 ## Out of scope
 
-- The iOS app (#919), the Android app, and the web client: follow-up tickets (the web client is a Phoenix client).
+- The rest of the iOS app (#919), whose slice 1 is `clients/ios/` (`docs/features/ios-app.md`): pairing and TLS to a remote server (#956), push, the board, the bare shell, over-the-air install, and an icon set. The Android app and the web client are follow-up tickets (the web client is a Phoenix client).
 - Hub auth: after #869.
 - A client extension point.
 - Any server change.
