@@ -23,7 +23,6 @@ defmodule Helyx.Compaction do
   text}` to fail the build. See `docs/features/summary-compaction.md`.
   """
 
-  use Helyx.Interface, mode: :single
 
   @callback compact(context :: Helyx.Context.t(), opts :: keyword()) ::
               Helyx.Context.t() | {:summarize, Helyx.Summary.Plan.t()} | {:error, String.t()}

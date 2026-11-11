@@ -1,45 +1,31 @@
-defmodule Helyx.Test.Single do
-  @moduledoc false
-  use Helyx.Interface, mode: :single
-
-  @callback name() :: String.t()
-end
-
-defmodule Helyx.Test.Multi do
-  @moduledoc false
-  use Helyx.Interface, mode: :multi
-
-  @callback name() :: String.t()
-end
-
 defmodule Helyx.Test.SingleA do
   @moduledoc false
-  @behaviour Helyx.Test.Single
+  @behaviour Helyx.Compaction
   def name, do: "single-a"
 end
 
 defmodule Helyx.Test.SingleB do
   @moduledoc false
-  @behaviour Helyx.Test.Single
+  @behaviour Helyx.Compaction
   def name, do: "single-b"
 end
 
 defmodule Helyx.Test.MultiA do
   @moduledoc false
-  @behaviour Helyx.Test.Multi
+  @behaviour Helyx.ModelContext
   def name, do: "multi-a"
 end
 
 defmodule Helyx.Test.MultiB do
   @moduledoc false
-  @behaviour Helyx.Test.Multi
+  @behaviour Helyx.ModelContext
   def name, do: "multi-b"
 end
 
 defmodule Helyx.Test.MultiChild do
   @moduledoc false
   # A plugin with a process, which Core starts under its own supervisor.
-  @behaviour Helyx.Test.Multi
+  @behaviour Helyx.ModelContext
   def name, do: "multi-child"
   def child_spec(opts), do: %{id: __MODULE__, start: {Agent, :start_link, [fn -> opts end]}}
 end

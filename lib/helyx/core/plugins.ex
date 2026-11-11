@@ -49,8 +49,17 @@ defmodule Helyx.Core.Plugins do
       else: {:error, {:invalid_plugin, entry}}
   end
 
+  @modes %{
+    Helyx.Provider => :multi,
+    Helyx.Tool => :multi,
+    Helyx.ModelContext => :multi,
+    Helyx.Hook => :multi,
+    Helyx.Compaction => :single,
+    Helyx.Memory => :single
+  }
+
   defp group(plugins) do
-    implemented = Enum.map(plugins, &{&1, Helyx.Interface.implemented_by(&1)})
+    implemented = Enum.map(plugins, &{&1, implemented_by(&1)})
 
     pairs =
       for {plugin, interfaces} <- implemented, interface <- interfaces, do: {interface, plugin}
@@ -59,6 +68,13 @@ defmodule Helyx.Core.Plugins do
       nil -> {:ok, Enum.group_by(pairs, &elem(&1, 0), &elem(&1, 1))}
       error -> {:error, error}
     end
+  end
+
+  defp implemented_by(plugin) do
+    plugin.__info__(:attributes)
+    |> Keyword.get_values(:behaviour)
+    |> List.flatten()
+    |> Enum.filter(&Map.has_key?(@modes, &1))
   end
 
   defp not_a_plugin({plugin, []}), do: {:not_a_plugin, plugin}
@@ -181,7 +197,7 @@ defmodule Helyx.Core.Plugins do
 
   # Returns the error for an interface and its plugins, or nil when they fit.
   defp check_mode({interface, [_, _ | _] = plugins}) do
-    if match?(%{mode: :single}, Helyx.Interface.declaration(interface)),
+    if @modes[interface] == :single,
       do: {:mode_violation, interface, plugins}
   end
 

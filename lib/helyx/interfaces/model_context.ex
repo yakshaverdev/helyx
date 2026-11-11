@@ -29,7 +29,6 @@ defmodule Helyx.ModelContext do
   (`docs/features/session-model-context.md`).
   """
 
-  use Helyx.Interface, mode: :multi
 
   @callback build(context :: Helyx.Context.t(), opts :: keyword()) :: Helyx.Context.t()
 end

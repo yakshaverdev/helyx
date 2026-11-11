@@ -24,7 +24,6 @@ defmodule Helyx.Memory do
   `:instance_id`, and `:cwd`.
   """
 
-  use Helyx.Interface, mode: :single
 
   @type query :: %{text: String.t(), origin: Helyx.Message.origin()}
   @type record :: %{id: String.t(), source: String.t(), text: String.t()}

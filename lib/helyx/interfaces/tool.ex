@@ -47,7 +47,6 @@ defmodule Helyx.Tool do
   with `deferred/2` and `activate/1` (`docs/features/mcp-client.md`).
   """
 
-  use Helyx.Interface, mode: :multi
 
   alias Helyx.Session.ToolSpecs
 

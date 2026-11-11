@@ -32,8 +32,8 @@ defmodule Helyx.CoreTest do
     plugins = [Test.Provider, Test.SingleA, Test.MultiB, Test.MultiA]
     {:ok, _} = start_supervised({Helyx.Core, name: name, plugins: plugins})
 
-    assert Helyx.Core.plugins(name, Test.Single) == [Test.SingleA]
-    assert Helyx.Core.plugins(name, Test.Multi) == [Test.MultiB, Test.MultiA]
+    assert Helyx.Core.plugins(name, Helyx.Compaction) == [Test.SingleA]
+    assert Helyx.Core.plugins(name, Helyx.ModelContext) == [Test.MultiB, Test.MultiA]
     assert Helyx.Core.plugins(name, Helyx.Provider) == [Test.Provider]
   end
 
@@ -59,7 +59,7 @@ defmodule Helyx.CoreTest do
     :ok = Supervisor.terminate_child(name, registry)
     {:ok, new} = Supervisor.restart_child(name, registry)
     assert new != old
-    assert Helyx.Core.plugins(name, Test.Multi) == [Test.MultiA]
+    assert Helyx.Core.plugins(name, Helyx.ModelContext) == [Test.MultiA]
   end
 
   # A sessions table without the meta keys stands for the window that #465
@@ -75,7 +75,7 @@ defmodule Helyx.CoreTest do
 
   for {name, plugins, error} <- [
         {"two plugins for a single interface", [Test.Provider, Test.SingleA, Test.SingleB],
-         quote(do: {:mode_violation, Test.Single, [Test.SingleA, Test.SingleB]})},
+         quote(do: {:mode_violation, Helyx.Compaction, [Test.SingleA, Test.SingleB]})},
         {"two compaction plugins", [Test.Provider, Test.Compaction, Test.PrepareCompaction],
          quote(do: {:mode_violation, Helyx.Compaction, _})},
         {"a missing provider", [Test.SingleA], quote(do: {:missing_plugin, Helyx.Provider})},
@@ -121,34 +121,6 @@ defmodule Helyx.CoreTest do
 
   test "an unset plugins value is an empty list" do
     assert reject([]) == {:error, {:missing_plugin, Helyx.Provider}}
-  end
-
-  test "an interface takes no option other than :mode" do
-    source = """
-    defmodule Helyx.Test.Required do
-      use Helyx.Interface, mode: :multi, required: true
-    end
-    """
-
-    assert_raise ArgumentError, ~r/unknown keys \[:required\]/, fn ->
-      Code.compile_string(source)
-    end
-  end
-
-  test "accepts a plugin of an interface without callbacks" do
-    source = """
-    defmodule Helyx.Test.Marker do
-      use Helyx.Interface, mode: :multi
-    end
-
-    defmodule Helyx.Test.MarkerPlugin do
-      @behaviour Helyx.Test.Marker
-    end
-    """
-
-    {modules, _warnings} = Code.with_diagnostics(fn -> Code.compile_string(source) end)
-    {plugin, _} = List.keyfind(modules, Helyx.Test.MarkerPlugin, 0)
-    assert {:ok, _} = boot([Test.Provider, plugin])
   end
 
   describe "provider ids (#169)" do

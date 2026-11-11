@@ -35,7 +35,6 @@ defmodule Helyx.Provider do
       owner of a call id").
   """
 
-  use Helyx.Interface, mode: :multi
 
   @type stop_reason :: Helyx.Message.stop_reason()
 
