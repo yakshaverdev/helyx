@@ -4,12 +4,6 @@ defmodule Helyx.Watchdog do
   # releases the groups. The bash tool and, through `Helyx.HarnessIO`, the
   # harness providers share it; it is not a plugin, and no plugin calls
   # another (ADR 0005).
-  #
-  # `start/4` opens the port, holds the watchdog with the hands, reads the
-  # group marker, holds the command group, and only then sends the go-ahead,
-  # so either the hands hold the group before the program runs, or it never
-  # ran (ADR 0004). `Helyx.Watchdog.Group.release/4` is the `release/3` of
-  # the plugin that holds the handles. perl is required.
 
   # `watchdog/watchdog.pl` owns the protocol: the marker before the
   # go-ahead, the input modes, the grace, the reap, and the select tick.
@@ -49,26 +43,17 @@ defmodule Helyx.Watchdog do
   @doc false
   # Opens the port for `argv` in `cwd` and runs the handshake. With `input`
   # nil the command's stdin is /dev/null. With `:open` the command reads
-  # what `write/2` sends until `write(port, <<0>>)` or the close. The
-  # callers check for perl first (the bash tool's `check/0`,
-  # `Helyx.HarnessIO.find/1`). Returns:
+  # what `write/2` sends until `write(port, <<0>>)` or the close. Returns:
   #
   #   * `{:started, port, pre, handles}`: the go-ahead is sent. `pre` is
   #     what came before the marker, perl's own startup output. `handles`
   #     are the handles held with `Helyx.Tool.hold/1`, for a caller that
   #     releases the groups itself (the bash tool at its time limit).
-  #   * `{:error, reason}`: no command ran, the port is closed, and the
-  #     watchdog hold is dropped when a release with the deadline
-  #     `@gone_ms` confirms the watchdog gone. Either
-  #     the watchdog did not fork, and `reason` is the tail of the rest of
-  #     the stream up to the exit status, read here; or it gave no marker,
-  #     and `reason` is a head that names perl. `reason` is valid UTF-8 of
-  #     at most `@reason_max_bytes`.
+  #   * `{:error, reason}`: no command ran and the port is closed. `reason`
+  #     is valid UTF-8 of at most `@reason_max_bytes`.
   #
   # Only a group marker leads to the go-ahead, after the group is held: a
-  # command never runs without its group in the hands. With no marker, the
-  # closed port is the watchdog's signal to kill the child it holds, if it
-  # got that far.
+  # command never runs without its group in the hands.
   #
   # The option `:grace_ms` (default #{@grace_ms}) is the wait between the
   # TERM and the KILL of the command group when the port closes, or when
@@ -76,17 +61,12 @@ defmodule Helyx.Watchdog do
   # `@stdin_max_bytes`. The option `:env` (default `[]`) is the name and
   # value pairs, valid UTF-8, that the port adds to the inherited
   # environment, and `:unset` (default `[]`) the names that it removes from
-  # it. A raise of the open, such as `:emfile`, shows no options,
-  # so no value reaches a crash report. In the `reason` of an error, each
-  # occurrence of a value is masked (`Helyx.Watchdog.Mask`).
+  # it. Neither a crash report nor the `reason` of an error shows a value
+  # (docs/features/harness-no-state.md).
   #
   # The option `:deadline` (default none) is an absolute
-  # `System.monotonic_time(:millisecond)`: the marker read and the reason
-  # read wait only until it, and the go-ahead is not written after it.
-  # Past it the start closes the port and returns `{:error, @late}`; before
-  # the marker it lets the watchdog go as a failed start does, after the
-  # command hold it leaves both handles held for the caller's hands, and
-  # the command never ran (`docs/features/mcp-client.md`). The option
+  # `System.monotonic_time(:millisecond)`; past it the start returns
+  # `{:error, @late}` (`docs/features/mcp-client.md`). The option
   # `:watchdog_exe`, for tests only, runs that program in place of perl.
   def start(argv, cwd, input, opts \\ []) do
     nonce = random_word()
@@ -277,14 +257,11 @@ defmodule Helyx.Watchdog do
 
   # Finds the marker line (see the watchdog). Lines that are not a marker
   # are read past, within `@max_preamble_bytes`, and kept in front of the
-  # output. The marker exists however fast the command exited, because the
-  # watchdog writes it before the command may run. Returns the group
-  # (or `:not_started`, see the watchdog) and the output so far. A stream
-  # that ends, or reaches the limit, with no marker is `:no_marker` with its
-  # text: perl did not get as far as the watchdog, or wrote too much. Only
+  # output. Returns the group (or `:not_started`, see the watchdog) and the
+  # output so far, or `:no_marker` with the text read. Only
   # a line that ends within the limit counts, marker or not, so which
   # marker is found, if any, does not depend on how the stream is cut into
-  # messages. The `:no_marker` text is what had arrived by then.
+  # messages.
   @doc false
   # Public for the direct test of the preamble limit.
   def read_marker(port, nonce, pre, acc, deadline \\ nil) do

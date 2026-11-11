@@ -1,19 +1,13 @@
 defmodule Helyx.Tool.Args do
   @moduledoc false
   # The check of a tool's arguments at its entry, from the JSON schema that
-  # the tool declares in `parameters/0`. `check/2` takes the argument map
-  # and the schema, and answers `{:ok, args}` with the defaults filled in,
-  # or `{:error, text}` for the first argument that does not fit.
+  # the tool declares in `parameters/0`. `check/2` answers `{:ok, args}`
+  # with the defaults filled in, or `{:error, text}` for the first argument
+  # that does not fit.
   #
   # A property whose value is `null` is the same as an absent one, so its
-  # default applies; a required property that is `null` is an error. The
-  # arguments are a JSON object of valid UTF-8, which Core checks, so this
-  # module checks the type and the value of each property only.
-  #
-  # The keywords are exactly those that the bundled tools use: `type`,
-  # `properties`, `required`, `enum`, `minimum`, `maximum`, `minLength`,
-  # `maxLength`, `items`, `minItems`, `maxItems`, `default`, and
-  # `description`. `minLength` and `maxLength` count bytes, as the tool
+  # default applies; a required property that is `null` is an error.
+  # `minLength` and `maxLength` count bytes, as the tool
   # descriptions state, not the code points of JSON Schema. Another keyword
   # raises, so a new tool cannot use a keyword that nothing checks.
 

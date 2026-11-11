@@ -3,30 +3,12 @@ defmodule Helyx.Watchdog.Group do
   # The release of the handles of `Helyx.Watchdog`: `{:command, group, record}`
   # for the command's process group and `{:watchdog, os_pid, record}` for the
   # watchdog, which is its own group. Returns the handles whose group still
-  # has a process.
-  #
-  # Each group has one release record (`Helyx.Watchdog.Record`), which
-  # every copy of its handle carries. A release takes the record of each
-  # handle once, before any probe or signal: one that is gone is confirmed
-  # with no signal, so a number that the OS gave to a new group is never
-  # signalled; one that another release holds is waited for. A probe that
-  # confirms a group gone writes it gone; the others end not confirmed.
-  #
-  # Command groups go first, then the watchdogs. A watchdog is a reaper: it
-  # is swept only after every command group is gone or still held, because a
-  # KILLed watchdog cannot reap its command, and where PID 1 does not reap
-  # orphans the zombie would hold its group forever. It exits by itself once
-  # the command is reaped; the KILL is the fallback for a watchdog that never
-  # does. The watchdog ignores TERM, so only the command groups get one.
-  #
-  # `:deliver` KILLs straight away: the call is over, nothing in the group
-  # has output anyone will read. `:cancel` TERMs first and KILLs after the
-  # grace period (`Helyx.Watchdog.grace_ms/0`, or the `:grace_ms` option).
-  #
-  # No kill(1) run starts at or after the deadline: a skipped probe counts
-  # the group as alive, so the handle is returned as still held. A group is
-  # gone only when kill(1) reports "No such process". Any other failure,
-  # such as a group of another user, keeps it held.
+  # has a process. The order, the modes, the deadline, and the release
+  # record are in docs/features/tool-resource-release.md, "Interface changes"
+  # and "The release record".
+  # Command groups go first, then the watchdogs: a KILLed watchdog cannot
+  # reap its command, and where PID 1 does not reap orphans the zombie
+  # would hold its group forever.
 
   alias Helyx.Watchdog.Record
 

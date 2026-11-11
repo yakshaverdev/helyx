@@ -4,33 +4,8 @@ defmodule Helyx.Hook.Command.Run do
   # (docs/features/command-hook.md): `bash -c <command>` under the perl
   # watchdog (`Helyx.Watchdog`), in its own process group that the hook
   # Task holds before the command runs, with `input` on standard input and
-  # then end of file.
-  #
-  # The watchdog merges standard error into its port, so the relay
-  # (`relay.pl`) runs the command with a pipe for each stream and writes
-  # each read to the port as a frame: a tag byte, `o` or `e`, the length
-  # in four bytes, and at most `@max_frame_bytes` of data, its first
-  # argument. It reads at most 16 times from a pipe before it checks the
-  # command again, and when the command exits, it reads at most 16 more
-  # times from each pipe, what the pipes hold, and exits with the
-  # command's status, 128 plus the signal for a signal death. So the
-  # answer is what the command wrote before it exited: a child that the
-  # command left with a pipe open does not hold the hook, and what it
-  # writes later is not read; the release of the hands releases it. The
-  # relay's own standard error is /dev/null, so its startup warnings
-  # cannot break the frames.
-  #
-  # The relay is in the command's group and is the command's reaper, as
-  # the watchdog is the relay's: it ignores TERM, HUP, and SIGPIPE, so the
-  # TERM of a release or of the watchdog reaches the command, which has
-  # its grace, and the relay reaps it and exits after it. The relay sets
-  # TERM and HUP to their default action at its start, also when Helyx
-  # runs with one ignored, and blocks them across its fork, so the command
-  # starts with the defaults, and the relay sends one that came while they
-  # were blocked on to the command. Once the port is gone, a failed write
-  # drops the rest of the output. Only a KILL ends the relay first, as it
-  # ends any parent in the group.
-  #
+  # then end of file. The frames and the signals of `relay.pl`: the feature
+  # doc, "The run".
   # The read has no deadline of its own: the hands kill the hook Task at
   # its limit, the port closes with it, and the watchdog stops the group.
 
