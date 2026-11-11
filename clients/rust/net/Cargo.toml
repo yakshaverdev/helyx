@@ -1,0 +1,21 @@
+[package]
+name = "helyx-client-net"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The network layer of the Helyx client kit: the WebSocket thread, its waits, and its reconnect rules"
+publish = false
+
+[dependencies]
+helyx-client-core = { path = "../core" }
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+
+# The stub server on the loopback, for the tests of this crate and of the
+# bindings. A host's build leaves it out, so no test tool reaches an app
+# (docs/features/client-kit.md, "Bindings for Swift").
+[features]
+stub = []
+
+# The tests of this crate drive the stub, which the feature builds.
+[dev-dependencies]
+helyx-client-net = { path = ".", features = ["stub"] }

@@ -1,10 +1,9 @@
-//! The parts of the desktop app that run on every platform: the composer,
-//! the ask, the input of the window, the settings, and the network thread
-//! (`docs/features/client-kit.md`, slice 4).
+//! The parts of the desktop app: the composer, the ask, the input of the
+//! window, and the settings. The network layer is the shared crate
+//! `helyx_client_net` (`docs/features/client-kit.md`, "The network layer").
 
 pub mod ask;
 pub mod composer;
 pub mod input;
-pub mod net;
+pub use helyx_client_net as net;
 pub mod settings;
-pub mod socket;

@@ -1,6 +1,7 @@
-//! The guards of one socket of the app (`docs/features/client-kit.md`,
-//! slice 4): the waits, the watchdog that holds the deadlines of the socket,
-//! and the tap that reads the header of each frame of the server.
+//! The guards of one socket of the network layer (`docs/features/
+//! client-kit.md`, "The network layer"): the waits, the watchdog that holds
+//! the deadlines of the socket, and the tap that reads the header of each
+//! frame of the server.
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream};

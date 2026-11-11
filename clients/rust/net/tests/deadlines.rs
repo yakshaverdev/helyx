@@ -3,10 +3,11 @@
 //! deadline of a batch of sends, a send that fails after a binary frame and
 //! after a frame that the socket read, and the TCP connect.
 
-mod stub;
+use net::stub;
 
-use helyx_desktop::net::{self, Command, Shared};
-use helyx_desktop::socket::{WAITS, Waits};
+use helyx_client_net as net;
+use net::socket::{WAITS, Waits};
+use net::{Command, Shared};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, channel};
