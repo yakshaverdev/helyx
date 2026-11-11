@@ -535,6 +535,15 @@ fn heard(watchdog: &Watchdog, welcomed: bool, waits: Waits) {
 fn open(server: &Server, waits: Waits) -> Result<(Socket, Watchdog), String> {
     let address = SocketAddr::new(server.address, server.port);
     let stream = TcpStream::connect_timeout(&address, waits.connect).map_err(|e| e.to_string())?;
+    // The OS can buffer a batch of several MiB whole, and then no write waits
+    // on the peer; a test that its batch outlasts its deadline caps the
+    // buffer here.
+    #[cfg(feature = "stub")]
+    if let Some(size) = waits.send_buffer {
+        socket2::SockRef::from(&stream)
+            .set_send_buffer_size(size)
+            .map_err(|e| e.to_string())?;
+    }
     stream
         .set_read_timeout(Some(waits.poll))
         .map_err(|e| e.to_string())?;

@@ -2178,6 +2178,7 @@ version = "0.1.0"
 dependencies = [
  "helyx-client-core",
  "helyx-client-net",
+ "socket2",
  "tungstenite",
 ]
 

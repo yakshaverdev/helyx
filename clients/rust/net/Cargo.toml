@@ -8,13 +8,15 @@ publish = false
 
 [dependencies]
 helyx-client-core = { path = "../core" }
+# The seam of the feature `stub`: a test caps the send buffer of the socket.
+socket2 = { version = "0.6", optional = true }
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 
-# The stub server on the loopback, for the tests of this crate and of the
-# bindings. A host's build leaves it out, so no test tool reaches an app
-# (docs/features/client-kit.md, "Bindings for Swift").
+# The test support of this crate and of the bindings, which no host build
+# holds: the stub server on the loopback, and the small send buffer that a
+# test gives its socket (docs/features/client-kit.md, "The network layer").
 [features]
-stub = []
+stub = ["dep:socket2"]
 
 # The tests of this crate drive the stub, which the feature builds.
 [dev-dependencies]

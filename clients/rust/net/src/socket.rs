@@ -28,6 +28,12 @@ pub struct Waits {
     /// How often the thread takes the commands of the window, and the
     /// watchdog checks its deadlines.
     pub poll: Duration,
+    /// The send buffer of the socket, when a test needs a batch of sends to
+    /// outlast its deadline: the batch cannot fit in the buffers of the OS,
+    /// whatever their size. None leaves the buffer of the OS. Only a build
+    /// with the feature `stub` holds this field.
+    #[cfg(feature = "stub")]
+    pub send_buffer: Option<usize>,
 }
 
 /// The waits of the app.
@@ -38,6 +44,8 @@ pub const WAITS: Waits = Waits {
     send: Duration::from_millis(5_000),
     pause: Duration::from_millis(1_000),
     poll: Duration::from_millis(100),
+    #[cfg(feature = "stub")]
+    send_buffer: None,
 };
 
 /// No deadline.
