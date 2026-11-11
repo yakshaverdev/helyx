@@ -128,7 +128,8 @@ defmodule Helyx.Hub.Access do
   # bounds neither the project folders nor their files: a find that does not
   # end in time finds nothing. Every value, from the disk or from Core,
   # passes one check: a `cwd` or `model` that a record cannot hold finds
-  # nothing.
+  # nothing. A parent link that does not pass its check is dropped, as at a
+  # resume of the session.
   defp found(%{dir: nil} = arg, id), do: checked(live(arg, id))
   defp found(arg, id), do: checked(file(arg.dir, id) || running(arg, id))
 
@@ -136,8 +137,11 @@ defmodule Helyx.Hub.Access do
     task = Task.async(fn -> Helyx.Session.File.Scan.find(dir, id) end)
 
     case Task.yield(task, @find_ms) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {:ok, _path, %{"cwd" => cwd} = header}} -> %{cwd: cwd, model: header["model"]}
-      _ -> nil
+      {:ok, {:ok, _path, %{"cwd" => cwd} = header}} ->
+        %{cwd: cwd, model: header["model"], parent: parent(header["parent"])}
+
+      _ ->
+        nil
     end
   end
 
@@ -145,9 +149,19 @@ defmodule Helyx.Hub.Access do
 
   defp live(arg, id) do
     Enum.find_value(Helyx.Sessions.list_live(arg.core), fn
-      %{id: ^id, cwd: cwd, model: model} -> %{cwd: cwd, model: model}
-      _ -> nil
+      %{id: ^id, cwd: cwd, model: model, parent: parent} ->
+        %{cwd: cwd, model: model, parent: parent}
+
+      _ ->
+        nil
     end)
+  end
+
+  defp parent(link) do
+    case Helyx.Session.Input.header_parent(link) do
+      {:ok, checked} -> checked
+      {:error, :invalid_parent} -> nil
+    end
   end
 
   # The `cwd` and `model` of a record hold their bounds, else the find finds
@@ -305,11 +319,21 @@ defmodule Helyx.Hub.Access do
       "labels" => v.labels,
       "visibility" => v.visibility,
       "archived" => v.archived,
-      "stored" => v.stored,
       "created_at" => v.created_at,
-      "updated_at" => v.updated_at
+      "updated_at" => v.updated_at,
+      "cwd" => v.cwd,
+      "model" => v.model,
+      "prompt" => v.prompt,
+      "active_at" => v.active_at,
+      "parent" => wire_parent(v.parent),
+      "status" => v.status
     }
   end
+
+  # The parent link of a record as the wire shows it: the session and the
+  # kind of the link, or null.
+  defp wire_parent(nil), do: nil
+  defp wire_parent({session, kind}), do: %{"session" => session, "kind" => kind}
 
   # The codes of the Hub operations and of `sessions.saved`, with the text
   # of the code; a name that another project of the user has is
@@ -348,7 +372,12 @@ defmodule Helyx.Hub.Access do
   end
 
   def result(arg, auth, "start", params, %{"session" => id} = result) do
-    start = %{session_id: id, cwd: params["cwd"], model: Map.get(params, "model")}
+    start = %{
+      session_id: id,
+      cwd: params["cwd"],
+      model: Map.get(params, "model"),
+      thread_of: Map.get(params, "thread_of")
+    }
 
     case Hub.call(arg.hub, {:started, auth, start, session_pid(arg, id)}) do
       :ok -> {:ok, result}

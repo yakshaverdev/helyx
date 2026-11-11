@@ -1,5 +1,5 @@
 {
-  "protocol": 10,
+  "protocol": 11,
   "cases": [
     {"name": "a turn after a tail snapshot",
      "steps": [

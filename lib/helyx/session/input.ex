@@ -78,17 +78,39 @@ defmodule Helyx.Session.Input do
   # The call id bound keeps the header far under the head that a scan reads.
   @max_call_id_bytes 256
 
-  defp parent(nil), do: {:ok, nil}
+  @doc false
+  # The parent link of a start: `%{session_id:, call_id:}`. The option takes
+  # only this map, so a header map is refused here and read by
+  # `header_parent/1` (docs/features/agent-tool.md).
+  @spec parent(term()) :: {:ok, Helyx.Sessions.Live.parent()} | {:error, :invalid_parent}
+  def parent(nil), do: {:ok, nil}
 
-  defp parent(%{session_id: session_id, call_id: call_id} = parent)
-       when map_size(parent) == 2 and is_binary(call_id) and
-              byte_size(call_id) in 1..@max_call_id_bytes do
+  def parent(%{session_id: session_id, call_id: call_id} = parent)
+      when map_size(parent) == 2,
+      do: parent?(session_id, call_id)
+
+  def parent(_parent), do: {:error, :invalid_parent}
+
+  @doc false
+  # The parent link of the header of a session file, which has string keys:
+  # `%{"session_id" => id, "call_id" => id}`. A caller drops a link that
+  # fails, so a damaged header link costs the session no resume.
+  def header_parent(nil), do: {:ok, nil}
+
+  def header_parent(%{"session_id" => session_id, "call_id" => call_id} = header)
+      when map_size(header) == 2,
+      do: parent(%{session_id: session_id, call_id: call_id})
+
+  def header_parent(_link), do: {:error, :invalid_parent}
+
+  defp parent?(session_id, call_id)
+       when is_binary(call_id) and byte_size(call_id) in 1..@max_call_id_bytes do
     if Helyx.Session.Id.valid?(session_id) and String.valid?(call_id),
-      do: {:ok, parent},
+      do: {:ok, %{session_id: session_id, call_id: call_id}},
       else: {:error, :invalid_parent}
   end
 
-  defp parent(_parent), do: {:error, :invalid_parent}
+  defp parent?(_session_id, _call_id), do: {:error, :invalid_parent}
 
   defp tools(nil), do: {:ok, nil}
 

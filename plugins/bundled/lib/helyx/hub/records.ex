@@ -5,6 +5,7 @@ defmodule Helyx.Hub.Records do
   # 7, 8). The caller checked the params and ran the existence check of
   # decision 8; each request first checks the credential, as `Helyx.Hub.Rules`.
 
+  alias Helyx.Hub.Live, as: HubLive
   alias Helyx.Hub.{Params, Rules}
   alias Helyx.Session.File.Scan.Summary
   alias Helyx.Sessions.Live
@@ -111,22 +112,26 @@ defmodule Helyx.Hub.Records do
 
   # A Live of the feed writes the row of its session, or moves the model and
   # `active_at` of the row it has (decision 8). A write that fails is dropped:
-  # the repair path writes the row the next time Hub sees the session.
+  # the repair path writes the row the next time Hub sees the session. A
+  # parent link goes in a new row only.
   def seen(%Live{} = live, deadline, %{store: mod, db: db} = state) do
     if Params.record_fields?(live.cwd, live.model) do
       now = System.os_time(:second)
 
       mod.seen_record(
         db,
-        %{
-          session_id: live.id,
-          owner: state.default_owner_id,
-          cwd: live.cwd,
-          model: live.model,
-          prompt: "",
-          active_at: now,
-          created_at: now
-        },
+        Map.merge(
+          %{
+            session_id: live.id,
+            owner: state.default_owner_id,
+            cwd: live.cwd,
+            model: live.model,
+            prompt: "",
+            active_at: now,
+            created_at: now
+          },
+          parent(live.parent)
+        ),
         deadline
       )
     else
@@ -145,21 +150,30 @@ defmodule Helyx.Hub.Records do
          mod.record(db, session_id) == {:error, :not_found} do
       now = System.os_time(:second)
 
-      record = %{
-        session_id: session_id,
-        owner: state.default_owner_id,
-        cwd: found.cwd,
-        model: found.model,
-        prompt: "",
-        active_at: now,
-        created_at: now
-      }
+      record =
+        Map.merge(
+          %{
+            session_id: session_id,
+            owner: state.default_owner_id,
+            cwd: found.cwd,
+            model: found.model,
+            prompt: "",
+            active_at: now,
+            created_at: now
+          },
+          parent(Map.get(found, :parent))
+        )
 
       _ = mod.ensure_records(db, [record], deadline)
     end
 
     :ok
   end
+
+  # The columns of the parent link: both, or neither, so the pair rule of the
+  # store holds (hub.md, "Store schema").
+  defp parent(nil), do: %{parent_id: nil, parent_kind: nil}
+  defp parent(%{session_id: id}), do: %{parent_id: id, parent_kind: "child"}
 
   # The files of the scan of Core, for the default owner only, become rows
   # before the page reads them (decision 8). Each file gives its own prompt
@@ -205,38 +219,21 @@ defmodule Helyx.Hub.Records do
   defp cursor(row), do: "#{row.updated_at}:#{row.session_id}"
 
   # The record of the session. A found session whose row the store did not
-  # write, because the write failed or passed its deadline, answers the record
-  # of the default owner with no times: the existence check confirmed the
-  # session, so the answer is not a refusal, and the next get writes the row
-  # (decision 8).
+  # write, because the write failed or passed its deadline, answers
+  # `failed`: the record no longer has a `stored` field to tell a stored row
+  # from one the store does not hold, so it does not answer a record that it
+  # cannot read back (decision 8).
   defp view(session_id, user, %{store: mod, db: db} = state) do
     case mod.record(db, session_id) do
       {:ok, row} -> with {:ok, [view]} <- views([row], user, state), do: {:ok, view}
-      {:error, :not_found} -> unwritten_view(session_id, state)
+      {:error, :not_found} -> {:error, :failed}
       error -> error
     end
   end
 
-  defp unwritten_view(session_id, %{store: mod, db: db} = state) do
-    with {:ok, owner} <- mod.user(db, state.default_owner_id) do
-      {:ok,
-       %{
-         session: session_id,
-         owner: Map.take(owner, [:id, :name]),
-         project: nil,
-         title: "",
-         labels: [],
-         visibility: "private",
-         archived: false,
-         stored: false,
-         created_at: nil,
-         updated_at: nil
-       }}
-    end
-  end
-
-  # A record as the wire shows it: the project only for its owner.
-  defp views(rows, user, %{store: mod, db: db}) do
+  # A record as the wire shows it: the project only for its owner, and the
+  # status derived from the live set, never stored (decision 8).
+  defp views(rows, user, %{store: mod, db: db} = state) do
     with {:ok, labels} <- mod.labels(db, Enum.map(rows, & &1.session_id)),
          {:ok, users} <- mod.users(db) do
       names = Map.new(users, &{&1.id, &1.name})
@@ -251,11 +248,19 @@ defmodule Helyx.Hub.Records do
            labels: Map.get(labels, row.session_id, []),
            visibility: row.visibility,
            archived: row.archived,
-           stored: true,
            created_at: row.created_at,
-           updated_at: row.updated_at
+           updated_at: row.updated_at,
+           cwd: row.cwd,
+           model: row.model,
+           prompt: row.prompt,
+           active_at: row.active_at,
+           parent: parent_link(row),
+           status: HubLive.status(state, row.session_id)
          }
        end)}
     end
   end
+
+  defp parent_link(%{parent_id: nil}), do: nil
+  defp parent_link(%{parent_id: id, parent_kind: kind}), do: {id, kind}
 end

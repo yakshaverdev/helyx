@@ -121,9 +121,10 @@ defmodule Helyx.Hub.Server do
   end
 
   # The Live of the feed, and the row that it writes: the write waits for
-  # nobody (decision 8).
+  # nobody (decision 8). The live entry takes the status, which the record
+  # derives and never stores.
   defp seen(state, %Helyx.Sessions.Live{} = live, pid) do
-    state = Live.watch(state, live.id, pid)
+    state = Live.watch(state, live.id, pid, Atom.to_string(live.status))
     _ = Records.seen(live, System.monotonic_time(:millisecond) + @seen_ms, state)
     state
   end

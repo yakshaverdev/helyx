@@ -190,7 +190,9 @@ defmodule Helyx.Hub do
   `too_many_records`), `Helyx.Sessions.start/2` with `opts`, and the
   `result`, which writes the record of a user who is not the default owner
   (`docs/features/hub.md`, decisions 5 and 14). `opts` needs `:cwd`, a
-  string, else `{:error, :invalid_cwd}`. A Core error comes back as Core
+  string, else `{:error, :invalid_cwd}`; the option `:thread_of`, the id of
+  the calling session, makes the record a thread of it
+  (`docs/features/coordinator.md`). A Core error comes back as Core
   gives it; a `result` that fails stops the session and gives its code. A
   user that no longer exists gives `{:error, :unknown_user}`, and an exit of
   a Hub call `{:error, :timeout}`.

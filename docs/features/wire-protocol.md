@@ -132,7 +132,7 @@ The schema below is the contract. The test of #660 computes the SHA-256 of the l
 
 <!-- wire-schema:start -->
 ```text
-protocol 10
+protocol 11
 
 notation: {k: T} an object; k? may be absent (absent = null or false);
   T | U either; [T] a list; "x" that string; int a JSON integer >= 0;
@@ -248,7 +248,11 @@ user     = {id: string, name: string}
 # project: null for a user who does not own the record (the project is the owner's)
 record   = {session: string, owner: user, project: string | null, title: string,
             labels: [string], visibility: "private" | "hub", archived: bool,
-            stored: bool, created_at: int | null, updated_at: int | null}
+            created_at: int, updated_at: int, cwd: string, model: string,
+            prompt: string, active_at: int, parent: parent | null,
+            status: "idle" | "running" | "stopped"}
+# the link of a child to the call that started it, or of a thread to its session
+parent   = {session: string, kind: "child" | "thread"}
 project  = {id: string, name: string, created_at: int}
 token    = {id: string, name: string, created_at: int}
 schedule = {id: string, session: string, at: int, every: int | null, prompt: string,
@@ -342,7 +346,7 @@ Notes on the codec:
 
 ## Conformance fixtures
 
-`test/fixtures/wire/` holds fixtures of protocol 10 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, and the TUI tests run the server frames and the folds against the client and its view model, so the fixtures and the Elixir code cannot drift.
+`test/fixtures/wire/` holds fixtures of protocol 11 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, and the TUI tests run the server frames and the folds against the client and its view model, so the fixtures and the Elixir code cannot drift.
 
 What this doc does not pin down for an implementation that does not run on the BEAM. Each is open, not decided here:
 
@@ -370,6 +374,7 @@ What this doc does not pin down for an implementation that does not run on the B
 14. **Protocol 7** (#492, `docs/features/mcp-client.md`). Protocol 8 adds the event `tools_change` with `data.tools_change`, the activated deferred tool names in drop order (the first name leaves first when the session drops one for its cap; a client only shows the list), and the snapshot field `activated`, the same list; nothing else changes. A client of protocol 7 gets `refused` and the close `4426`, and the fixtures name protocol 8.
 15. **Protocol 8** (#921, `docs/features/hub.md`, decision 17). Protocol 9 adds the event subscriptions of a Hub: the operations `hub.subscriptions.list`, `hub.subscriptions.create`, and `hub.subscriptions.delete`, their params and results, the shape `subscription`, and the error codes `too_many_event_subscriptions` and `unknown_subscription`; the webhook endpoint itself is HTTP beside the WebSocket upgrade and carries no frame. A client of protocol 8 gets `refused` and the close `4426`, and the fixtures name protocol 9.
 16. **Protocol 9** (review of 2026-11-11). Protocol 10 puts `older`, the count of the messages before the first of the list, in place of `more` in the snapshot and in the result of `history`: a client derives "more" from `older > 0`. It removes the origin kind `"unknown"`, since no session file from before #649 is read. A client of protocol 9 gets `refused` and the close `4426`, and the fixtures name protocol 10. `test/fixtures/wire/bounds.json` holds the numbers of "Bounds" and the error codes once; the server reads it (`Helyx.Transport.WebSocket.Bounds`).
+17. **Protocol 10** (E.2, `docs/features/hub.md`, decision 8). Protocol 11 gives `record` what a sidebar needs in one call: `cwd`, `model`, `prompt`, `active_at`, `parent`, and the derived `status`; it removes `stored`, which was always true, so `created_at` and `updated_at` are always integers. A client of protocol 10 gets `refused` and the close `4426`, and the fixtures name protocol 11.
 
 ## Bounds
 

@@ -37,6 +37,7 @@ defmodule Helyx.Session.Server.Open do
          state
          | model: ref,
            provider: provider,
+           parent: resumed.parent,
            save: {:saving, resumed.file},
            transcript: Transcript.repair(resumed.messages),
            sync: {:replay, resumed.messages},

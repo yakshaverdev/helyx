@@ -37,6 +37,8 @@ defmodule Helyx.Hub.Store do
   @typedoc """
   A record row (`docs/features/hub.md`, "Store schema"). `prompt` is the
   first user text that Hub authorized, cut to 1,024 bytes, or `""`.
+  `parent_id` is the session of the parent link and `parent_kind` is
+  `"child"` or `"thread"`, both nil for a session with no link.
   """
   @type record :: %{
           session_id: String.t(),
@@ -50,7 +52,9 @@ defmodule Helyx.Hub.Store do
           visibility: String.t(),
           archived: boolean(),
           created_at: integer(),
-          updated_at: integer()
+          updated_at: integer(),
+          parent_id: String.t() | nil,
+          parent_kind: String.t() | nil
         }
 
   @typedoc "The access of a session that has a row."
@@ -119,26 +123,30 @@ defmodule Helyx.Hub.Store do
 
   @doc """
   Inserts a new row with `session_id`, `owner`, `cwd`, `model`, `prompt`,
-  `active_at`, and `created_at`, unless its owner holds `max` rows. The row
-  of the id that a session start already wrote through the feed takes the
-  owner and the session facts of this start.
+  `active_at`, `created_at`, and the optional parent link, unless its owner
+  holds `max` rows; `:none` means no cap, for the rows of the default owner.
+  The row of the id that a session start already wrote through the feed takes
+  the owner, the session facts, and a parent link of this start; a start with
+  no link keeps the parent of that row.
   """
-  @callback put_record(t(), record :: map(), max :: pos_integer(), deadline()) ::
+  @callback put_record(t(), record :: map(), max :: pos_integer() | :none, deadline()) ::
               :ok | {:error, :too_many_records | :timeout | :failed}
 
   @doc """
   Writes the row that a `Helyx.Sessions.Live` of the feed names: inserts a
-  row of the default owner, or, for a session that has one, sets its `model`
-  and `active_at`. The owner, title, labels, project, prompt, and
-  `created_at` of an existing row stay. A row of the default owner has no
-  cap: the session files bound it (hub.md, decision 8).
+  row of the default owner, with the parent link of the session, or, for a
+  session that has one, sets its `model` and `active_at`. The owner, title,
+  labels, project, prompt, `created_at`, and parent of an existing row stay.
+  A row of the default owner has no cap: the session files bound it (hub.md,
+  decision 8).
   """
   @callback seen_record(t(), record :: map(), deadline()) ::
               :ok | {:error, :busy | :failed | :timeout}
 
   @doc """
-  Inserts each row that a session with no row names, and changes no existing
-  row: at most 256 rows, the bound of the caller (hub.md, decision 8).
+  Inserts each row that a session with no row names, with its parent link,
+  and changes no existing row: at most 256 rows, the bound of the caller
+  (hub.md, decision 8).
   """
   @callback ensure_records(t(), [record :: map()], deadline()) ::
               :ok | {:error, :busy | :failed | :timeout}

@@ -4,6 +4,7 @@ defmodule Helyx.Tool.CoordinatorTest do
   use ExUnit.Case, async: false
 
   import Helyx.Test.Events, only: [collect_until: 1]
+  import Helyx.Test.HubWake, only: [in_hub: 2]
 
   alias Helyx.{Event, Hub, Message, Session}
   alias Helyx.Message.ToolCall
@@ -175,6 +176,21 @@ defmodule Helyx.Tool.CoordinatorTest do
     test "an empty prompt sends none", context do
       [result] = coordinate(context, nil, [create(%{"folder" => context.dir, "prompt" => ""})])
       assert Message.text(result) =~ ~r/^session \S+ started in .* with the mode echo\.$/
+    end
+
+    test "its record names the calling session as a thread", context do
+      session = coordinator(context, context.owner, [create(%{"folder" => context.dir})])
+      [result] = run(session)
+      id = created_id(result)
+
+      row =
+        in_hub(context.hub, fn state ->
+          {:ok, row} = state.store.record(state.db, id)
+          row
+        end)
+
+      assert %{parent_id: parent_id, parent_kind: "thread"} = row
+      assert parent_id == session.id
     end
   end
 

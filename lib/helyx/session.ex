@@ -74,7 +74,7 @@ defmodule Helyx.Session do
          concurrent = Helyx.Tool.concurrent(tools),
          {:ok, {ref, provider}} <- Input.model(core, Keyword.fetch!(opts, :model), limit),
          :ok <- mkdir(dir, cwd, parent) do
-      state = %State{id: id, core: core, model: ref, provider: provider, cwd: cwd}
+      state = %State{id: id, core: core, model: ref, provider: provider, cwd: cwd, parent: parent}
       init = %{provider_opts: provider_opts, max_output_tokens: limit}
 
       Server.create(

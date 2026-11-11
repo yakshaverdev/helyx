@@ -3,9 +3,10 @@ defmodule Helyx.Tool.SessionCreate do
   The coordinator tool `session_create`: starts an independent session
   that Hub owns, for the user of the calling session, in a folder with a
   mode of the product, and sends it a first prompt. The session is not a
-  child: it has no parent link and outlives the call. The start goes
-  through `Helyx.Hub.start_session/3`, so the caps of the user hold. See
-  `docs/features/coordinator.md`.
+  child: it has no parent link in Core, and its record names the calling
+  session as a thread (`docs/features/coordinator.md`). It outlives the
+  call. The start goes through `Helyx.Hub.start_session/3`, so the caps of
+  the user hold. See `docs/features/coordinator.md`.
   """
 
   @behaviour Helyx.Tool
@@ -71,13 +72,16 @@ defmodule Helyx.Tool.SessionCreate do
       else: {:error, "the folder must be the absolute path of a folder that exists"}
   end
 
-  # The model of the mode, else the model of the calling turn.
+  # The model of the mode, else the model of the calling turn. The thread
+  # link names the calling session: a thread is a coordinator concept, so it
+  # lives in the Hub row and in no header (docs/features/coordinator.md).
   defp start(env, folder, mode_opts) do
     opts = [
       cwd: folder,
       model: mode_opts[:model] || env.context.model,
       model_context: mode_opts[:model_context],
-      tools: mode_opts[:tools]
+      tools: mode_opts[:tools],
+      thread_of: env.context.session_id
     ]
 
     # The start and its record run in a process that a kill of the call
