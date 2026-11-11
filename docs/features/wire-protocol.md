@@ -69,7 +69,7 @@ Every `req` gets one `res`: `ok: true` with the result, or `ok: false` with an e
 | `resume` | `{id}`, or `{cwd}` for the newest session of the folder | `{session}`; a session that runs is attached, not started again | `invalid_cwd`, `not_found`, `invalid_model_ref`, `unknown_provider`, `too_many_sessions`, `start_failed` |
 | `subscribe` | `{session, tail?, after?, answers?}`: `tail` from 1 to 1,000, default 200; `after` is `{instance_id, seq}`; `answers: true` says that this client answers asks (`docs/features/question-tool.md`) | `{sub, replay: [event]}` or `{sub, snapshot}` | `session_not_found`, `too_many_subscriptions` |
 | `unsubscribe` | `{sub}` | `{}` | `unknown_sub` |
-| `history` | `{session, instance_id, before, limit?}`: `before` is a message id; `limit` from 1 to 1,000, default 200 | `{messages: [message], more, next}`, oldest first, all older than `before`; `next` is the `before` of the page before it, null when `more` is false | `session_not_found`, `instance_changed`, `unknown_message` |
+| `history` | `{session, instance_id, before, limit?}`: `before` is a message id; `limit` from 1 to 1,000, default 200 | `{messages: [message], older, next}`, oldest first, all older than `before`; `next` is the `before` of the page before it, null when `older` is 0 | `session_not_found`, `instance_changed`, `unknown_message` |
 | `prompt`, `steer`, `follow_up` | `{session, text, origin?}`; `origin` is `{kind: "product", id}` | `{}` | `session_not_found`, `text_too_large`, `invalid_utf8`, `invalid_origin`, `queue_full`, and for `prompt` also `turn_running`, and under a Hub `forbidden` |
 | `abort` | `{session}` | `{}`; a failed cleanup still gives `{}`, and the `notice` event "abort cleanup failed" tells the clients. The events that the session sent before the abort still come to each subscription, then `turn_end` with `aborted`; no event of the turn follows it. The `{}` and these events have no order (O6) | `session_not_found`, and under a Hub `forbidden` |
 | `set_model` | `{session, model}` | `{}`; the next turn uses it, a running turn keeps its model | `session_not_found`, `invalid_model_ref`, `unknown_provider`, and under a Hub `forbidden` |
@@ -114,10 +114,10 @@ Under a Hub, a `hub.*` operation has the deadline of every other operation, 6,00
 
 ### Join, pages, and replay
 
-- **Tail snapshot.** The newest messages of the transcript, at most `tail` of them and at most 16,777,216 bytes of message content, each message counted by `:erlang.external_size/1`. Then the cut moves to newer messages until the first message is a user or an assistant message, so an assistant message and its tool results stay together. When that leaves no message, the tail is the newest group alone: the last user or assistant message and the messages after it, whatever their count and size. `more` is true when older messages exist.
+- **Tail snapshot.** The newest messages of the transcript, at most `tail` of them and at most 16,777,216 bytes of message content, each message counted by `:erlang.external_size/1`. Then the cut moves to newer messages until the first message is a user or an assistant message, so an assistant message and its tool results stay together. When that leaves no message, the tail is the newest group alone: the last user or assistant message and the messages after it, whatever their count and size. `older` is the count of the older messages that the tail leaves out.
 - **The state in the snapshot.** The snapshot has the full current state, whatever its tail: `turn` with its partial, `model`, `queue`, `persisting`, `seq`, `usage`, and `context`. `usage` and `context` count every message of the transcript, not only the tail. The client then adds each message that a later `message_end` or `tool_execution_end` carries, with the rule of `docs/features/usage-and-limits.md`, "The footer". It adds no message of a `history` page: a page changes neither `usage` nor `context`, and it does not move `seq`.
 - **The rule of ADR 0006 §3, revised.** The snapshot at `seq` equals the loaded suffix of the transcript folded from every event up to `seq`, plus the full current state. The notices stay out, as before: "aborted", "error: …", harness notices, "resumed session". `persisting: false` still makes the not-saved text.
-- **History.** `history` serves the live transcript of the session, not the file, so it holds the unsaved messages and the interrupted results of a resume. It returns the messages before `before`, with the limits and the cut of the tail, `limit` in place of `tail`, and the explicit cursor `next`: the id of the first message of the page while `more` is true, else null. The cursor of the tail snapshot is the id of its first message. `instance_changed` means that the session started again: the client subscribes again for a new snapshot.
+- **History.** `history` serves the live transcript of the session, not the file, so it holds the unsaved messages and the interrupted results of a resume. It returns the messages before `before`, with the limits and the cut of the tail, `limit` in place of `tail`, and the explicit cursor `next`: the id of the first message of the page while `older` is above 0, else null. The cursor of the tail snapshot is the id of its first message. `instance_changed` means that the session started again: the client subscribes again for a new snapshot.
 - **Replay.** `subscribe` with `after` returns the events after `seq` from the replay ring, contiguous, then the live events follow with no gap and no duplicate. When `instance_id` is not the current instance, the events after `seq` are no longer all in the ring, or `seq` is above the last event, the result is a tail snapshot instead, with `tail` of the request.
 
 ### Codec
@@ -223,7 +223,7 @@ result.sessions.saved = {items: [saved_session], next: string | null}
 result.start          = {session: string}
 result.resume         = {session: string}
 result.subscribe      = {sub: string, replay: [event]} | {sub: string, snapshot: snapshot}
-result.history        = {messages: [message], more: bool, next: string | null}
+result.history        = {messages: [message], older: int, next: string | null}
 result.unsubscribe, result.prompt, result.steer, result.follow_up,
 result.abort, result.set_model, result.compact, result.stop, result.answer = {}
 result.hub.me              = {user: user}
@@ -260,7 +260,7 @@ subscription = {id: string, session: string, label: string, template: string,
                 last_outcome: "delivered" | "missed" | "refused" | "unconfirmed" | null,
                 path: string}
 
-snapshot = {instance_id: string, seq: int, messages: [message], more: bool,
+snapshot = {instance_id: string, seq: int, messages: [message], older: int,
             turn: turn | null, model: string, queue: queue, persisting: bool,
             usage: totals, context: context | null, asks: [ask],
             ui_blocks: [shown_block], activated: [string]}

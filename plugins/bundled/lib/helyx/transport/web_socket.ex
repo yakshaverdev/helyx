@@ -41,7 +41,7 @@ defmodule Helyx.Transport.WebSocket do
   # The protocol number and the SHA-256 of the schema in
   # `docs/features/wire-protocol.md`; a schema change needs a new number.
   @protocol 9
-  @schema_sha256 "648155dc9e086a40e2b30a56dbe350651bde2434c3f12fc4a15771f66f714d50"
+  @schema_sha256 "84460cb0d6da9141f6cf8024f45d02af94fc5557de4b987c60e32ca880ee7e1a"
 
   @max_connections 64
   # The webhook endpoint of a Hub (decision 17): one request reads at most
