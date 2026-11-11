@@ -38,10 +38,13 @@ defmodule Helyx.Session.Hands.Term.Hands.Provider do
   end
 
   def check(%{t: :provider_event, instance: instance, id: id, turn: turn, event: event} = term) do
-    if map_size(term) == 5 and Data.id?(instance) and Data.id?(id) and Data.turn_id?(turn) and
-         Event.event?(event),
-       do: {:ok, term},
-       else: :error
+    with true <- map_size(term) == 5,
+         true <- Data.id?(instance) and Data.id?(id) and Data.turn_id?(turn),
+         {:ok, event} <- Event.check(event) do
+      {:ok, %{term | event: event}}
+    else
+      _ -> :error
+    end
   end
 
   def check(

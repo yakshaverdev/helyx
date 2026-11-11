@@ -1,16 +1,19 @@
 defmodule Helyx.Session.Hands.Term do
   @moduledoc false
-  # One term of the hands protocol (ADR 0012, `docs/features/remote-hands.md`):
+  # One term of the hands protocol (ADR 0012, `docs/adr/0012-remote-hands.md`):
   # a tagged map with a `t`, the kind of the term, and the `instance` of the
   # session. `check/1` is the boundary check that a receiver runs, `encode/1`
   # gives the JSON-ready map, and `decode/1` gives the term back after its
   # check. `fits?/2` is the sender's check of one encoded term against the
   # limits of its direction.
   #
-  # The limits are the term limits of ADR 0012 §5. Values counts each scalar,
-  # each key, and each container of the encoded map. An integer over
-  # `max_integer_chars/0` fails the check, as it would fail the decode of the
-  # wire.
+  # The limits are the term limits of ADR 0012 §5. Runner to server carries the
+  # wire limits of `Helyx.Transport.WebSocket.Bounds.get("request_bytes")` and
+  # `"request_values"` (in `plugins/bundled`, which Core cannot call); server to
+  # runner carries the owner decision on #927: 64 MiB and 1,048,576 values, so
+  # a long session sends its full context to the runner. `values/1` counts the
+  # way the wire's decode bounds do. An integer over `max_integer_chars/0` fails
+  # the check, as it would fail the decode of the wire.
 
   alias Helyx.Message
   alias Helyx.Session.Hands.Term.{Answer, Data, Hands, Session}
@@ -28,8 +31,8 @@ defmodule Helyx.Session.Hands.Term do
 
   @by_name Map.new(@kinds, fn {tag, {group, name}} -> {name, {group, tag}} end)
 
-  @session_to_hands %{bytes: 26_214_400, values: 65_536}
-  @hands_to_session %{bytes: 67_108_864, values: 1_048_576}
+  @session_to_hands %{bytes: 67_108_864, values: 1_048_576}
+  @hands_to_session %{bytes: 26_214_400, values: 65_536}
 
   @doc "The limit of one term in `direction`: its joined bytes and its values."
   @spec limit(:session_to_hands | :hands_to_session) :: %{
@@ -121,7 +124,7 @@ defmodule Helyx.Session.Hands.Term do
   # The values of an encoded term: each scalar, each key, and each container.
   @spec values(term()) :: pos_integer()
   def values(value) when is_map(value) do
-    1 + Enum.reduce(value, 0, fn {key, item}, sum -> sum + 1 + values(key) + values(item) end)
+    1 + Enum.reduce(value, 0, fn {_key, item}, sum -> sum + 1 + values(item) end)
   end
 
   def values(value) when is_list(value), do: 1 + Enum.reduce(value, 0, &(values(&1) + &2))

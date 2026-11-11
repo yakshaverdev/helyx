@@ -2,14 +2,15 @@ defmodule Helyx.Session.Hands.TermTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias Helyx.{Message, Usage}
+  alias Helyx.{Context, Message, Usage}
   alias Helyx.Session.Hands.Term
+  alias Helyx.Session.Input
 
   @id "0123456789ab"
   @call %Message.ToolCall{id: "call-1", name: "read", arguments: %{"path" => "a"}}
   @tool_spec %{name: "read", description: "Read a file", parameters: %{"type" => "object"}}
   @context %{session_id: @id, model: "fake/echo", provider_opts: [x: 1], model_context: nil}
-  @usage %Usage{input: 1, output: 2}
+  @usage %Usage{input: 1, output: 2, cost: 0.5, cost_kind: :list}
 
   @message %Message{
     role: :user,
@@ -229,6 +230,7 @@ defmodule Helyx.Session.Hands.TermTest do
           specs: [@tool_spec],
           concurrent: ["read"],
           providers: ["fake"],
+          hooks: %{before_tool: [{"MyApp.Hook", 5_000}]},
           folder: "/tmp"
         },
         wrong: {"folder", <<0xFF>>},
@@ -505,6 +507,7 @@ defmodule Helyx.Session.Hands.TermTest do
         specs: [],
         concurrent: [],
         providers: List.duplicate("a", providers),
+        hooks: %{},
         folder: "/tmp"
       }
     end
@@ -548,14 +551,326 @@ defmodule Helyx.Session.Hands.TermTest do
 
     at = Integer.pow(10, max - 1)
     over = Integer.pow(10, max)
-    assert Integer.to_string(at) |> byte_size() == max
+    negative_at = -(Integer.pow(10, max - 2) * 10 - 1)
+    negative_over = -Integer.pow(10, max - 1)
+    assert byte_size(Integer.to_string(at)) == max
+    assert byte_size(Integer.to_string(negative_at)) == max
+    assert byte_size(Integer.to_string(negative_over)) == max + 1
 
     assert {:ok, _term} = Term.check(term.(at))
-    assert {:ok, _term} = Term.check(term.(-at))
+    assert {:ok, _term} = Term.check(term.(negative_at))
     assert :error = Term.check(term.(over))
-    assert :error = Term.check(term.(-over))
+    assert :error = Term.check(term.(negative_over))
 
     map = encode!(term.(at))
     assert :error = Term.decode(Map.put(map, "provider_opts", [["x", over]]))
+  end
+
+  test "the runner-to-server limits are the smaller direction" do
+    assert Term.limit(:hands_to_session).bytes < Term.limit(:session_to_hands).bytes
+    assert Term.limit(:hands_to_session).values < Term.limit(:session_to_hands).values
+  end
+
+  test "a context message needs no id and no origin" do
+    message = Message.user("hi")
+    checked = round_trip(provider_request(%Context{system: nil, messages: [message], tools: []}))
+    assert checked.request.context.messages == [message]
+
+    with_id = %{Message.user("hi") | id: @id}
+    checked = round_trip(provider_request(%Context{system: nil, messages: [with_id], tools: []}))
+    assert checked.request.context.messages == [with_id]
+  end
+
+  test "a context message over the block bound or with a wrong is_error is refused" do
+    blocks = List.duplicate(%Message.Text{text: "x"}, Helyx.Session.Turn.max_message_blocks() + 1)
+    context = %Context{system: nil, messages: [%Message{role: :user, content: blocks}], tools: []}
+    assert :error = Term.check(provider_request(context))
+
+    assistant = %Message{role: :assistant, content: [%Message.Text{text: "x"}], is_error: true}
+    assert :error = Term.check(provider_request(%{context | messages: [assistant]}))
+  end
+
+  test "a session message over the block bound or with a wrong is_error is refused" do
+    blocks = List.duplicate(%Message.Text{text: "x"}, Helyx.Session.Turn.max_message_blocks() + 1)
+    user = %Message{role: :user, content: blocks, id: @id, origin: %{kind: :user, id: nil}}
+
+    assert :error =
+             Term.check(%{t: :background_end, instance: @id, id: @id, message: user})
+
+    assistant = %Message{role: :assistant, content: [%Message.Text{text: "x"}], is_error: true}
+
+    assert :error =
+             Term.check(%{t: :background_end, instance: @id, id: @id, message: assistant})
+  end
+
+  test "a hook record keeps the bounds of the code" do
+    long = String.duplicate("a", 5_000)
+
+    for {point, outcome} <- [
+          {:before_tool, {:answer, {:deny, long}}},
+          {:before_tool, {:answer, {:allow, long}}},
+          {:before_settle, {:failed, long}}
+        ] do
+      checked = round_trip(hook_answer(hook_record(point, outcome)))
+      assert checked.record.outcome == outcome
+    end
+
+    replace = {:answer, {:replace, {:ok, String.duplicate("a", 70_000)}}}
+    checked = round_trip(hook_answer(hook_record(:after_tool, replace)))
+    assert {:answer, {:replace, {:ok, text}}} = checked.record.outcome
+    assert byte_size(text) <= Message.max_result_bytes()
+  end
+
+  test "a malformed provider event is refused, not raised" do
+    bad_call = %Message.ToolCall{id: "", name: "read", arguments: %{}}
+
+    assert :error =
+             Term.check(provider_event(%{kind: :tool_request, call: bad_call, rejection: nil}))
+
+    big = Integer.pow(10, 100)
+    call = %Message.ToolCall{id: "call-1", name: "read", arguments: %{"n" => big}}
+
+    assert :error =
+             Term.check(provider_event(%{kind: :stream, event: %{kind: :tool_call, call: call}}))
+
+    extra = provider_event(%{kind: :approval, approval: "a", call: "c", extra: 1})
+    assert :error = Term.check(extra)
+    assert :error = Term.encode(extra)
+    assert :error = Term.fits?(extra, :hands_to_session)
+  end
+
+  test "a provider tool call event keeps the checked call" do
+    checked =
+      round_trip(provider_event(%{kind: :stream, event: %{kind: :tool_call, call: @call}}))
+
+    assert checked.event.event == %{kind: :tool_call, call: @call}
+  end
+
+  test "a tool request carries its rejection reason" do
+    shape = %{kind: :tool_request, call: @call, rejection: "the arguments are over the bound"}
+    checked = round_trip(provider_event(shape))
+    assert checked.event.rejection == "the arguments are over the bound"
+    assert :error = Term.check(provider_event(%{shape | rejection: 1}))
+  end
+
+  test "a usage with a cost round-trips" do
+    usage = %Usage{input: 1, output: 2, cost: 0.5, cost_kind: :list}
+
+    start = %{
+      t: :provider_start,
+      instance: @id,
+      provider: "fake",
+      id: @id,
+      model: "m",
+      tools: [],
+      session: @id,
+      resume_id: nil,
+      resume_usage: usage
+    }
+
+    assert round_trip(start).resume_usage.cost == 0.5
+
+    done = provider_event(%{kind: :end, terminal: %{kind: :done, stop: :end_turn, usage: usage}})
+    assert round_trip(done).event.terminal.usage.cost == 0.5
+
+    message = %Message{
+      role: :assistant,
+      content: [%Message.Text{text: "hi"}],
+      id: @id,
+      usage: usage
+    }
+
+    checked = round_trip(%{t: :background_end, instance: @id, id: @id, message: message})
+    assert checked.message.usage.cost == 0.5
+  end
+
+  test "a duration, a limit, and a byte count have an upper bound" do
+    big = Integer.pow(10, 5_000)
+
+    open = %{
+      t: :open,
+      instance: @id,
+      session: @id,
+      only: nil,
+      provider_opts: [],
+      max_output_tokens: big
+    }
+
+    assert :error = Term.check(open)
+    assert {:ok, _term} = Term.check(%{open | max_output_tokens: Input.max_output_tokens()})
+    assert :error = Term.check(%{open | max_output_tokens: Input.max_output_tokens() + 1})
+
+    assert :error = Term.check(%{t: :stop, instance: @id, release_ms: big})
+    assert {:ok, _term} = Term.check(%{t: :stop, instance: @id, release_ms: 20_000})
+
+    read = %{t: :read, instance: @id, read: :read, paths: ["/a"], max_bytes: big}
+    assert :error = Term.check(read)
+
+    request = %{
+      t: :provider_request,
+      instance: @id,
+      id: @id,
+      from: @id,
+      request: %{kind: :interrupt, turn: @id},
+      ms: big
+    }
+
+    assert :error = Term.check(request)
+    assert {:ok, _term} = Term.check(%{request | ms: 5_000})
+  end
+
+  test "tool call arguments are an object" do
+    for arguments <- [[1], "text", nil, 5] do
+      term = %{
+        t: :call,
+        instance: @id,
+        turn: @id,
+        call: %{@call | arguments: arguments},
+        context: @context
+      }
+
+      assert :error = Term.check(term), "arguments #{inspect(arguments)}"
+    end
+
+    assert {:ok, _term} =
+             Term.check(%{t: :call, instance: @id, turn: @id, call: @call, context: @context})
+  end
+
+  test "a check returns the cut value" do
+    long = String.duplicate("a", 70_000)
+
+    result = %{
+      t: :result,
+      instance: @id,
+      turn: @id,
+      call: "call-1",
+      status: :ok,
+      text: long,
+      ui_blocks: [],
+      started: false,
+      task: nil
+    }
+
+    checked = round_trip(result)
+    assert checked.text != long
+    assert byte_size(checked.text) <= Message.max_result_bytes()
+
+    checked =
+      round_trip(
+        provider_event(%{
+          kind: :stream,
+          event: %{kind: :tool_result, call: "c", result: {:ok, long}}
+        })
+      )
+
+    assert {:ok, text} = checked.event.event.result
+    assert byte_size(text) <= Message.max_result_bytes()
+
+    block = %{"kind" => "note", "text" => long}
+
+    checked =
+      round_trip(
+        provider_event(%{
+          kind: :stream,
+          event: %{kind: :ui_block, call: "c", key: "k", block: block}
+        })
+      )
+
+    {:ok, bytes} = Message.encoded_size(checked.event.event.block)
+    assert bytes <= Helyx.UIBlock.max_bytes()
+
+    message = %Message{
+      role: :tool_result,
+      content: [%Message.Text{text: long}],
+      id: @id,
+      tool_call_id: "c",
+      tool_name: "read",
+      is_error: false
+    }
+
+    checked = round_trip(%{t: :background_end, instance: @id, id: @id, message: message})
+    assert [%Message.Text{text: text}] = checked.message.content
+    assert byte_size(text) <= Message.max_result_bytes()
+  end
+
+  test "a capability report names the hooks" do
+    hooks = %{before_tool: [{"MyApp.Hook", 5_000}], before_settle: [{"Other.Hook", 1}]}
+
+    term = %{
+      t: :open_answer,
+      instance: @id,
+      specs: [],
+      concurrent: [],
+      providers: [],
+      hooks: hooks,
+      folder: "/tmp"
+    }
+
+    checked = round_trip(term)
+    assert checked.hooks == hooks
+
+    assert :error = Term.check(%{term | hooks: %{nope: []}})
+    assert :error = Term.check(%{term | hooks: %{before_tool: [{"MyApp.Hook", 0}]}})
+  end
+
+  test "values counts the way the wire does" do
+    assert Term.values(%{"a" => 1}) == 3
+    assert Term.values([1, 2]) == 3
+    assert Term.values(1) == 1
+    assert Term.values(%{"a" => %{"b" => 1}}) == 5
+  end
+
+  test "an atom stop reason in a JSON map is refused" do
+    settle = %{
+      t: :settle,
+      instance: @id,
+      ref: @id,
+      turn: @id,
+      input: %{session_id: @id, turn_id: @id, stop_reason: :end_turn, cwd: "/tmp"},
+      context: @context
+    }
+
+    map = encode!(settle)
+    input = Map.put(map["input"], "stop_reason", :end_turn)
+    assert :error = Term.decode(Map.put(map, "input", input))
+
+    done = provider_event(%{kind: :end, terminal: %{kind: :done, stop: :end_turn, usage: nil}})
+    map = encode!(done)
+    terminal = Map.put(map["event"]["terminal"], "stop", :end_turn)
+    assert :error = Term.decode(update_in(map["event"], &Map.put(&1, "terminal", terminal)))
+  end
+
+  defp provider_event(event),
+    do: %{t: :provider_event, instance: @id, id: @id, turn: @id, event: event}
+
+  defp provider_request(context) do
+    %{
+      t: :provider_request,
+      instance: @id,
+      id: @id,
+      from: @id,
+      request: %{kind: :turn, turn: @id, context: context},
+      ms: 5_000
+    }
+  end
+
+  defp hook_answer(record), do: %{t: :hook_answer, instance: @id, turn: @id, record: record}
+
+  defp hook_record(point, outcome) do
+    %{
+      point: point,
+      call_id: if(point == :before_settle, do: nil, else: "call-1"),
+      hook: "MyApp.Hook",
+      outcome: outcome,
+      call: %{tool: "read", arguments: "{}", arguments_cut: false},
+      task: @id
+    }
+  end
+
+  defp round_trip(term) do
+    assert {:ok, checked} = Term.check(term)
+    assert {:ok, map} = Term.encode(term)
+    assert {:ok, ^checked} = Term.decode(map)
+    checked
   end
 end

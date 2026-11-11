@@ -5,7 +5,7 @@ defmodule Helyx.Session.Hands.Term.Record do
   # of the call (`Helyx.Session.HookEntry`), and the task that ran it. The `pid`
   # of the hands does not cross; the task id does.
 
-  alias Helyx.Hook
+  alias Helyx.{Hook, Message}
   alias Helyx.Session.Hands.Term.Data
   alias Helyx.Session.{HookEntry, Input}
 
@@ -13,17 +13,30 @@ defmodule Helyx.Session.Hands.Term.Record do
   # The record of a hook answer (`Helyx.Session.Hands.Hooks.answer/3`): the
   # point, the call id, the hook's registration id, the outcome, the record of
   # the call (`Helyx.Session.HookEntry`), and the task that ran it. The `pid`
-  # of the hands does not cross; the task id does.
-  @spec record?(term()) :: boolean()
-  def record?(
+  # of the hands does not cross; the task id does. A reason and a failure text
+  # are any valid UTF-8: the session cuts them for the file. A replace text is
+  # a tool result text, so the check cuts it.
+  @spec check(term()) :: {:ok, map()} | :error
+  def check(
         %{point: point, call_id: call_id, hook: hook, outcome: outcome, call: call, task: task} =
           record
       ) do
-    map_size(record) == 6 and point in Hook.points() and hook?(hook, point, call_id) and
-      outcome?(point, outcome) and call_record?(call) and (is_nil(task) or Data.id?(task))
+    with true <- map_size(record) == 6,
+         true <- point in Hook.points(),
+         true <- hook?(hook, point, call_id),
+         {:ok, outcome} <- checked_outcome(point, outcome),
+         true <- call_record?(call),
+         true <- is_nil(task) or Data.id?(task) do
+      {:ok, %{record | outcome: outcome}}
+    else
+      _ -> :error
+    end
   end
 
-  def record?(_record), do: false
+  def check(_record), do: :error
+
+  @spec record?(term()) :: boolean()
+  def record?(record), do: match?({:ok, _}, check(record))
 
   defp hook?(hook, point, call_id) do
     Data.plugin?(hook) and
@@ -33,33 +46,43 @@ defmodule Helyx.Session.Hands.Term.Record do
       )
   end
 
-  defp outcome?(point, {:failed, how}), do: point in Hook.points() and bounded_text?(how)
+  defp checked_outcome(point, {:failed, how}) do
+    if point in Hook.points() and Data.text?(how), do: {:ok, {:failed, how}}, else: :error
+  end
 
-  defp outcome?(:before_tool, {:answer, :allow}), do: true
+  defp checked_outcome(:before_tool, {:answer, :allow}), do: {:ok, {:answer, :allow}}
 
-  defp outcome?(:before_tool, {:answer, {allow, text}}) when allow in [:allow, :deny],
-    do: bounded_text?(text)
+  defp checked_outcome(:before_tool, {:answer, {allow, text}}) when allow in [:allow, :deny] do
+    if Data.text?(text), do: {:ok, {:answer, {allow, text}}}, else: :error
+  end
 
-  defp outcome?(:after_tool, {:answer, {:replace, {status, text}}}),
-    do: status in [:ok, :error] and bounded_text?(text)
+  defp checked_outcome(:after_tool, {:answer, {:replace, {status, text}}})
+       when status in [:ok, :error] do
+    if Data.text?(text),
+      do: {:ok, {:answer, {:replace, {status, Message.cut_result(text)}}}},
+      else: :error
+  end
 
-  defp outcome?(:before_settle, {:answer, {:continue, text}}),
-    do: is_binary(text) and Input.text(text) == :ok
+  defp checked_outcome(:before_settle, {:answer, {:continue, text}}) do
+    if is_binary(text) and Input.text(text) == :ok,
+      do: {:ok, {:answer, {:continue, text}}},
+      else: :error
+  end
 
-  defp outcome?(_point, _outcome), do: false
+  defp checked_outcome(_point, _outcome), do: :error
 
   defp call_record?(nil), do: true
 
   defp call_record?(%{tool: tool, arguments: arguments, arguments_cut: cut} = call) do
-    map_size(call) == 3 and Data.text?(tool) and bounded_text?(arguments) and is_boolean(cut)
+    map_size(call) == 3 and Data.text?(tool) and arguments?(arguments) and is_boolean(cut)
   end
 
   defp call_record?(_call), do: false
 
-  # The bound of the reason and of the JSON of a hook's arguments is
-  # `Helyx.Session.HookEntry.cut/1`; a text that it would cut is over the
-  # bound.
-  defp bounded_text?(text), do: Data.text?(text) and elem(HookEntry.cut(text), 1) == false
+  # The JSON of a hook's arguments is cut with `Helyx.Session.HookEntry.cut/1`
+  # when the call Task makes the record, so a text that would be cut is over
+  # the bound.
+  defp arguments?(text), do: Data.text?(text) and elem(HookEntry.cut(text), 1) == false
 
   @spec record_to_map(map()) :: map()
   def record_to_map(record) do
@@ -109,15 +132,15 @@ defmodule Helyx.Session.Hands.Term.Record do
          {:ok, point} <- point(point),
          {:ok, outcome} <- to_outcome(outcome),
          {:ok, call} <- to_call_record(call),
-         record = %{
-           point: point,
-           call_id: call_id,
-           hook: hook,
-           outcome: outcome,
-           call: call,
-           task: task
-         },
-         true <- record?(record) do
+         {:ok, record} <-
+           check(%{
+             point: point,
+             call_id: call_id,
+             hook: hook,
+             outcome: outcome,
+             call: call,
+             task: task
+           }) do
       {:ok, record}
     else
       _ -> :error

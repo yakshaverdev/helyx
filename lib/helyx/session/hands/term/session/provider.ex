@@ -46,10 +46,14 @@ defmodule Helyx.Session.Hands.Term.Session.Provider do
         %{t: :provider_request, instance: instance, id: id, from: from, request: request, ms: ms} =
           term
       ) do
-    if map_size(term) == 6 and Data.id?(instance) and Data.id?(id) and Data.id?(from) and
-         Request.request?(request) and is_integer(ms) and ms > 0,
-       do: {:ok, term},
-       else: :error
+    with true <- map_size(term) == 6,
+         true <- Data.id?(instance) and Data.id?(id) and Data.id?(from),
+         true <- Data.integer?(ms),
+         {:ok, request} <- Request.check(request) do
+      {:ok, %{term | request: request}}
+    else
+      _ -> :error
+    end
   end
 
   def check(%{t: :provider_stop, instance: instance, id: id, reason: reason} = term) do

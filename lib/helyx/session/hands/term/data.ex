@@ -15,17 +15,16 @@ defmodule Helyx.Session.Hands.Term.Data do
   @max_id_bytes 64
   def max_id_bytes, do: @max_id_bytes
 
-  # A registration id that is a module name crosses as text; the bound is the
-  # origin id bound of `Helyx.Message` (`@origin_id_max_bytes`).
-  @max_plugin_bytes 256
-  def max_plugin_bytes, do: @max_plugin_bytes
+  # A registration id that is a module name crosses as text; its bound is the
+  # origin id bound of `Helyx.Message`.
+  def max_plugin_bytes, do: Message.max_origin_id_bytes()
 
   # The integer bound of one term (`docs/features/wire-protocol.md`, "Bounds").
   @max_integer_chars 1_024
   def max_integer_chars, do: @max_integer_chars
 
   # A read of the folder: at most this many paths, each at most this many bytes
-  # (`docs/features/remote-hands.md`, "The read of the folder").
+  # (`docs/adr/0012-remote-hands.md`, "The protocol", the read of the folder).
   @max_paths 256
   def max_paths, do: @max_paths
 
@@ -33,9 +32,9 @@ defmodule Helyx.Session.Hands.Term.Data do
   def max_path_bytes, do: @max_path_bytes
 
   @integer_limit 10 ** @max_integer_chars
-  @integer_floor -@integer_limit
-
-  @usage_keys Map.keys(%Usage{}) -- [:__struct__]
+  # A negative integer has one character more: the minus sign. The most
+  # negative value of 1,024 characters is -(10^1023 - 1).
+  @integer_floor -(10 ** (@max_integer_chars - 1))
 
   # The decode helper: the values of `keys` when `map` holds exactly them.
   @spec fields(map(), [String.t()]) :: {:ok, [term()]} | :error
@@ -61,8 +60,7 @@ defmodule Helyx.Session.Hands.Term.Data do
     do: is_binary(value) and byte_size(value) in 1..@max_id_bytes and String.valid?(value)
 
   @spec plugin?(term()) :: boolean()
-  def plugin?(value),
-    do: is_binary(value) and byte_size(value) in 1..@max_plugin_bytes and String.valid?(value)
+  def plugin?(value), do: Message.origin?(%{kind: :hook, id: value})
 
   @spec text?(term()) :: boolean()
   def text?(value), do: is_binary(value) and String.valid?(value)
@@ -144,6 +142,16 @@ defmodule Helyx.Session.Hands.Term.Data do
   end
 
   @doc false
+  # A positive integer within the term integer bound. A duration or a byte
+  # count that has no bound of its own uses this.
+  @spec integer?(term()) :: boolean()
+  def integer?(value), do: is_integer(value) and value > 0 and value < @integer_limit
+
+  @doc false
+  # The bound of `:max_output_tokens` that `Helyx.Session.Input` checks.
+  def max_output_tokens, do: Input.max_output_tokens()
+
+  @doc false
   # A turn id is the session's (1 to 64 bytes) or the provider's id of a turn
   # that it started, which has the bound of a resume id (1 to 256 bytes).
   def turn_id?(value), do: Message.resume_id?(value)
@@ -156,11 +164,14 @@ defmodule Helyx.Session.Hands.Term.Data do
 
   @spec call?(term()) :: boolean()
   def call?(%ToolCall{id: id, name: name, arguments: arguments} = call) do
-    map_size(call) == 4 and call_id?(id) and text?(name) and json?(arguments) and
+    map_size(call) == 4 and call_id?(id) and text?(name) and object?(arguments) and
       not Message.big_integer?(arguments)
   end
 
   def call?(_call), do: false
+
+  # The arguments of a tool call are a JSON object, not any JSON value.
+  defp object?(value), do: is_map(value) and not is_struct(value) and json?(value)
 
   @spec call_to_map(ToolCall.t()) :: map()
   def call_to_map(%ToolCall{id: id, name: name, arguments: arguments}),
@@ -258,37 +269,32 @@ defmodule Helyx.Session.Hands.Term.Data do
   def usage_to_map(%Usage{} = usage), do: Message.JSON.usage_to_map(usage)
 
   @spec to_usage(term()) :: {:ok, Usage.t() | nil} | :error
-  def to_usage(nil), do: {:ok, nil}
+  def to_usage(value), do: Message.JSON.from_usage(value)
 
-  def to_usage(%{} = map) when not is_struct(map) do
-    fields = for key <- @usage_keys, do: {key, map[Atom.to_string(key)]}
+  @doc false
+  # A message of a session (a transcript answer or a background end) crosses
+  # with the session file codec (`Helyx.Session.File.Codec`), which cuts a tool
+  # result text and requires an id. A message of a provider context is read in
+  # `context_message/1`: it has no id and its user message has no origin.
+  @spec message?(term()) :: boolean()
+  def message?(message), do: match?({:ok, _}, message(message))
 
-    with true <- map_size(map) == Enum.count(fields, fn {_key, value} -> value != nil end),
-         {:ok, kind} <- kind(map["cost_kind"]),
-         usage = struct!(Usage, Keyword.put(fields, :cost_kind, kind)),
-         true <- Usage.valid?(usage) do
-      {:ok, usage}
+  @spec message(term()) :: {:ok, Message.t()} | :error
+  def message(%Message{id: id} = message) when is_binary(id) do
+    with true <- id?(id),
+         true <- session_message?(message),
+         map = File.Codec.encode(message),
+         {:ok, _size} <- Message.encoded_size(map) do
+      to_message(map)
     else
       _ -> :error
     end
+  rescue
+    _ -> :error
   end
 
-  def to_usage(_map), do: :error
-
-  defp kind(nil), do: {:ok, nil}
-  defp kind("list"), do: {:ok, :list}
-  defp kind("billed"), do: {:ok, :billed}
-  defp kind(_kind), do: :error
-
-  @doc false
-  # A message crosses with the session file codec (`Helyx.Session.File.Codec`),
-  # so a new message field reaches the term through one codec.
-  @spec message?(term()) :: boolean()
-  def message?(%Message{id: id} = message) do
-    id?(id) and match?({:ok, _}, encoded_message(message))
-  end
-
-  def message?(_message), do: false
+  def message(%{} = map) when not is_struct(map), do: to_message(map)
+  def message(_message), do: :error
 
   @spec message_to_map(Message.t()) :: map()
   def message_to_map(%Message{} = message), do: File.Codec.encode(message)
@@ -296,18 +302,58 @@ defmodule Helyx.Session.Hands.Term.Data do
   @spec to_message(term()) :: {:ok, Message.t()} | :error
   def to_message(%{} = map) when not is_struct(map) do
     message = File.Codec.decode(map)
-    if message?(message), do: {:ok, message}, else: :error
+
+    with true <- session_message?(message),
+         {:ok, _size} <- Message.encoded_size(File.Codec.encode(message)) do
+      {:ok, message}
+    else
+      _ -> :error
+    end
   rescue
     _ -> :error
   end
 
   def to_message(_map), do: :error
 
-  defp encoded_message(message) do
-    Message.encoded_size(File.Codec.encode(message))
+  # A file message always has an id and an origin on a user message; its other
+  # roles have neither. `is_error` and the UI blocks are of a tool result.
+  defp session_message?(%Message{id: id, role: role, origin: origin} = message) do
+    id?(id) and
+      if(role == :user,
+        do: Message.origin?(origin),
+        else: is_nil(origin)
+      ) and
+      (role == :tool_result or (message.is_error == false and message.ui_blocks == []))
+  end
+
+  @doc false
+  # A message of the wire shape, used by the context of a provider request: a
+  # missing id and a missing origin are allowed.
+  @spec context_message?(term()) :: boolean()
+  def context_message?(message), do: match?({:ok, _}, context_message(message))
+
+  @spec context_message(term()) :: {:ok, Message.t()} | :error
+  def context_message(%Message{role: role, is_error: is_error, ui_blocks: blocks} = message) do
+    with true <- role in [:user, :assistant, :tool_result],
+         true <- role == :tool_result or (is_error == false and blocks == []),
+         map = Message.JSON.to_map(message),
+         {:ok, _size} <- Message.encoded_size(map) do
+      to_context_message(map)
+    else
+      _ -> :error
+    end
   rescue
     _ -> :error
   end
+
+  def context_message(%{} = map) when not is_struct(map), do: to_context_message(map)
+  def context_message(_message), do: :error
+
+  @spec context_message_to_map(Message.t()) :: map()
+  def context_message_to_map(%Message{} = message), do: Message.JSON.to_map(message)
+
+  @spec to_context_message(term()) :: {:ok, Message.t()} | :error
+  def to_context_message(map), do: Message.JSON.from_map(map)
 
   @doc false
   # The UI blocks of a result: checked with `Helyx.UIBlock.check_list/1`, which
@@ -401,9 +447,7 @@ defmodule Helyx.Session.Hands.Term.Data do
     defp reason(unquote(Atom.to_string(reason))), do: {:ok, unquote(reason)}
   end
 
-  defp reason(reason) do
-    if reason in Message.stop_reasons(), do: {:ok, reason}, else: :error
-  end
+  defp reason(_reason), do: :error
 
   @doc false
   # The kind of the Task of a call or hook, which an asker names:
@@ -437,7 +481,7 @@ defmodule Helyx.Session.Hands.Term.Data do
   defp asker_kind(_kind), do: :error
 
   @doc false
-  # A path of a read of the folder: valid UTF-8 of 1 to 4,096 bytes.
+  # A path of a read of the folder: valid UTF-8 within `max_path_bytes/0`.
   @spec path?(term()) :: boolean()
   def path?(value),
     do: is_binary(value) and byte_size(value) in 1..@max_path_bytes and String.valid?(value)

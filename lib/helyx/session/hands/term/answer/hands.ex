@@ -5,6 +5,7 @@ defmodule Helyx.Session.Hands.Term.Answer.Hands do
   # read of the folder. The answers that the session sends are in
   # `Helyx.Session.Hands.Term.Answer`.
 
+  alias Helyx.Hook
   alias Helyx.Session.Hands.Term.Data
 
   @kinds [
@@ -29,12 +30,13 @@ defmodule Helyx.Session.Hands.Term.Answer.Hands do
           specs: specs,
           concurrent: concurrent,
           providers: providers,
+          hooks: hooks,
           folder: folder
         } = term
       ) do
-    if map_size(term) == 6 and Data.id?(instance) and Data.list?(specs, &Data.spec?/1) and
+    if map_size(term) == 7 and Data.id?(instance) and Data.list?(specs, &Data.spec?/1) and
          Data.list?(concurrent, &Data.text?/1) and Data.list?(providers, &Data.plugin?/1) and
-         Data.cwd?(folder),
+         hooks?(hooks) and Data.cwd?(folder),
        do: {:ok, term},
        else: :error
   end
@@ -94,6 +96,54 @@ defmodule Helyx.Session.Hands.Term.Answer.Hands do
 
   @file_errors [:enoent, :too_large, :not_regular, :eacces]
 
+  defp hooks?(hooks) do
+    is_map(hooks) and not is_struct(hooks) and
+      Enum.all?(hooks, fn {point, entries} ->
+        point in Hook.points() and
+          Data.list?(entries, fn
+            {hook, ms} -> Data.plugin?(hook) and is_integer(ms) and ms in 1..Hook.max_limit_ms()
+            _entry -> false
+          end)
+      end)
+  end
+
+  defp hooks_to_map(hooks) do
+    hooks
+    |> Enum.sort_by(fn {point, _entries} -> point end)
+    |> Map.new(fn {point, entries} ->
+      {Atom.to_string(point), Enum.map(entries, fn {hook, ms} -> [hook, ms] end)}
+    end)
+  end
+
+  defp to_hooks(%{} = map) when not is_struct(map) do
+    Enum.reduce_while(map, {:ok, %{}}, fn {point, entries}, {:ok, acc} ->
+      with {:ok, point} <- point(point),
+           {:ok, entries} <- to_hook_entries(entries) do
+        {:cont, {:ok, Map.put(acc, point, entries)}}
+      else
+        _ -> {:halt, :error}
+      end
+    end)
+  end
+
+  defp to_hooks(_hooks), do: :error
+
+  defp to_hook_entries(entries) when is_list(entries) do
+    entries
+    |> Enum.reduce_while({:ok, []}, fn
+      [hook, ms], {:ok, acc} -> {:cont, {:ok, [{hook, ms} | acc]}}
+      _entry, _acc -> {:halt, :error}
+    end)
+    |> Data.reversed()
+  end
+
+  defp to_hook_entries(_entries), do: :error
+
+  defp point("before_tool"), do: {:ok, :before_tool}
+  defp point("after_tool"), do: {:ok, :after_tool}
+  defp point("before_settle"), do: {:ok, :before_settle}
+  defp point(_point), do: :error
+
   defp file?(%{path: path, text: text} = file),
     do: map_size(file) == 2 and Data.path?(path) and Data.text?(text)
 
@@ -117,6 +167,7 @@ defmodule Helyx.Session.Hands.Term.Answer.Hands do
        "specs" => Enum.map(term.specs, &Data.spec_to_map/1),
        "concurrent" => term.concurrent,
        "providers" => term.providers,
+       "hooks" => hooks_to_map(term.hooks),
        "folder" => term.folder
      }}
   end
@@ -190,15 +241,17 @@ defmodule Helyx.Session.Hands.Term.Answer.Hands do
 
   @doc false
   def decode(%{"t" => "hands.open_answer", "specs" => specs} = map) when is_list(specs) do
-    Data.decode_fields(map, ~w(instance specs concurrent providers folder), fn
-      [instance, specs, concurrent, providers, folder] ->
-        with {:ok, specs} <- to_specs(specs) do
+    Data.decode_fields(map, ~w(instance specs concurrent providers hooks folder), fn
+      [instance, specs, concurrent, providers, hooks, folder] ->
+        with {:ok, specs} <- to_specs(specs),
+             {:ok, hooks} <- to_hooks(hooks) do
           check(%{
             t: :open_answer,
             instance: instance,
             specs: specs,
             concurrent: concurrent,
             providers: providers,
+            hooks: hooks,
             folder: folder
           })
         end

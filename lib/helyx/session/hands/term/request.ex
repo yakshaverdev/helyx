@@ -4,7 +4,7 @@ defmodule Helyx.Session.Hands.Term.Request do
   # a tagged map; the check and the tuple of `Helyx.Session.ProviderRequest` use
   # the same kinds.
 
-  alias Helyx.Context
+  alias Helyx.{Context, Message}
   alias Helyx.Session.Hands.Term.Data
   alias Helyx.Session.Input
 
@@ -15,47 +15,82 @@ defmodule Helyx.Session.Hands.Term.Request do
   def reply_kind?(kind), do: kind in @reply_kinds
 
   @doc false
-  def request?(%{kind: :turn, turn: turn, context: context} = request) do
-    map_size(request) == 3 and Data.turn_id?(turn) and turn_context?(context)
+  # The boundary check of a request: `{:ok, checked}` or `:error`. The checked
+  # value carries the cut text of a tool result and the checked messages and
+  # blocks of a context.
+  @spec check(term()) :: {:ok, term()} | :error
+  def check(%{kind: :turn, turn: turn, context: context} = request) do
+    with true <- map_size(request) == 3,
+         true <- Data.turn_id?(turn),
+         {:ok, context} <- checked_context(context) do
+      {:ok, %{request | context: context}}
+    else
+      _ -> :error
+    end
   end
 
-  def request?(%{kind: :compact, turn: turn, text: text} = request) do
-    map_size(request) == 3 and Data.turn_id?(turn) and is_binary(text) and Input.text(text) == :ok
+  def check(%{kind: :compact, turn: turn, text: text} = request) do
+    if map_size(request) == 3 and Data.turn_id?(turn) and is_binary(text) and
+         Input.text(text) == :ok,
+       do: {:ok, request},
+       else: :error
   end
 
-  def request?(%{kind: :steer, turn: turn, steer: steer, text: text} = request) do
-    map_size(request) == 4 and Data.turn_id?(turn) and Data.id?(steer) and is_binary(text) and
-      Input.text(text) == :ok
+  def check(%{kind: :steer, turn: turn, steer: steer, text: text} = request) do
+    if map_size(request) == 4 and Data.turn_id?(turn) and Data.id?(steer) and is_binary(text) and
+         Input.text(text) == :ok,
+       do: {:ok, request},
+       else: :error
   end
 
-  def request?(%{kind: :interrupt, turn: turn} = request),
-    do: map_size(request) == 2 and Data.turn_id?(turn)
+  def check(%{kind: :interrupt, turn: turn} = request),
+    do: if(map_size(request) == 2 and Data.turn_id?(turn), do: {:ok, request}, else: :error)
 
-  def request?(%{kind: :tool_result, turn: turn, call: call, result: result} = request) do
-    map_size(request) == 4 and Data.turn_id?(turn) and Data.call_id?(call) and
-      match?({status, text} when status in [:ok, :error] and is_binary(text), result)
+  def check(%{kind: :tool_result, turn: turn, call: call, result: {status, text}} = request) do
+    if map_size(request) == 4 and Data.turn_id?(turn) and Data.call_id?(call) and
+         status in [:ok, :error] and Data.text?(text),
+       do: {:ok, %{request | result: {status, Message.cut_result(text)}}},
+       else: :error
   end
 
-  def request?(%{kind: :context, turn: turn, result: {:ok, context}} = request),
-    do: map_size(request) == 3 and Data.turn_id?(turn) and turn_context?(context)
+  def check(%{kind: :context, turn: turn, result: {:ok, context}} = request) do
+    with true <- map_size(request) == 3,
+         true <- Data.turn_id?(turn),
+         {:ok, context} <- checked_context(context) do
+      {:ok, %{request | result: {:ok, context}}}
+    else
+      _ -> :error
+    end
+  end
 
-  def request?(%{kind: :context, turn: turn, result: {:error, reason}} = request),
-    do: map_size(request) == 3 and Data.turn_id?(turn) and Data.reason?(reason)
+  def check(%{kind: :context, turn: turn, result: {:error, reason}} = request) do
+    if map_size(request) == 3 and Data.turn_id?(turn) and Data.reason?(reason),
+      do: {:ok, request},
+      else: :error
+  end
 
-  def request?(%{kind: :approval, turn: turn, approval: approval, decision: :allow} = request),
-    do: map_size(request) == 4 and Data.turn_id?(turn) and Data.call_id?(approval)
+  def check(%{kind: :approval, turn: turn, approval: approval, decision: :allow} = request) do
+    if map_size(request) == 4 and Data.turn_id?(turn) and Data.call_id?(approval),
+      do: {:ok, request},
+      else: :error
+  end
 
-  def request?(
+  def check(
         %{kind: :approval, turn: turn, approval: approval, decision: {:deny, reason}} = request
-      ),
-      do:
-        map_size(request) == 4 and Data.turn_id?(turn) and Data.call_id?(approval) and
-          Data.reason?(reason)
+      ) do
+    if map_size(request) == 4 and Data.turn_id?(turn) and Data.call_id?(approval) and
+         Data.reason?(reason),
+       do: {:ok, request},
+       else: :error
+  end
 
-  def request?(%{kind: kind} = request) when kind in [:close, :idle_close],
-    do: map_size(request) == 1
+  def check(%{kind: kind} = request) when kind in [:close, :idle_close],
+    do: if(map_size(request) == 1, do: {:ok, request}, else: :error)
 
-  def request?(_request), do: false
+  def check(_request), do: :error
+
+  @doc false
+  def request?(request), do: match?({:ok, _}, check(request))
 
   @doc false
   # The request that `Helyx.Session.ProviderRequest.ask/3` takes, from the
@@ -219,9 +254,7 @@ defmodule Helyx.Session.Hands.Term.Request do
     end)
   end
 
-  defp request(request) do
-    if request?(request), do: {:ok, request}, else: :error
-  end
+  defp request(request), do: check(request)
 
   defp status("ok"), do: {:ok, :ok}
   defp status("error"), do: {:ok, :error}
@@ -229,17 +262,45 @@ defmodule Helyx.Session.Hands.Term.Request do
 
   # --- the context of a turn ---
 
-  defp turn_context?(%Context{system: system, messages: messages, tools: tools} = context) do
-    map_size(context) == 4 and (is_nil(system) or Data.text?(system)) and
-      Data.list?(messages, &Data.message?/1) and Data.list?(tools, &Data.spec?/1)
+  defp checked_context(%Context{system: system, messages: messages, tools: tools} = context) do
+    if map_size(context) == 4 and (is_nil(system) or Data.text?(system)) and
+         is_list(messages) and is_list(tools) do
+      with {:ok, messages} <- checked_messages(messages),
+           {:ok, tools} <- checked_specs(tools) do
+        {:ok, %Context{system: system, messages: messages, tools: tools}}
+      end
+    else
+      :error
+    end
   end
 
-  defp turn_context?(_context), do: false
+  defp checked_context(_context), do: :error
+
+  defp checked_messages(messages) do
+    messages
+    |> Enum.reduce_while({:ok, []}, fn message, {:ok, acc} ->
+      case Data.context_message(message) do
+        {:ok, message} -> {:cont, {:ok, [message | acc]}}
+        :error -> {:halt, :error}
+      end
+    end)
+    |> Data.reversed()
+  end
+
+  defp checked_specs(tools) do
+    tools
+    |> Enum.reduce_while({:ok, []}, fn tool, {:ok, acc} ->
+      if Data.spec?(tool),
+        do: {:cont, {:ok, [tool | acc]}},
+        else: {:halt, :error}
+    end)
+    |> Data.reversed()
+  end
 
   defp turn_context_to_map(%Context{system: system, messages: messages, tools: tools}),
     do: %{
       "system" => system,
-      "messages" => Enum.map(messages, &Data.message_to_map/1),
+      "messages" => Enum.map(messages, &Data.context_message_to_map/1),
       "tools" => Enum.map(tools, &Data.spec_to_map/1)
     }
 
@@ -256,16 +317,14 @@ defmodule Helyx.Session.Hands.Term.Request do
   defp to_turn_context(system, messages, tools) do
     with {:ok, messages} <- to_messages(messages),
          {:ok, tools} <- to_specs(tools) do
-      context = %Context{system: system, messages: messages, tools: tools}
-
-      if turn_context?(context), do: {:ok, context}, else: :error
+      checked_context(%Context{system: system, messages: messages, tools: tools})
     end
   end
 
   defp to_messages(messages) do
     messages
     |> Enum.reduce_while({:ok, []}, fn message, {:ok, acc} ->
-      case Data.to_message(message) do
+      case Data.to_context_message(message) do
         {:ok, message} -> {:cont, {:ok, [message | acc]}}
         :error -> {:halt, :error}
       end

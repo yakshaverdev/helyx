@@ -44,9 +44,13 @@ defmodule Helyx.Session.Hands.Term.Answer do
   end
 
   def check(%{t: :transcript_answer, instance: instance, messages: messages} = term) do
-    if map_size(term) == 3 and Data.id?(instance) and Data.list?(messages, &Data.message?/1),
-      do: {:ok, term},
-      else: :error
+    with true <- map_size(term) == 3,
+         true <- Data.id?(instance),
+         {:ok, messages} <- messages(messages) do
+      {:ok, %{term | messages: messages}}
+    else
+      _ -> :error
+    end
   end
 
   def check(%{t: :transcript_answer, instance: instance, error: error} = term) do
@@ -146,7 +150,7 @@ defmodule Helyx.Session.Hands.Term.Answer do
   def decode(%{"t" => "hands.transcript_answer", "messages" => messages} = map)
       when is_list(messages) do
     Data.decode_fields(map, ~w(instance messages), fn [instance, messages] ->
-      with {:ok, messages} <- to_messages(messages) do
+      with {:ok, messages} <- messages(messages) do
         check(%{t: :transcript_answer, instance: instance, messages: messages})
       end
     end)
@@ -172,14 +176,16 @@ defmodule Helyx.Session.Hands.Term.Answer do
   defp show_error("too_many_blocks"), do: {:ok, :too_many_blocks}
   defp show_error(_error), do: :error
 
-  defp to_messages(messages) do
+  defp messages(messages) when is_list(messages) do
     messages
     |> Enum.reduce_while({:ok, []}, fn message, {:ok, acc} ->
-      case Data.to_message(message) do
+      case Data.message(message) do
         {:ok, message} -> {:cont, {:ok, [message | acc]}}
         :error -> {:halt, :error}
       end
     end)
     |> Data.reversed()
   end
+
+  defp messages(_messages), do: :error
 end

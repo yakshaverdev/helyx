@@ -58,9 +58,13 @@ defmodule Helyx.Session.Hands.Term.Hands do
   end
 
   def check(%{t: :background_end, instance: instance, id: id, message: message} = term) do
-    if map_size(term) == 4 and Data.id?(instance) and Data.id?(id) and Data.message?(message),
-      do: {:ok, term},
-      else: :error
+    with true <- map_size(term) == 4,
+         true <- Data.id?(instance) and Data.id?(id),
+         {:ok, message} <- Data.message(message) do
+      {:ok, %{term | message: message}}
+    else
+      _ -> :error
+    end
   end
 
   def check(%{t: :asker, instance: instance, turn: turn, task: task, asker: asker} = term) do
@@ -116,10 +120,13 @@ defmodule Helyx.Session.Hands.Term.Hands do
   end
 
   def check(%{t: :hook_answer, instance: instance, turn: turn, record: record} = term) do
-    if map_size(term) == 4 and Data.id?(instance) and Data.turn_id?(turn) and
-         Record.record?(record),
-       do: {:ok, term},
-       else: :error
+    with true <- map_size(term) == 4,
+         true <- Data.id?(instance) and Data.turn_id?(turn),
+         {:ok, record} <- Record.check(record) do
+      {:ok, %{term | record: record}}
+    else
+      _ -> :error
+    end
   end
 
   def check(_term), do: :error

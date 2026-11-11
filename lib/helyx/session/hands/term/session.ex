@@ -98,7 +98,7 @@ defmodule Helyx.Session.Hands.Term.Session do
   end
 
   def check(%{t: :stop, instance: instance, release_ms: ms} = term) do
-    if map_size(term) == 3 and Data.id?(instance) and is_integer(ms) and ms > 0,
+    if map_size(term) == 3 and Data.id?(instance) and Data.integer?(ms),
       do: {:ok, term},
       else: :error
   end
@@ -115,9 +115,9 @@ defmodule Helyx.Session.Hands.Term.Session do
   defp only?(names), do: Data.list?(names, &Data.text?/1)
 
   defp limit?(nil), do: true
-  defp limit?(limit), do: is_integer(limit) and limit > 0
+  defp limit?(limit), do: is_integer(limit) and limit in 1..Data.max_output_tokens()
 
-  defp read?(:read, max), do: is_integer(max) and max > 0
+  defp read?(:read, max), do: Data.integer?(max)
   defp read?(:list, max), do: is_nil(max)
   defp read?(_read, _max), do: false
 
