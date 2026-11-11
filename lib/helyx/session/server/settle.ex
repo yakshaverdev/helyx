@@ -2,15 +2,9 @@ defmodule Helyx.Session.Server.Settle do
   @moduledoc false
   # The `before_settle` chain of a session and its continue turn
   # (docs/features/before-settle.md): the only writer of `settle` in
-  # `Helyx.Session.Server.Wait`. A wait after a done turn that is not a
-  # compaction has the chain `due` when a hook is on the point; it starts
-  # when no other part of the wait is left (`TurnLoop.progress/1`), and
-  # the wait lasts until its answer. A continue waits in the queue
-  # (`Helyx.Session.Queue`, `continue`) for the next turn, which
-  # `TurnLoop.start_queued/1` starts after a waiting compaction and ahead
-  # of the queued texts; the queue counts the turns in a row that a
-  # continue started (`hook_turns`), and drops a waiting continue at an
-  # abort or a failed turn.
+  # `Helyx.Session.Server.Wait`. A continue waits in the queue
+  # (`Helyx.Session.Queue`) for the next turn, which `TurnLoop.start_queued/1`
+  # starts after a waiting compaction and ahead of the queued texts.
 
   import Helyx.Session.Server.Events, only: [emit: 4]
 
@@ -23,10 +17,9 @@ defmodule Helyx.Session.Server.Settle do
   # The most turns in a row that a continue starts.
   @max_turns 8
 
-  # The wait that `turn` ended at `outcome` (`Wait.finish/2`). After a done
-  # turn that is not a compaction the chain is due, when a hook is on the
-  # point: the input of the hooks, with the session's folder, and the
-  # context of a call of the turn with no tool.
+  # After a done turn that is not a compaction the chain is due, when a hook
+  # is on the point: the input of the hooks, with the session's folder, and
+  # the context of a call of the turn with no tool.
   @spec finish(State.t(), Turn.t(), term()) :: State.t()
   def finish(state, turn, {:done, stop_reason, _usage}) do
     if turn.compact == nil and is_map_key(Helyx.Core.hooks(state.core), :before_settle) do
@@ -45,8 +38,8 @@ defmodule Helyx.Session.Server.Settle do
 
   def finish(state, _turn, _aborted_or_failed), do: state
 
-  # The due chain starts in the hands, when no other part of its wait is
-  # left; the wait holds the ref of the request.
+  # The due chain starts in the hands when no other part of its wait is left;
+  # the wait holds the ref of the request.
   @spec start(State.t()) :: State.t()
   def start(%State{phase: %Waiting{wait: %Wait{settle: {:due, input, context}} = wait}} = state) do
     ref = Hands.Settle.request(state.hands, wait.turn, input, context)
@@ -54,15 +47,14 @@ defmodule Helyx.Session.Server.Settle do
   end
 
   # The revoke that an abort asked for while another hands request of the
-  # wait was pending: after its answer, the wait revokes the Tasks and
-  # background runs of the ended turn (ADR 0014, invariant 4) before it
-  # ends.
+  # wait was pending: after its answer, the wait revokes the ended turn
+  # (ADR 0014, invariant 4) before it ends.
   @spec revoke(State.t()) :: State.t()
   def revoke(%State{phase: %Waiting{wait: %Wait{settle: :revoke} = wait}} = state),
     do: put_wait(state, settle: nil, hands: Hands.request_revoke(state.hands, wait.turn))
 
-  # The answer of the chain of the current wait. An answer of a chain that
-  # an abort cancelled finds no ref, and is dropped.
+  # An answer of a chain that an abort cancelled finds no ref, and is
+  # dropped.
   @spec answer(State.t(), reference(), term()) :: State.t()
   def answer(%State{phase: %Waiting{wait: %Wait{settle: ref}}} = state, ref, answer),
     do: TurnLoop.progress(continue(put_wait(state, settle: nil), answer))
@@ -83,13 +75,11 @@ defmodule Helyx.Session.Server.Settle do
   defp continue(state, {:continue, module, text}),
     do: Steering.continue(state, Message.user(text, Message.hook_origin(module)))
 
-  # An abort in a wait ends a running chain and, while the chain is due or
-  # runs, revokes the Tasks and background runs of the ended turn (ADR
+  # An abort in a wait ends a running chain and revokes the ended turn (ADR
   # 0014, invariant 4): the wait holds the answer of the hands, as at the
   # abort of a turn. A due chain does not start. With another hands request
   # pending, the wait revokes after its answer (`revoke/1`). A wait with no
-  # chain keeps the done turn's background runs. The queue dropped a
-  # waiting continue (`Queue.abort/1`).
+  # chain keeps the done turn's background runs.
   @spec abort(State.t()) :: State.t()
   def abort(%State{phase: %Waiting{wait: %Wait{settle: ref} = wait}} = state)
       when is_reference(ref),
@@ -105,8 +95,8 @@ defmodule Helyx.Session.Server.Settle do
 
   def abort(%State{phase: %Waiting{}} = state), do: state
 
-  # A failed hook of the current chain of the turn `turn_id` gets a
-  # notice; a later answer, after an abort cancelled the chain, gets none.
+  # A failed hook of the current chain of the turn `turn_id` gets a notice; a
+  # later answer, after an abort cancelled the chain, gets none.
   @spec current?(State.t(), String.t()) :: boolean()
   def current?(%State{phase: %Waiting{wait: %Wait{turn: turn_id, settle: ref}}}, turn_id),
     do: is_reference(ref)

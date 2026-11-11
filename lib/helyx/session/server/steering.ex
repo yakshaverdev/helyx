@@ -1,12 +1,11 @@
 defmodule Helyx.Session.Server.Steering do
   @moduledoc false
   # Applies the steer state of a session (`Helyx.Session.Queue`, `queue` in
-  # `Helyx.Session.Server.State`), its only writer: each change of the
-  # queue counts emits `queue_update`, a taken steer joins the transcript,
-  # a notice is a `:steer_unconfirmed` event, and the texts that an abort
-  # drops go back to the client in one `:queue_dropped` event
-  # (docs/features/session-lifecycle.md, "Steer" and "Turn end"). A
-  # background end joins a turn as a steer, from a queue of its own
+  # `Helyx.Session.Server.State`), its only writer: each change of the queue
+  # counts emits `queue_update`, a taken steer joins the transcript, a notice
+  # is a `:steer_unconfirmed` event, and the texts that an abort drops go
+  # back in one `:queue_dropped` event (docs/features/session-lifecycle.md).
+  # A background end joins a turn as a steer from a queue of its own
   # (docs/features/background-bash.md).
 
   import Helyx.Session.Server.State, only: [ask: 4]
@@ -17,7 +16,7 @@ defmodule Helyx.Session.Server.Steering do
   alias Helyx.Session.Server.Flow.Live
   alias Helyx.Session.Server.{Records, State}
 
-  # Queues a user message. Returns the reply to the client and the state.
+  # Returns the reply to the client and the state.
   def queue(%State{} = state, key, message) do
     case Queue.push(state.queue, key, message) do
       {:ok, queue} -> {:ok, put(state, {queue, []})}
@@ -32,8 +31,8 @@ defmodule Helyx.Session.Server.Steering do
     {texts, put(state, {queue, []})}
   end
 
-  # The queued steers, then the waiting ends, join the transcript, in
-  # order. Returns the user messages.
+  # The queued steers, then the waiting ends, join the transcript, in order.
+  # Returns the user messages.
   def append_steers(%State{} = state) do
     {steers, queue} = Queue.drain_steers(state.queue)
     {ends, queue} = Queue.drain_ends(queue)
@@ -43,33 +42,32 @@ defmodule Helyx.Session.Server.Steering do
     {messages, put(state, {queue, []})}
   end
 
-  # An end joined the transcript: its place among the background runs is
-  # free in the hands (#587).
+  # An end joined the transcript: its place among the background runs is free
+  # in the hands (#587).
   defp taken(%State{hands: hands}, %Message{origin: %{kind: :background, id: id}}),
     do: Hands.taken(hands, id)
 
-  # A background end goes to a submitted turn, or waits for a turn that
-  # can take it (`send_ends/1`).
+  # A background end goes to a submitted turn, or waits for a turn that can
+  # take it (`send_ends/1`).
   def push_end(%State{} = state, message),
     do: send_ends(put(state, {Queue.ended(state.queue, message), []}))
 
   # A background run started; its end comes through `push_end/2`.
   def started(%State{} = state), do: put(state, {Queue.started(state.queue), []})
 
-  # The runs whose start answer the session counted, ended by the hands at
-  # the abort or the failure of their turn: their count goes, and no end
-  # arrives, so no later turn takes one (`Wait.revoke/2`, ADR 0014,
-  # invariant 4).
+  # The runs whose start answer the session counted, ended by the hands at the
+  # abort or the failure of their turn: their count goes, and no later turn
+  # takes one (`Wait.revoke/2`, ADR 0014, invariant 4).
   def revoked(%State{} = state, ids), do: put(state, {Queue.revoked(state.queue, ids), []})
 
   # A turn that takes the ends opened, a prompt's or the provider's, not a
   # compaction: the ends no longer hold, and a submitted turn takes them.
   def open(%State{} = state), do: send_ends(put(state, {Queue.open(state.queue), []}))
 
-  # In a submitted turn that is not a compaction, the waiting ends go to
-  # the provider process as steers, in order, while the 32 steers have
-  # room; the rest wait for the next turn. The end moves from the ends to
-  # the ledger in one step, so `waiting` (`Queue.counts/1`) keeps it.
+  # In a submitted turn that is not a compaction, the waiting ends go to the
+  # provider process as steers, in order, while the 32 steers have room; the
+  # rest wait for the next turn. The end moves from the ends to the ledger in
+  # one step, so `waiting` (`Queue.counts/1`) keeps it.
   def send_ends(%State{phase: %Live{turn: %Turn{compact: nil}}} = state) do
     case Queue.next_end(state.queue) do
       {message, queue} ->
@@ -83,15 +81,11 @@ defmodule Helyx.Session.Server.Steering do
 
   def send_ends(state), do: state
 
-  # Accepts a client steer on a turn or a wait, in one step: it takes a
-  # place in the 32 steers or is rejected with `:queue_full`. A steer on a
-  # `Live` turn, also with a context request open, goes to the provider
-  # process; in `Preparing` and `Sending` it stays in the local
-  # queue ("Turn states"), and so it does in a wait. A sent steer counts in
-  # the 32 steers until its `user_message` and its answer
-  # (`Helyx.Session.Queue`). A compaction cannot be steered, so a steer on
-  # its turn stays in the local queue for the next turn.
-  # Returns the reply to the client and the state.
+  # Accepts a client steer on a turn or a wait: it takes a place in the 32
+  # steers or is rejected with `:queue_full`. A steer on a `Live` turn goes to
+  # the provider process; in `Preparing`, in `Sending`, and in a wait it stays
+  # in the local queue. A compaction cannot be steered. Returns the reply to
+  # the client and the state.
   def steer(%State{phase: %{turn: %Turn{compact: compact}}} = state, message) when compact != nil,
     do: queue(state, :steers, message)
 
@@ -103,18 +97,17 @@ defmodule Helyx.Session.Server.Steering do
 
   def steer(state, message), do: queue(state, :steers, message)
 
-  # At the `:ok` of the turn, the steers that waited in `Sending` go to
-  # the provider process, in order, then the waiting ends. Each steer keeps
-  # the place it took in the queue.
+  # At the `:ok` of the turn, the steers that waited in `Sending` go to the
+  # provider process, in order, then the waiting ends. Each steer keeps the
+  # place it took in the queue.
   def send_local_steers(%State{} = state) do
     {steers, queue} = Queue.drain_steers(state.queue)
     send_ends(Enum.reduce(steers, put(state, {queue, []}), &send_steer/2))
   end
 
-  # Sends the text of a steer, or of an end `{:end, message}`, to the
-  # provider process with its own id and the steer bound (see
-  # `Helyx.Session.ProviderProcess`). The caller holds its place in the 32
-  # steers.
+  # Sends the text of a steer, or of an end `{:end, message}`, with its own
+  # id and the steer bound (`Helyx.Session.ProviderProcess`). The caller holds
+  # its place in the 32 steers.
   defp send_steer(entry, %State{phase: %{turn: turn, provider: %{pid: pid}}} = state) do
     steer_id = Id.new()
     text = Message.text(Queue.plain(entry))
@@ -138,12 +131,12 @@ defmodule Helyx.Session.Server.Steering do
   def end_turn(state, turn_id, normal?),
     do: put(state, Queue.end_turn(state.queue, turn_id, normal?))
 
-  # The provider process ended: no steer request is open any more. Its
+  # No steer request is open after the end of the provider process. Its
   # `provider_down` is the only caller (`TurnLoop`).
   def provider_down(state), do: put(state, Queue.provider_down(state.queue, open?(state)))
 
-  # A turn that takes the ends is open (`open/1`): an end that goes back now
-  # goes in it, and does not hold (#587).
+  # An end that goes back in an open turn goes in it, and does not hold
+  # (#587).
   defp open?(%State{phase: phase}), do: match?(%{turn: %Turn{compact: nil}}, phase)
 
   defp put(%State{queue: old} = state, {queue, effects}) do

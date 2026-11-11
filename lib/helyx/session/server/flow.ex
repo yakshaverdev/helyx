@@ -1,26 +1,14 @@
 defmodule Helyx.Session.Server.Flow do
   @moduledoc false
   # The phase of one session process: the turn that runs, the wait before the
-  # next turn, and the provider process of the session, in one value
-  # (docs/features/session-lifecycle.md, "Turn states", "The wait", "Provider
-  # death").
-  #
-  # The variant is the phase. `Preparing` is a turn before its `{:turn, ...}`
-  # or `{:compact, ...}`, with the prepare Task in `turn.prepare`; `Sending`
-  # is the turn from that send to the answer, with the ref in `pending`;
-  # `Live` is the turn from the `:ok` answer to its end, with `pending` set
-  # only while a context request is open. `Idle` and `Waiting` hold no turn,
-  # so `%{turn: %Turn{}}` matches the three turn phases and nothing else.
-  #
-  # Each phase holds only the provider states that it can have: a turn that
-  # sent its request has an `%Up{}`, and a dying process holds only a wait.
-  # The provider's fields are the same in each state, so `pid`, `model`,
-  # `turn`, and `resumed` read the same way in all of them.
+  # next turn, and the provider process, in one value
+  # (docs/features/session-lifecycle.md). The variant is the phase, and each
+  # phase holds only the provider states that it can have:
+  # `%{turn: %Turn{}}` matches the three turn phases and nothing else.
 
   defmodule Connecting do
     @moduledoc false
-    # The provider process asked of the hands, or one they answered that has
-    # not sent `{:provider_ready, pid}` yet. `pid` is nil until the answer.
+    # The provider process asked of the hands, or answered but not ready yet.
     @enforce_keys [:start, :model, :turn]
     defstruct [:pid, :start, :model, :turn, :resumed]
 
@@ -29,9 +17,7 @@ defmodule Helyx.Session.Server.Flow do
 
   defmodule Up do
     @moduledoc false
-    # The provider process after `{:provider_ready, pid}`: it takes a
-    # request. `resumed` is the resume id of its start, until its first
-    # resume id event, or nil.
+    # The provider process after `{:provider_ready, pid}`: it takes a request.
     @enforce_keys [:pid, :start, :model, :turn]
     defstruct [:pid, :start, :model, :turn, :resumed]
 
@@ -57,8 +43,7 @@ defmodule Helyx.Session.Server.Flow do
 
   defmodule Preparing do
     @moduledoc false
-    # A turn before its request. The provider is `:none` before the start,
-    # and may be connecting, up, or dying.
+    # A turn before its request.
     @enforce_keys [:turn, :provider]
     defstruct [:turn, :provider]
 
@@ -67,8 +52,8 @@ defmodule Helyx.Session.Server.Flow do
 
   defmodule Sending do
     @moduledoc false
-    # A turn from the send of `{:turn, ...}` or `{:compact, ...}` to the
-    # answer. `pending` is the ref of that answer, nil after an error answer.
+    # A turn from the send of its request to the answer. `pending` is the ref
+    # of that answer, nil after an error answer.
     @enforce_keys [:turn, :provider]
     defstruct [:turn, :provider, :pending]
 
@@ -77,8 +62,8 @@ defmodule Helyx.Session.Server.Flow do
 
   defmodule Live do
     @moduledoc false
-    # A turn from the `:ok` answer to its end. `pending` is the ref of an
-    # open context request, or nil.
+    # A turn from the `:ok` answer to its end. `pending` is the ref of an open
+    # context request, or nil.
     @enforce_keys [:turn, :provider]
     defstruct [:turn, :provider, :pending]
 
@@ -87,9 +72,7 @@ defmodule Helyx.Session.Server.Flow do
 
   defmodule Waiting do
     @moduledoc false
-    # The wait after a turn: the hands' cleanup answer, the answer to an
-    # interrupt or an idle close, and a provider process that ends
-    # (`Helyx.Session.Server.Wait`).
+    # The wait after a turn (`Helyx.Session.Server.Wait`).
     @enforce_keys [:wait]
     defstruct [:wait, provider: :none]
 

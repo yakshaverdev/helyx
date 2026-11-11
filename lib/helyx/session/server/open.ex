@@ -1,26 +1,21 @@
 defmodule Helyx.Session.Server.Open do
   @moduledoc false
   # The open of a session process, on both sides: the start in the caller,
-  # with its attach to a running session, and the open in the session
-  # process before its hands. It decides when a start returns a session,
-  # attaches, or gives an error (server-management.md, session-lock.md).
-  # `Helyx.Session.Server` keeps the GenServer callbacks and calls in here.
+  # with its attach to a running session, and the open in the session process
+  # before its hands. It decides when a start returns a session, attaches, or
+  # gives an error (docs/features/server-management.md,
+  # docs/features/session-lock.md).
 
   alias Helyx.Session.{Background, Hands, Id, Input, Killer, Lock, Queue, Transcript}
   alias Helyx.Session.Server.{Sources, State}
 
-  # Starts the session process under Core for `resume/2`. `open` is nil
-  # with no session file, or `{path, fun}`: the session takes the lock of
-  # `path` and runs `fun` on the state under it (`Lock.hold/2`), so the port
-  # of the lock has one owner for its whole life. The open runs after the
-  # supervisor started the process; the caller waits for its result, and an
-  # error of the open comes back as it is. Past the deadline of the take
-  # (`deadline_ms.open` of the state) or of the load, which grows with the
-  # file (`open_file/2`), the session is killed, and the caller gets
-  # `{:error, :open_timeout}`. The Registry rejects a session that this
-  # Core runs before the init, and the start attaches to the running
-  # process; so does a start at the cap whose id runs (server-management.md,
-  # "Attach"). The second run of a start is its last.
+  # `open` is nil with no session file, or `{path, fun}`: the session takes
+  # the lock of `path` and runs `fun` under it, so the port of the lock has
+  # one owner for its whole life. Past the deadline of the take or of the
+  # load the session is killed, and the caller gets
+  # `{:error, :open_timeout}`. A start of an id that this Core runs attaches
+  # (docs/features/server-management.md). The second run of a start is its
+  # last.
   def start(%State{} = state, tools, open, runs \\ 2) do
     start = {state, tools, open, runs}
 
@@ -32,11 +27,9 @@ defmodule Helyx.Session.Server.Open do
     end
   end
 
-  # The open of `Helyx.Session.resume/2`: the read of the locked file and
-  # its model ref.
-  # A crash can leave tool calls with no result, and the disk can hold a
-  # result with no open call. The session reads them with interrupted
-  # results and without the stray results, and writes nothing (#269, #417, #584).
+  # The open of `Helyx.Session.resume/2`: the read of the locked file and its
+  # model ref. A repair of a crash may leave tool calls with no result, and
+  # the disk may hold a result with no open call (#269, #417, #584).
   def load(state, path) do
     with {:ok, resumed} <- Helyx.Session.File.resume_picked(path, state.cwd),
          {:ok, {ref, provider}} <- Input.model(state.core, resumed.model) do
@@ -56,9 +49,8 @@ defmodule Helyx.Session.Server.Open do
     end
   end
 
-  # The open of the file of a new session, which the session process runs
-  # at its start under the lock of `path` (`create/3`), or nil with no
-  # sessions dir.
+  # The file of a new session, which the session process opens at its start
+  # under the lock of `path` (`create/3`), or nil with no sessions dir.
   def create_spec(nil, _id, _cwd, _model, _parent), do: nil
 
   def create_spec(dir, id, cwd, model, parent) do
@@ -69,10 +61,9 @@ defmodule Helyx.Session.Server.Open do
      end}
   end
 
-  # The start of a new session for `Helyx.Session.start/2`, as `start/4`
-  # but with no attach: a new id is random, or derived from a parent link,
-  # so a process with the id is an earlier child of that link, not this
-  # start (docs/features/agent-tool.md, "A reused call id").
+  # A new id is random, or derived from a parent link, so a process with the
+  # id is an earlier child of that link, not this start
+  # (docs/features/agent-tool.md).
   def create(%State{} = state, tools, open) do
     case launch(state, tools, open) do
       {:error, {:already_started, _pid}} -> {:error, {:create_failed, :eexist}}
@@ -82,7 +73,6 @@ defmodule Helyx.Session.Server.Open do
     end
   end
 
-  # The result of the open, or the error of the supervisor start.
   defp launch(state, tools, open) do
     ref = make_ref()
 
@@ -94,12 +84,10 @@ defmodule Helyx.Session.Server.Open do
 
   defp session(%State{id: id, core: core}), do: %Helyx.Session{id: id, core: core}
 
-  # The process takes the call after its open. An open that failed exits
-  # with its error, which the first caller got too; the kill of the deadline
-  # is the error of `await_open/3`. Any other end of the process is no
-  # result of a start, so the start runs again. At the cap, an id that does
-  # not run has no process. A running session with other provider options
-  # gives `{:error, :provider_opts_differ}`.
+  # The process takes the call after its open. An open that failed exits with
+  # its error, which the first caller got too. Any other end of the process
+  # is no result of a start, so the start runs again. At the cap, an id that
+  # does not run has no process.
   defp attach(nil, _session, _start), do: {:error, :too_many_sessions}
 
   defp attach(pid, session, {state, tools, open, runs}) do
@@ -112,10 +100,9 @@ defmodule Helyx.Session.Server.Open do
     :exit, _reason -> {:error, :session_not_found}
   end
 
-  # The go comes after the monitor, so a crash of the open reaches the
-  # caller with its reason. The session sends the result before it ends.
-  # A kill before the result is the deadline of the open, or the kill of a
-  # Core stop after `Stop.shutdown_ms/0` during a long load.
+  # The go comes after the monitor, so a crash of the open reaches the caller
+  # with its reason. A kill before the result is the deadline of the open, or
+  # the kill of a Core stop after `Stop.shutdown_ms/0` during a long load.
   defp await_open(pid, ref, session) do
     monitor = Process.monitor(pid)
     send(pid, {ref, :go})
@@ -135,10 +122,9 @@ defmodule Helyx.Session.Server.Open do
 
   defp start_child(%State{core: core} = state, {tools, concurrent, sources}, start) do
     # The plugin table of a Core does not change after start, so a plugin
-    # resolved once here is the plugin a lookup per provider call would give.
-    # Compaction and Memory are single-mode: one plugin or none (nil). The
-    # ModelContext is the one that the start named, else the first, so a
-    # resume gets the first (docs/features/session-model-context.md).
+    # resolved once here is the plugin that a lookup per provider call would
+    # give. Compaction and Memory are single-mode. The ModelContext is the one
+    # that the start named (docs/features/session-model-context.md).
     plugins = %{
       model_context:
         state.plugins.model_context || List.first(Helyx.Core.plugins(core, Helyx.ModelContext)),
@@ -163,11 +149,10 @@ defmodule Helyx.Session.Server.Open do
     {:ok, state, {:continue, {open, caller, ref, Process.monitor(caller)}}}
   end
 
-  # The open waits for the go of the caller (`await_open/3`), and runs
-  # before the hands, so no hands exist yet when it fails. A caller that
-  # ended before the go or during the open gets no session: the stop
-  # releases the lock (`Server.terminate/2`). A caller that ends after the check
-  # below gets a session that runs, as after a start that returned.
+  # The open waits for the go of the caller (`await_open/3`) and runs before
+  # the hands, so no hands exist when it fails. A caller that ended before
+  # the go or during the open gets no session, and the stop releases the
+  # lock (`Server.terminate/2`).
   def handle_continue({open, caller, ref, monitor}, state) do
     receive do
       {^ref, :go} -> run_open(state, open, caller, ref, monitor)
@@ -197,14 +182,14 @@ defmodule Helyx.Session.Server.Open do
 
   defp open_file(state, nil), do: {:ok, state}
 
-  # The load reads at least this many bytes of the session file in each ms:
-  # a third of the slowest content that a session writes (session-lock.md,
-  # row "wait of the caller").
+  # The load reads at least this many bytes of the session file in each ms: a
+  # third of the slowest content that a session writes
+  # (docs/features/session-lock.md).
   @load_bytes_per_ms 1_000
 
   # A kill ends the session at the deadline of its open even when the caller
-  # is gone, so the port closes and perl frees the lock (session-lock.md).
-  # After the take, the deadline of the load grows with the file.
+  # is gone, so the port closes and perl frees the lock. After the take, the
+  # deadline of the load grows with the file.
   defp open_file(state, {path, fun}) do
     killer = Killer.arm(state.deadline_ms.open)
 
@@ -248,9 +233,9 @@ defmodule Helyx.Session.Server.Open do
         hooks: Helyx.Core.hooks(state.core)
       )
 
-    # A run that was live at the stop of a resumed session ended with it:
-    # its lost end waits for the next turn (docs/features/background-bash.md).
-    # A new session has no ends, so the wake matters only at a resume.
+    # A run that was live at the stop of a resumed session ended with it: its
+    # lost end waits for the next turn
+    # (docs/features/background-bash.md). A new session has no ends.
     queue = %Queue{
       ends: %Queue.Ends{items: Background.lost(state.transcript), wake: :off}
     }

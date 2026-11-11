@@ -2,8 +2,8 @@ defmodule Helyx.Session.Server.ToolRuns do
   @moduledoc false
   # Runs the effects of the tool queue of the turn (`Helyx.Session.ToolQueue`,
   # in `Turn.tool_queue`) on the hands and the provider process. No answer is
-  # awaited: a late reply is dropped by its ref, and a kill that fires in
-  # the next turn fails that turn.
+  # awaited: a late reply is dropped by its ref, and a kill that fires in the
+  # next turn fails that turn.
 
   import Helyx.Session.Server.State, only: [ask: 4, tool_context: 2]
 
@@ -13,13 +13,11 @@ defmodule Helyx.Session.Server.ToolRuns do
   alias Helyx.Session.Server.{Approvals, Asks, State, UIBlocks}
   alias Helyx.Session.Server.Flow.Up
 
-  # A request of the current turn, of `bytes` encoded call bytes. An open
-  # call id stops the provider process: `{:stop, reason}`; so does the id
-  # of an open call that an approval request named as a call that the
-  # provider runs itself, pending or answered (`docs/features/hooks.md`,
-  # "The owner of a call id"), so one call id never has two chains in the
-  # hands, and no open call is both, apart from the accepted hole of that
-  # section; so does the id of a call with UI blocks of the provider
+  # A request of the current turn, of `bytes` encoded call bytes. An id that
+  # is open stops the provider process: `{:stop, reason}`; so does the id of
+  # a call that an approval request named, so one call id never has two
+  # chains in the hands (`docs/features/hooks.md`, "The owner of a call id");
+  # so does the id of a call with UI blocks of the provider
   # (`UIBlocks.request/2`).
   def request(
         %State{phase: %{turn: %Turn{} = turn}} = state,
@@ -41,25 +39,21 @@ defmodule Helyx.Session.Server.ToolRuns do
     end
   end
 
-  # A request of a turn that is not current: ended, dropped, or a turn
-  # that the provider started and the session did not open. The provider
-  # process `pid` that sent it gets `aborted`, after the interrupt or the
-  # next turn when it came late.
+  # The provider process `pid` that sent it gets `aborted`, after the
+  # interrupt or the next turn when it came late.
   def late(state, pid, turn_id, id),
     do: send_result(state, pid, turn_id, id, Session.aborted_result())
 
-  # The turn ended: each open request gets `aborted` now, before an
-  # interrupt. No request goes to a provider process that is dying, and a
-  # connecting one has none. The hands kill the running calls.
+  # Each open request gets `aborted` now, before an interrupt. No request goes
+  # to a provider process that is dying, and a connecting one has none.
   def end_turn(%State{phase: %{provider: %Up{}}} = state, %Turn{} = turn),
     do: Enum.reduce(ToolQueue.end_turn(turn.tool_queue), state, &effect(&2, turn.id, &1))
 
   def end_turn(state, _turn), do: state
 
-  # The hands' result of the running call `id`; an ask of the call ends
-  # with it. A call that opened after its request gets its owner now. Its
-  # UI blocks wait for the provider's result event (`UIBlocks.result/3`):
-  # the provider gets the text alone.
+  # An ask of the call ends with it. A call that opened after its request gets
+  # its owner now. Its UI blocks wait for the provider's result event
+  # (`UIBlocks.result/3`): the provider gets the text alone.
   def result(%State{phase: %{turn: %Turn{tool_queue: queue}}} = state, id, result) do
     {result, blocks} = text_and_blocks(result)
 

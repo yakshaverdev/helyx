@@ -3,9 +3,8 @@ defmodule Helyx.Session.Server.Events do
   # The event stream of a session: the only writer of `ring` (with `seq`) and
   # `subscribers` in `Helyx.Session.Server.State`. Each event gets the next
   # `seq`, joins the replay ring, and goes to every subscriber that has
-  # credits; the snapshot gives the `seq` of the last event
-  # (docs/features/session-snapshot.md, docs/features/replay-ring.md). The
-  # records that the events tell of are written in
+  # credits (docs/features/session-snapshot.md, docs/features/replay-ring.md).
+  # The records that the events tell of are written in
   # `Helyx.Session.Server.Records`.
 
   alias Helyx.{Event, ModelRef}
@@ -17,10 +16,9 @@ defmodule Helyx.Session.Server.Events do
   def credits, do: @credits
 
   # The entry and the reply of a subscribe in one step: the events after
-  # `after` from the ring, or the snapshot. The base of the credits is the
-  # seq that the reply ends at for the subscriber, so a replayed event
-  # counts. Each subscription starts with fresh credits; a repeated
-  # subscribe keeps the monitor of its entry and sets `answers?` again.
+  # `after` from the ring, or the snapshot. The credits count from the seq
+  # that the reply ends at, so a replayed event counts. A repeated subscribe
+  # keeps the monitor of its entry.
   def subscribe(%State{} = state, pid, ref, {tail, after_, answers?}) do
     {reply, base} =
       case replay(state, after_) do
@@ -43,8 +41,8 @@ defmodule Helyx.Session.Server.Events do
 
   defp replay(_state, _after), do: :error
 
-  # An ack lowers the count of its subscriber; an ack above the seq of the
-  # session, or of a pid with no entry, acks nothing that the session sent.
+  # An ack above the seq of the session, or of a pid with no entry, acks
+  # nothing that the session sent.
   def ack(%State{subscribers: subscribers, ring: %Ring{seq: seq}} = state, pid, acked)
       when acked <= seq and is_map_key(subscribers, pid) do
     {monitor, ref, base, answers?} = subscribers[pid]
@@ -62,9 +60,8 @@ defmodule Helyx.Session.Server.Events do
   def subscriber_down(%State{subscribers: subscribers} = state, pid),
     do: %{state | subscribers: Map.delete(subscribers, pid)}
 
-  # The state of the session in one value (`Helyx.Session.Snapshot`), with
-  # the `seq` of its last event: a subscribe takes it in the same call. A
-  # nil `tail` gives the whole transcript.
+  # The state of the session in one value (`Helyx.Session.Snapshot`), with the
+  # `seq` of its last event. A nil `tail` gives the whole transcript.
   def snapshot(%State{} = state, tail) do
     {usage, context} = Totals.of(state.transcript, state.compacted)
 
@@ -94,10 +91,9 @@ defmodule Helyx.Session.Server.Events do
   defp turn(%Flow.Waiting{wait: wait}), do: Wait.snapshot_turn(wait)
   defp turn(_phase), do: nil
 
-  # Only the queue events fire between turns: the drain at a normal turn
-  # end, and an abort in a wait. Every other `emit/3` with no turn is a bug
-  # and crashes here. An event with no turn by intent gives its turn id to
-  # `emit/4`.
+  # Only the queue events fire between turns: every other `emit/3` with no
+  # turn is a bug and crashes here. An event with no turn by intent gives its
+  # turn id to `emit/4`.
   def emit(%State{phase: %{turn: %Turn{id: turn_id}}} = state, type, data),
     do: emit(state, turn_id, type, data)
 
@@ -121,8 +117,8 @@ defmodule Helyx.Session.Server.Events do
     %{state | ring: Ring.push(state.ring, event), subscribers: Map.drop(state.subscribers, slow)}
   end
 
-  # The event, or past the credits the slow end in its place: the entry
-  # goes, and no event follows the end.
+  # Past the credits the slow subscriber ends in place of its event, and no
+  # event follows the end.
   defp deliver(pid, {monitor, ref, acked, _answers?}, %Event{seq: seq})
        when seq - acked > @credits do
     Process.demonitor(monitor, [:flush])

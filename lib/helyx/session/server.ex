@@ -1,10 +1,7 @@
 defmodule Helyx.Session.Server do
   @moduledoc false
-  # The session process: the GenServer callbacks. The turn lifecycle, with
-  # the match of each lifecycle input to the current phase, is in
-  # `Helyx.Session.Server.TurnLoop`; the callbacks here forward those
-  # inputs and match the records of the current turn. The client API and
-  # the docs of the behaviour are in `Helyx.Session`.
+  # The session process: the GenServer callbacks. The turn lifecycle is in
+  # `Helyx.Session.Server.TurnLoop`; the client API is in `Helyx.Session`.
 
   alias Helyx.Reason
   alias Helyx.Session.{ApprovalChains, Lock, Turn}
@@ -15,7 +12,6 @@ defmodule Helyx.Session.Server do
 
   use GenServer, restart: :temporary, shutdown: Stop.shutdown_ms()
 
-  # The start and the open of the session process (`Open`).
   defdelegate start(state, tools, open), to: Open
   defdelegate create(state, tools, open), to: Open
 
@@ -23,9 +19,8 @@ defmodule Helyx.Session.Server do
     GenServer.start_link(__MODULE__, args, name: via(core, id))
   end
 
-  # Each callback runs in `Reason.no_args/1`, and a crash report shows no
-  # state and no message (docs/features/session-lifecycle.md, "Log and
-  # crash reports").
+  # Each callback runs in `Reason.no_args/1`, so a crash report shows no
+  # state and no message (docs/features/session-lifecycle.md).
   @impl true
   def init(args), do: Reason.no_args(fn -> Open.init(args) end)
 
@@ -44,8 +39,8 @@ defmodule Helyx.Session.Server do
   @impl true
   def format_status(status), do: Reason.crash_status(status)
 
-  # The messages of the summary call's process, by its pid or by the id of
-  # its turn, before every other clause (`Summary.handle/2`).
+  # The summary call's messages come before every other clause, because its
+  # turn is no longer the current one (`Summary.handle/2`).
   defp info(
          {:provider_ready, pid} = message,
          %State{summary_call: %Summary{pid: pid}} = state
@@ -71,18 +66,17 @@ defmodule Helyx.Session.Server do
        ),
        do: {:noreply, Summary.handle(message, state)}
 
-  # A turn that the provider started by itself (#240), before the clauses
-  # of the current turn's events.
+  # A turn that the provider started by itself (#240) comes before the
+  # events of the current turn.
   defp info({:stream_event, _turn_id, :turn_start} = message, state),
     do: {:noreply, TurnLoop.handle(message, state)}
 
-  # An event of the current turn.
   defp info({:stream_event, turn_id, event}, %State{phase: %{turn: %Turn{id: turn_id}}} = state),
     do: {:noreply, event(state, event)}
 
-  # A Helyx tool request of the provider process `pid` (`ToolRuns`). The call
-  # and its result join the transcript from the provider's own events, not
-  # from here. A request of a turn that is not current gets `aborted`.
+  # A Helyx tool request (`ToolRuns`). The call and its result join the
+  # transcript from the provider's own events, not from here. A request of a
+  # turn that is not current gets `aborted`.
   defp info(
          {:tool_request, _pid, turn_id, call, bytes, rejection},
          %State{phase: %{turn: %Turn{id: turn_id}}} = state
@@ -96,8 +90,8 @@ defmodule Helyx.Session.Server do
   defp info({:tool_request, pid, turn_id, call, _bytes, _rejection}, state),
     do: {:noreply, ToolRuns.late(state, pid, turn_id, call.id)}
 
-  # An approval request of the provider process `pid` for a call of its
-  # own tools (`Approvals`). One of a turn that is not current is denied.
+  # An approval request for a call of the provider's own tools
+  # (`Approvals`). One of a turn that is not current is denied.
   defp info(
          {:approval, _pid, turn_id, approval_id, call_id},
          %State{phase: %{turn: %Turn{id: turn_id}}} = state
@@ -111,8 +105,8 @@ defmodule Helyx.Session.Server do
   defp info({:approval, pid, turn_id, approval_id, _call_id}, state),
     do: {:noreply, Approvals.late(state, pid, turn_id, approval_id)}
 
-  # The decision of the chain of a running approval request; one of a
-  # turn that ended is dropped: the turn's end denied its request.
+  # The decision of a running approval chain; one of a turn that ended is
+  # dropped, because the turn's end denied its request.
   defp info(
          {:approval_result, turn_id, call_id, decision},
          %State{phase: %{turn: %Turn{id: turn_id, approval_chains: chains}}} = state
@@ -124,9 +118,8 @@ defmodule Helyx.Session.Server do
 
   defp info({:approval_result, _turn_id, _call_id, _decision}, state), do: {:noreply, state}
 
-  # A resume id of the session's live provider process, for its turn or
-  # for the turn that the current wait ended (#518). An ended process,
-  # another pid, or another turn records nothing.
+  # The live provider's resume id, for its turn or for the turn that the
+  # wait ended (#518). Other pids and other turns record nothing.
   defp info(
          {:resume_id, pid, turn_id, id, cut},
          %State{phase: %{turn: %Turn{id: turn_id}, provider: %Up{pid: pid}}} = state
@@ -143,10 +136,7 @@ defmodule Helyx.Session.Server do
   defp info({:resume_id, _pid, _turn_id, _id, _cut}, state), do: {:noreply, state}
 
   # The hands' start answer of a background run: the run counts from here,
-  # also when its call is no longer current, and its end counts down
-  # (`{:background_end, message}`). The transcript and the provider get the
-  # result with the status that the `after_tool` hooks left.
-  # Its call Task leaves the turn, and with it its record of an asker;
+  # also when its call is no longer current. Its call Task leaves the turn,
   # then the run goes on (`Asks.started/3`).
   defp info({:tool_result, turn_id, call_id, {:started, result, pid}}, state),
     do:
@@ -163,9 +153,8 @@ defmodule Helyx.Session.Server do
        when is_map_key(running, call_id),
        do: {:noreply, ToolRuns.result(state, call_id, result)}
 
-  # The end of a background run (docs/features/background-bash.md): a
-  # steer in a submitted turn, else it waits; an idle session with no hold
-  # starts a turn for it.
+  # The end of a background run (docs/features/background-bash.md): a steer
+  # in a submitted turn, else it waits; an idle session starts a turn for it.
   defp info({:background_end, message}, state),
     do: {:noreply, state |> Steering.push_end(message) |> TurnLoop.settle()}
 
@@ -178,9 +167,8 @@ defmodule Helyx.Session.Server do
   defp info({:asker, turn_id, pid, kind}, state),
     do: {:noreply, Asks.asker(state, turn_id, pid, kind)}
 
-  # An answer of a hook, from the hands (`Records.hook/3`). Its Task
-  # ended, and an ask that it left open ends before the next hook of the
-  # chain can ask (`Asks.ended/2`).
+  # An answer of a hook (`Records.hook/3`). Its Task ended, so an ask that it
+  # left open ends before the next hook of the chain can ask.
   defp info({:hook_answer, turn_id, record}, state),
     do: {:noreply, state |> Records.hook(turn_id, record) |> Asks.ended(record.pid)}
 
@@ -188,8 +176,7 @@ defmodule Helyx.Session.Server do
   defp info({:settle_answer, ref, answer}, state),
     do: {:noreply, Settle.answer(state, ref, answer)}
 
-  # A source process that the hands started, and its end
-  # (`Helyx.Session.Server.Sources`).
+  # A source process that the hands started, and its end.
   defp info({:source, pid, plugin}, state), do: {:noreply, Sources.started(state, pid, plugin)}
   defp info({:source_down, pid}, state), do: {:noreply, Sources.down(state, pid)}
 
@@ -201,8 +188,8 @@ defmodule Helyx.Session.Server do
   defp info({:memory_notice, pid, text}, %State{sync: pid} = state),
     do: {:noreply, Events.emit(state, nil, :notice, %{text: text})}
 
-  # A failed subscribe (`Helyx.Session.subscribe/1`), an ack (`ack/2`), and the
-  # end of a subscriber: only the monitor of its entry removes the entry.
+  # A failed subscribe, an ack, and the end of a subscriber: only the monitor
+  # of its entry removes the entry.
   defp info({:unsubscribe, pid}, %State{} = state),
     do: {:noreply, Events.unsubscribe(state, pid)}
 
@@ -212,8 +199,7 @@ defmodule Helyx.Session.Server do
        when elem(:erlang.map_get(pid, subscribers), 0) == ref,
        do: {:noreply, Events.subscriber_down(state, pid)}
 
-  # The end of a call or hook Task; any other `:DOWN` is a lifecycle
-  # input.
+  # The end of a call or hook Task; any other `:DOWN` is a lifecycle input.
   defp info({:DOWN, ref, :process, pid, _reason} = message, state) do
     case Asks.down(state, ref, pid) do
       {:ok, state} -> {:noreply, state}
@@ -221,17 +207,16 @@ defmodule Helyx.Session.Server do
     end
   end
 
-  # The lock's port closed while the session runs: perl ended, so the
-  # kernel released the lock (docs/features/session-lock.md). Its exit
-  # status comes first, then the exit of the port, also of a port that
-  # closed without a status. Another process can now append to the file, so
-  # the session stops saving and goes on in memory (`Records.stop_saving/3`).
+  # The lock's port closed: perl ended, so the kernel released the lock
+  # (docs/features/session-lock.md). Its status comes first, then the exit.
   defp info({port, {:exit_status, _status}}, %State{save: {:saving, _file, port}} = state),
     do: {:noreply, state}
 
   defp info({port, {:exit_status, _status}}, %State{save: {:stopped, _from, port}} = state),
     do: {:noreply, state}
 
+  # Another process can append now, so the session stops saving and goes on
+  # in memory (`Records.stop_saving/3`).
   defp info({:EXIT, port, reason}, %State{save: {:saving, file, port}} = state) do
     state = %{state | save: {:saving, file, nil}}
     {:noreply, Records.stop_saving(state, "the session lock is lost", inspect(reason))}
@@ -241,26 +226,18 @@ defmodule Helyx.Session.Server do
   defp info({:EXIT, port, _reason}, %State{save: {:stopped, from, port}} = state),
     do: {:noreply, %{state | save: {:stopped, from, nil}}}
 
-  # An exit from a linked process is vital. The hands' death takes the
-  # session with it, and a session that outlived its entry in the sessions
-  # Registry would keep working where no client can reach it.
+  # An exit from a linked process is vital. A session that outlived its entry
+  # in the sessions Registry would keep working where no client can reach it.
   defp info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
 
-  # The lifecycle inputs (`TurnLoop.handle/2`): the provider process's
-  # terminal, `provider_ready`, replies, and `provider_down`, the results
-  # of the prepare Task and the context requests, the idle timer, every
-  # other `:DOWN`, and the answer of the hands to the cleanup request. If
-  # the hands die, the request's `:DOWN` is dropped and their `:EXIT`
-  # stops the session. Any other message is a bug and crashes the session.
+  # The lifecycle inputs (`TurnLoop.handle/2`). If the hands die, their
+  # request's `:DOWN` is dropped and their `:EXIT` stops the session. Any
+  # other message is a bug and crashes the session.
   defp info(message, state), do: {:noreply, TurnLoop.handle(message, state)}
 
-  # The session stops only for a trapped reason; on an untrappable kill the
-  # link kills the hands, which take the provider process and the tool Tasks.
-  #
-  # The hands end before the session (#219). Core stops its session
-  # supervisor before its task supervisor, and the release Tasks of the
-  # hands run under the task supervisor. So a release that the hands start
-  # after the session ended could find the task supervisor stopped.
+  # The session stops only for a trapped reason; an untrappable kill takes
+  # the hands with it. The hands end before the session (#219): their release
+  # Tasks run under the task supervisor, which Core stops after the session.
   @impl true
   def terminate(_reason, state), do: Reason.no_args(fn -> stop(state) end)
 
@@ -284,8 +261,8 @@ defmodule Helyx.Session.Server do
   defp event(state, {:tool_result, call_id, result}),
     do: Records.tool_result(state, call_id, result)
 
-  # A UI block of the provider (`UIBlocks.provider_block/4`): a new key
-  # past the count stops the provider process.
+  # A UI block of the provider: a new key past the count stops the provider
+  # process (`UIBlocks.provider_block/4`).
   defp event(state, {:ui_block, call_id, key, block}) do
     case UIBlocks.provider_block(state, call_id, key, block) do
       {:ok, state} -> state
@@ -293,9 +270,8 @@ defmodule Helyx.Session.Server do
     end
   end
 
-  # The provider took a steer of this turn: its text, the one the session
-  # checked at the client call, joins the transcript here (see
-  # `Queue.take/2`).
+  # The provider took a steer of this turn: its text, checked at the client
+  # call, joins the transcript here (`Queue.take/2`).
   defp event(state, {:user_message, steer_id}), do: Steering.take(state, steer_id)
 
   # An event that breaks the bound of the open message stops the provider
