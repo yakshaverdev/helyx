@@ -4,12 +4,7 @@ defmodule Helyx.Session.Hands.State do
   alias Helyx.Session.Background
   alias Helyx.Session.Hands.Entry
 
-  # `tools` is the tool module by name. `tasks` holds each running Task as a
-  # `Helyx.Session.Hands.Entry`, by monitor ref. `background` holds the ends
-  # that no turn took (`Helyx.Session.Background`). `unconfirmed` holds each
-  # handle that a release left unconfirmed; the log got it then. `release_ms`
-  # and `connect_ms` are seams for tests, and `hooks` holds the hook modules and
-  # their limits of each point.
+  # `release_ms` and `connect_ms` are seams for tests.
   @enforce_keys [:core, :cwd, :background_dir, :session, :tools]
 
   # The default release deadline, the one source (`Helyx.Session.Server.Stop`

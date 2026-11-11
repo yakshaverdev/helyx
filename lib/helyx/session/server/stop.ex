@@ -1,11 +1,8 @@
 defmodule Helyx.Session.Server.Stop do
   @moduledoc false
-  # The stop of a session (`terminate/2` of `Helyx.Session.Server`): the work
-  # that `work/1` lists ends, the kill of a prepare Task or the close of
-  # provider processes, then the stop of the hands, the delete of the
-  # background folder, and the release of the writer lock. `run/1` returns
-  # the stop report (docs/features/session-lifecycle.md, "Session stop").
-  # Each wait has a margin for load, so the supervisor does not kill it
+  # The stop of a session (`terminate/2` of `Helyx.Session.Server`). `run/1`
+  # returns the stop report (docs/features/session-lifecycle.md, "Session
+  # stop"). Each wait has a margin for load, so the supervisor does not kill it
   # first: `shutdown_ms/0` is the shutdown of the session process.
 
   import Helyx.Session.Server.State, only: [ask: 4]

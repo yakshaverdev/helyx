@@ -1,15 +1,9 @@
 defmodule Helyx.Session.Server.Wait do
   @moduledoc false
   # The turn cleanup (docs/features/session-lifecycle.md, "Turn end"): the end
-  # of a turn, and the wait before the next turn. The wait holds the answer of
-  # the hands to a cleanup request (`hands`), the answer of the provider to an
-  # interrupt or an idle close (`reply`), and a provider process that ends,
-  # until its `:DOWN`. Each part is bounded: the hands by their release
-  # deadlines, a reply by its armed kill. `callers` get their reply at the end.
-  # While its `turn_end` waits for the hands, `running` holds that event's
-  # data and the UI blocks that the turn still shows. `settle` is the
-  # `before_settle` chain (`Helyx.Session.Server.Settle`). Every message of a
-  # client queues until the end.
+  # of a turn, and the wait before the next turn. Each part is bounded: the
+  # hands by their release deadlines, a reply by its armed kill. `callers` get
+  # their reply at the end. Every message of a client queues until the end.
 
   require Logger
 

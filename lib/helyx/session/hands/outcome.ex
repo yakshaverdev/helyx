@@ -1,10 +1,8 @@
 defmodule Helyx.Session.Hands.Outcome do
   @moduledoc false
-  # The message to the session for the end of a Task of `Helyx.Session.Hands`: a
-  # tool result, the end of a background run, the answer of a `before_settle`
-  # chain, the decision of an approval chain, or the end of the provider
-  # process. Every result and background end leaves the hands through here, so
-  # text is made valid and cut to the limit once.
+  # The message to the session for the end of a Task of `Helyx.Session.Hands`.
+  # Every result and background end leaves the hands through here, so text is
+  # made valid and cut to the limit once.
 
   alias Helyx.Session.Background
   alias Helyx.Session.Hands.Entry

@@ -14,12 +14,8 @@ defmodule Helyx.Session.File.Edit do
 
   defmodule Copy do
     @moduledoc false
-    # The state of the copy: the removed message ids, and the call ids of
-    # their tool calls and results (`calls`), the id of the last kept entry
-    # (`leaf`) and message (`last`), the removed ids that wait for the next
-    # kept user or assistant message (`pending`), and that message for each of
-    # them (`next`). `lock` writes the copy; `buffer` holds the kept lines not
-    # yet sent, reversed, `size` bytes.
+    # The state of the copy. `lock` writes the copy; `buffer` holds the kept
+    # lines not yet sent, reversed, `size` bytes.
     @enforce_keys [:removed, :calls, :lock]
     defstruct [:removed, :calls, :lock, :leaf, :last, pending: [], next: %{}, buffer: [], size: 0]
   end

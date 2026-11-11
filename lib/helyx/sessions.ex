@@ -198,12 +198,8 @@ defmodule Helyx.Sessions do
   answer in time, and `:unknown`, an end of the work with no result, such
   as at a stop of the Core.
 
-  It does not remove what is kept outside the file: the empty lock file
-  `<id>.lock`, the child sessions that its tool calls started (each its
-  own saved session, `child_id/2`), the stored state of a harness program
-  that its resume ids name, the copies that a memory plugin or another
-  plugin keeps, and the bytes that the filesystem or a backup keeps
-  (`docs/features/session-edit.md`).
+  It does not remove what is kept outside the file
+  (`docs/features/session-edit.md`, "What the calls do not remove").
   """
   @spec delete(Helyx.Core.name(), String.t()) ::
           :ok
@@ -232,9 +228,7 @@ defmodule Helyx.Sessions do
   tool call and result pairs: a removed assistant message takes the tool
   results right after it, and a removed tool result takes that assistant
   message and its other results. The `hook` entries that name a call id
-  of the removed messages go too, by the call id alone. The call takes the
-  writer lock of the file, reads the file as a resume does, writes a copy
-  without them, and replaces the file with it under the lock. After it the
+  of the removed messages go too, by the call id alone. After the call the
   file holds no byte of the removed messages, is one chain, and a resume,
   and its `Helyx.Memory` sync, gives the other messages in their order.
 
@@ -246,12 +240,8 @@ defmodule Helyx.Sessions do
   of the deadline gives `:timeout`. The two exceptions of `delete/2` hold
   for the rename.
 
-  It does not remove: the copies of `delete/2`, a summary that a model
-  wrote of the text, a system prompt entry that a ModelContext plugin
-  built with the text, the end message of a background run that a removed
-  call started, the resume id of a provider and the history that it
-  names, and the transcript of a running session, which it refuses
-  (`docs/features/session-edit.md`).
+  It does not remove what is kept outside the file
+  (`docs/features/session-edit.md`, "What the calls do not remove").
   """
   @spec remove_message(Helyx.Core.name(), String.t(), String.t()) ::
           {:ok, [String.t()]}

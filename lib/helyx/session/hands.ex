@@ -12,8 +12,6 @@ defmodule Helyx.Session.Hands do
 
   A provider start answers as `{:provider_start, ref, {:ok, pid} | {:error,
   text}}` and its process end as `{:provider_down, pid, reason}` (ADR 0007).
-  Each Task is a `Helyx.Session.Hands.Entry`, and every end of a Task goes
-  through `Helyx.Session.Hands.End`.
   """
 
   use GenServer

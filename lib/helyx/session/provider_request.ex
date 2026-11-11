@@ -1,9 +1,7 @@
 defmodule Helyx.Session.ProviderRequest do
   @moduledoc false
   # A request of Core to the provider process (ADR 0007,
-  # docs/features/session-lifecycle.md): its send with an armed kill, the
-  # cancel of the kill at the answer, its kind, the replies that its kind takes,
-  # and the replies that end the provider process.
+  # docs/features/session-lifecycle.md).
   #
   # Every session request has a kill of the provider process armed at the OTP
   # timer server (`ask/3`). The loop of `Helyx.Session.ProviderProcess` cancels

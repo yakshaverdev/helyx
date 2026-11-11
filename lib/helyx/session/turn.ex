@@ -1,23 +1,13 @@
 defmodule Helyx.Session.Turn do
   @moduledoc false
   # The turn in progress. `partial` is the assistant content so far as a
-  # reversed block list, or nil before the first stream event, `bytes` the size
-  # of its text, thinking, and tool calls, and `blocks` its block count. `model`
-  # and `provider` are fixed when the turn starts. The turn's step is the
-  # session's phase, not a field here (`Helyx.Session.Server.Flow`).
+  # reversed block list. `model` and `provider` are fixed when the turn starts.
+  # The turn's step is the session's phase, not a field here
+  # (`Helyx.Session.Server.Flow`).
   #
   # `prepare` is `{ref, pid, messages}`: the ref and the pid of the running
   # prepare Task and the messages that it got; only a reply with that ref is the
-  # Task's context. `tool_queue` holds the Helyx tool requests of the turn,
-  # `approval_chains` the approval requests of the provider, `owners` the owner
-  # of each open call that a request named, `asks` the open asks of its calls,
-  # and `askers` the call and hook Tasks that may ask. `compact` is nil for a
-  # turn with a prompt, and `:reported` after the provider's first compaction
-  # event (docs/features/harness-compaction.md). `start` is the number of
-  # transcript messages when the turn opened, and `started_ms` the monotonic
-  # time then. `recall` is the recall message of the prepared `context`, and
-  # `ui_blocks`, `held_results`, `helyx_calls`, and `helyx_calls_refused` are
-  # the UI blocks of the turn (`Helyx.Session.Server.UIBlocks`).
+  # Task's context.
 
   alias Helyx.{Message, ModelRef}
 

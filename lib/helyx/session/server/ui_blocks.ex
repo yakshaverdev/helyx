@@ -2,13 +2,7 @@ defmodule Helyx.Session.Server.UIBlocks do
   @moduledoc false
   # The UI blocks of the running turn (docs/features/ui-blocks.md): the only
   # writer of `ui_blocks`, `held_results`, `helyx_calls`, and
-  # `helyx_calls_refused` in `Helyx.Session.Turn`. `ui_blocks` holds the newest
-  # block of each pair of call id and key, in the order of the first event of
-  # the pair, for the snapshot; the blocks of a call leave when its result
-  # joins. `held_results` holds the blocks of the hands' result of a Helyx
-  # call until the provider's `tool_result` event joins it. `helyx_calls`
-  # holds the id of each Helyx tool request of the turn, so a provider block
-  # that names one is dropped (ADR 0011 §3).
+  # `helyx_calls_refused` in `Helyx.Session.Turn`.
 
   import Helyx.Session.Server.Events, only: [emit: 3]
 

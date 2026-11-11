@@ -3,14 +3,8 @@ defmodule Helyx.Session.ToolRegistry do
   # The tools of one session: its fixed tools, and the groups of entries that
   # its tool sources put (docs/features/mcp-client.md). Pure: the session keeps
   # it, sends the tool map to the hands, and emits the notices that each change
-  # gives.
-  #
-  # `fixed` holds each fixed tool by name: its module, its spec, and its flag of
-  # `Helyx.Tool.concurrent/1`. `groups` holds each group by `{source, group}`
-  # with its state and its entries. `activated` holds the activated deferred
-  # names in drop order. `version` counts the changes of the groups
-  # (`deferred/2`), and `waiters` holds the callers that wait for the next one.
-  # `specs` and `tools` follow from the rest at each change (`derive/1`).
+  # gives. `specs` and `tools` follow from the rest at each change
+  # (`derive/1`).
 
   alias Helyx.Session.ToolSpecs
 

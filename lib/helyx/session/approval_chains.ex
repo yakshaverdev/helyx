@@ -1,13 +1,9 @@
 defmodule Helyx.Session.ApprovalChains do
   @moduledoc false
   # The set of approval chains of one turn (ADR 0013 §3 and §4,
-  # docs/features/hooks.md): the approval requests of the provider for calls of
-  # its own tools, each decided by the `before_tool` chain of its call.
-  # `running` holds the chains that run on the hands, by call id, with the
-  # approval id of their request, and `waiting` at most @max_waiting more, in
-  # arrival order. A call has at most one pending request. The set takes no
-  # place of the tool queue: the provider, not the hands, gives the result of
-  # the call.
+  # docs/features/hooks.md). A call has at most one pending request. The set
+  # takes no place of the tool queue: the provider, not the hands, gives the
+  # result of the call.
   #
   # The functions return the struct with the effects for the session, in order:
   # `{:run, approval_id, call}` and `{:answer, approval_id, decision}`.

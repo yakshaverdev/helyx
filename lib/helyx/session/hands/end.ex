@@ -1,10 +1,5 @@
 defmodule Helyx.Session.Hands.End do
   @moduledoc false
-  # The end of a Task of `Helyx.Session.Hands`, by the kind of its entry
-  # (`Helyx.Session.Hands.Entry`): the result of a call, the end of a
-  # background run, the answer of a chain, the end of the provider process, a
-  # hook, and a Task of a tool source.
-  #
   # Every end runs the same sequence (`finish/5`): the Tasks that still run are
   # killed, the handles of each go to the `release/3` of its tool with one mode
   # and one deadline, and each entry leaves the state. The outcome of a Task

@@ -39,9 +39,7 @@ defmodule Helyx.Session.File do
 
   defmodule Resumed do
     @moduledoc """
-    What `resume_picked/3` restores: the file, the current model, the
-    messages, the last summary, the last compaction, the last resume id of
-    each provider, and the names of the last `tools_change` entry
+    What `resume_picked/3` restores
     (`Helyx.Session.Transcript.label/0`, `Helyx.Session.Totals.of/2`,
     docs/features/mcp-client.md).
     """
@@ -154,10 +152,7 @@ defmodule Helyx.Session.File do
   @doc """
   Reads the session file at `path`, a result of `pick/3` for `cwd`, and
   returns the file handle, the current model, and the transcript. The rules
-  for a damaged file are in `docs/features/coding-agent.md`, "Session file:"
-  a line that does not decode is skipped, and an entry that does not continue
-  the chain is `{:invalid_file, text}` with its line number. A header that
-  names another directory is `:not_found`.
+  for a damaged file are in `docs/features/coding-agent.md`, "Session file".
 
   The read takes one line at a time, so the file has no size limit. A line
   over #{@max_entry_bytes} bytes, or one whose decode needs a heap over

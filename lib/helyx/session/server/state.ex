@@ -43,9 +43,6 @@ defmodule Helyx.Session.Server.State do
     # The registered ModelContext, Compaction, and Memory plugins by
     # interface, each nil for none.
     plugins: %{model_context: nil, compaction: nil, memory: nil},
-    # The tools and the tool sources of the session
-    # (`Helyx.Session.ToolRegistry`), and the source process of each source
-    # that runs, by pid (`Helyx.Session.Server.Sources`).
     registry: %Helyx.Session.ToolRegistry{},
     sources: %{},
     # The checked options of the start or the resume for each `init/3`
@@ -56,14 +53,8 @@ defmodule Helyx.Session.Server.State do
     # last subscribe, the seq up to which it acked
     # (docs/features/replay-ring.md), and whether it can answer an ask.
     subscribers: %{},
-    # The seq of the newest event, and the newest events of the session
-    # (`Helyx.Session.Ring`).
     ring: %Helyx.Session.Ring{},
-    # The turn in progress, the wait before the next turn can start, or none,
-    # with the provider process of the session (`Helyx.Session.Server.Flow`).
     phase: %Flow.Idle{},
-    # The steer state: the queues and the sent steers, and a hook's continue
-    # with the count of turns in a row (`Helyx.Session.Queue`).
     queue: %Queue{},
     # The last resume id per provider id, with the number of assistant
     # messages then.

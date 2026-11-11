@@ -7,12 +7,9 @@ defmodule Helyx.Session.Queue do
   # steers and the ledger share the 32 of the steers
   # (docs/features/session-lifecycle.md, "Bounds").
   #
-  # `%Helyx.Session.Queue.Ends{}` holds the background ends that wait, in
-  # arrival order, and counts the runs from their start answer to their end
-  # (docs/features/background-bash.md). An end that a turn sent is in the ledger
-  # as `{:end, item}`. `continue` is the user message of a hook's continue, and
-  # `hook_turns` the turns in a row that a continue started
-  # (docs/features/before-settle.md).
+  # `%Helyx.Session.Queue.Ends{}` holds the background ends that wait, and
+  # `continue` and `hook_turns` the continue of a hook
+  # (docs/features/background-bash.md, docs/features/before-settle.md).
   #
   # The ledger functions return the struct with the effects for the session, in
   # order: `{:take, item}`, `{:notice, turn_id, item}`, and `{:dropped, items}`.
