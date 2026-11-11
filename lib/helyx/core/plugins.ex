@@ -5,16 +5,7 @@ defmodule Helyx.Core.Plugins do
 
   @type table :: %{module() => [module()]}
 
-  @doc """
-  Checks the shape of the plugins value, groups plugins by interface, and
-  checks each interface's mode.
-
-  A value that is not a proper list is `{:invalid_plugins, value}`. An entry
-  that is not an atom naming a loadable Elixir module is `{:invalid_plugin,
-  entry}`. When every entry is a module, a module listed twice is
-  `{:duplicate_plugin, module}`, which names the module of the first repeated
-  entry. A module that implements no interface is `{:not_a_plugin, module}`.
-  """
+  @doc "Checks the plugins value, groups the plugins by interface, and checks each interface's mode."
   @spec resolve(term()) :: {:ok, table()} | {:error, term()}
   def resolve(plugins) do
     with :ok <- check_shape(plugins),
@@ -80,12 +71,7 @@ defmodule Helyx.Core.Plugins do
   defp not_a_plugin({plugin, []}), do: {:not_a_plugin, plugin}
   defp not_a_plugin(_implemented), do: nil
 
-  @doc """
-  Maps each provider id to its plugin. It calls `id/0` of each provider once,
-  at Core start. An `id/0` that returns a value that is not a binary is
-  `{:invalid_provider_id, plugin}`. Two different providers with one id are
-  `{:duplicate_provider_id, id, [first, second]}`.
-  """
+  @doc "Maps each provider id to its plugin, after one call of `id/0` of each provider."
   @spec provider_ids([module()]) :: {:ok, %{String.t() => module()}} | {:error, term()}
   def provider_ids(providers) do
     Enum.reduce_while(providers, {:ok, %{}}, fn plugin, {:ok, ids} ->
@@ -117,16 +103,7 @@ defmodule Helyx.Core.Plugins do
     end)
   end
 
-  @doc """
-  The hook modules of each point with their limits, in plugin order
-  (`docs/features/hooks.md`). A hook plugin that exports no point is
-  `{:no_hook_point, module}`. A `limit/1` that is not exported, or that
-  returns for a point of the plugin a value that is not an integer from 1
-  to `Helyx.Hook.max_limit_ms/0`, is `{:invalid_hook_limit, module}`. A
-  plugin on `before_settle` whose name is over the bytes of an origin id,
-  the id of its continue message, is `{:invalid_hook_name, module}`
-  (`docs/features/before-settle.md`).
-  """
+  @doc "The hook modules of each point with their limits, in plugin order."
   @spec hooks([module()]) ::
           {:ok, %{Helyx.Hook.point() => [{module(), pos_integer()}]}}
           | {:error, {:no_hook_point | :invalid_hook_limit | :invalid_hook_name, module()}}
@@ -166,12 +143,7 @@ defmodule Helyx.Core.Plugins do
 
   defp limit?(ms), do: is_integer(ms) and ms in 1..Helyx.Hook.max_limit_ms()//1
 
-  @doc """
-  Checks each Tool plugin: a fixed tool exports `name/0`, `description/0`,
-  and `parameters/0`; a tool source exports `source/1` and none of them;
-  both export `run/2`. Any other is `{:invalid_tool_plugin, module}`
-  (`docs/features/mcp-client.md`).
-  """
+  @doc "Checks each Tool plugin: a fixed tool, or a tool source."
   @spec tools([module()]) :: :ok | {:error, {:invalid_tool_plugin, module()}}
   def tools(plugins) do
     case Enum.find(plugins, &(not tool_kind?(&1))) do
@@ -195,7 +167,6 @@ defmodule Helyx.Core.Plugins do
     if is_binary(id), do: {:ok, id}, else: :error
   end
 
-  # Returns the error for an interface and its plugins, or nil when they fit.
   defp check_mode({interface, [_, _ | _] = plugins}) do
     if @modes[interface] == :single,
       do: {:mode_violation, interface, plugins}

@@ -90,13 +90,10 @@ defmodule Helyx.Hook do
 
   @doc """
   Asks the clients of the session from a hook Task, as `Helyx.Tool.ask/1`
-  does from a call Task: the same request rules, the same `:ask` event
-  with the call id and the tool name, and the same answers. Any other
-  caller than a hook Task of a running call, a `before_settle` hook too,
-  gets `{:error, :not_running}`: the session checks it against its record of the call
-  and hook Tasks that the hands started. The session ends the ask with the outcome `:ended` when
-  the hook Task ends, so a hook killed at its limit leaves no question
-  open.
+  does from a call Task. Another caller than a hook Task of a running call,
+  a `before_settle` hook too, gets `{:error, :not_running}`. The session
+  ends the ask with the outcome `:ended` when the hook Task ends, so a hook
+  killed at its limit leaves no question open.
   """
   @spec ask(map()) :: {:ok, map()} | {:error, :no_client | :not_running}
   def ask(request), do: Helyx.Session.Ask.ask(:hook, request)

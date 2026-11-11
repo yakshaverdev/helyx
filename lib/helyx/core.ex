@@ -10,46 +10,34 @@ defmodule Helyx.Core do
 
       children = [{Helyx.Core, plugins: [Helyx.Provider.Fake]}]
 
-  Core first checks the shape of the plugins value. It refuses to start with
-  `{:invalid_plugins, value}` when the value is not a proper list, and with
-  `{:invalid_plugin, entry}` when an entry is not an atom that names a
-  loadable Elixir module (an Erlang module such as `:lists` is not one), and
-  with `{:duplicate_plugin, module}` when a module is listed twice.
-
-  Core checks every plugin against the interfaces it implements. It refuses to
-  start with `{:mode_violation, interface, plugins}` when a `:single`
-  interface receives more than one plugin, and with `{:not_a_plugin, module}`
-  when a module implements no interface at all. It refuses to start with
-  `{:missing_plugin, Helyx.Provider}` when no provider is listed. It calls
-  `id/0` of each provider once, and refuses to start with
-  `{:invalid_provider_id, plugin}` when one returns a value that is not a
-  binary, and with `{:duplicate_provider_id, id, [first, second]}` when two
-  different providers share an id. It calls the optional
-  `max_output_tokens?/0` of each provider once, and refuses to start with
-  `{:invalid_max_output_tokens, plugin}` when one returns a value that is
-  not a boolean (`docs/features/output-limit.md`). It calls `limit/1` of
-  each hook plugin once for each point that the plugin exports, and
-  refuses to start with `{:no_hook_point, plugin}` when a hook plugin
-  exports no point, with `{:invalid_hook_limit, plugin}` when a limit
-  is not an integer from 1 to 600,000 (`docs/features/hooks.md`), and with
-  `{:invalid_hook_name, plugin}` when a plugin on `before_settle` has a
-  name over 256 bytes (`docs/features/before-settle.md`). A Tool plugin that
-  is neither a fixed tool nor a tool source refuses the start with
-  `{:invalid_tool_plugin, plugin}` (`docs/features/mcp-client.md`). A plugin callback that
-  raises, throws, or exits at start is not contained: the error goes to the
-  caller.
+  Core checks that the plugins value is a proper list of atoms that name
+  loadable Elixir modules, listed once, then groups the plugins by interface
+  and checks each interface's mode. It calls `id/0` of each provider once,
+  the optional `max_output_tokens?/0` once, `limit/1` of each hook plugin
+  once for each point that the plugin exports, and checks each Tool plugin.
+  Any check that fails refuses the start with its error tuple:
+  `{:invalid_plugins, value}`, `{:invalid_plugin, entry}`,
+  `{:duplicate_plugin, module}`, `{:not_a_plugin, module}`,
+  `{:mode_violation, interface, plugins}`, `{:missing_plugin,
+  Helyx.Provider}`, `{:invalid_provider_id, plugin}`,
+  `{:duplicate_provider_id, id, [first, second]}`,
+  `{:invalid_max_output_tokens, plugin}`, `{:no_hook_point, plugin}`,
+  `{:invalid_hook_limit, plugin}`, `{:invalid_hook_name, plugin}`, and
+  `{:invalid_tool_plugin, plugin}`. The bounds behind them are in
+  `docs/features/coding-agent.md`, "Bounds", `docs/features/hooks.md`,
+  `docs/features/before-settle.md`, `docs/features/output-limit.md`, and
+  `docs/features/mcp-client.md`. A plugin callback that raises, throws, or
+  exits at start is not contained: the error goes to the caller.
 
   A plugin that exports `child_spec/1` gets its process tree started under
   Core, with `[core: name]` as the argument.
 
   `recall_ms` is the limit of a `Helyx.Memory` recall, an integer from 1 to
   9,000, default #{@recall_ms}; any other value stops the start with
-  `{:invalid_recall_ms, value}` (`docs/features/memory.md`).
-
-  The server configuration of `Helyx.Sessions` is two more options:
-  `:sessions_dir`, the folder of the session files, and `:model`, the
-  default model ref. A path that is not absolute, not valid UTF-8, or holds a NUL byte, or
-  a model that does not parse as a model ref, refuses the start with
+  `{:invalid_recall_ms, value}` (`docs/features/memory.md`). The server
+  configuration of `Helyx.Sessions` adds `:sessions_dir`, the folder of the
+  session files, and `:model`, the default model ref; a path that is not
+  absolute and valid, or a model that does not parse, refuses the start with
   `{:invalid_option, key}`. Core runs at most 64 sessions
   (`docs/features/server-management.md`).
 

@@ -5,9 +5,9 @@ defmodule Helyx.UIBlock do
   A UI block is a JSON object with string keys: `"kind"`, a name of 1 to 64
   bytes of `a`-`z`, `0`-`9`, and `_`; `"text"`, its fallback text; `"cut"`,
   a boolean when present; and the fields of its kind, which Core does not
-  read. Its bound is the JSON encode of #{65_536} bytes
-  (`Helyx.Message.max_result_bytes/0`). A block over the bound becomes
-  `%{"kind" => kind, "text" => cut_text, "cut" => true}`.
+  read. Its bound is
+  `Helyx.Message.max_result_bytes/0` bytes of JSON encode. A block over the
+  bound becomes `%{"kind" => kind, "text" => cut_text, "cut" => true}`.
   """
 
   alias Helyx.Message

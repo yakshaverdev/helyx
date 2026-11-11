@@ -22,13 +22,11 @@ defmodule Helyx.Provider.Loop do
 
   `opts` carry `:core`, `:session_id`, `:turn_id`, `:cwd`, and
   `:max_output_tokens`, the session's limit or nil: a provider that applies
-  it defines `max_output_tokens?/0` (`docs/features/output-limit.md`). The
-  model Task consumes the enumerable up to the first `done` or `error`. Any
-  other event, or a call whose id repeats in the message, ends the provider
-  process with `{:bad_stream_event, event}`; Core checks the rest as it
-  checks every provider event. A stream faster than the provider process
-  ends at over 10,000 waiting messages with `{:error, {:provider_behind,
-  length, 10_000}}`.
+  it defines `max_output_tokens?/0` (`docs/features/output-limit.md`). Any
+  event other than these, or a call whose id repeats in the message, ends
+  the provider process with `{:bad_stream_event, event}`. A stream faster
+  than the provider process ends at over 10,000 waiting messages with
+  `{:error, {:provider_behind, length, 10_000}}`.
 
   What the helper does for each request and message of a turn is the table
   of the feature doc; its usage rules are in
@@ -98,7 +96,6 @@ defmodule Helyx.Provider.Loop do
   def request({:turn, turn_id, context}, from, %{phase: {:context, _}} = state),
     do: {:ok, [{:reply, from, :ok}], model_call(%{state | steers: []}, context, turn_id)}
 
-  # A steer of the live turn is held for the next model call.
   def request({:steer, turn_id, steer_id, _text}, from, state) do
     if live?(state.phase, turn_id),
       do: {:ok, [{:reply, from, :ok}], %{state | steers: state.steers ++ [steer_id]}},
@@ -215,7 +212,6 @@ defmodule Helyx.Provider.Loop do
     {:ok, [{:event, turn, {:tool_call, call}}], %{state | phase: phase}}
   end
 
-  # The process ends as it ends at a malformed event of the provider.
   defp bad(event), do: exit({:shutdown, {:bad_stream_event, event}})
 
   # A usage that is not valid goes to Core in the done, which Core rejects.
@@ -231,7 +227,6 @@ defmodule Helyx.Provider.Loop do
   # A malformed done, which Core rejects.
   defp terminal({:done, _} = done, state), do: finish(done, state)
 
-  # A call that finished with a valid usage. The kept usage joins it.
   defp called(
          %{stop_reason: stop, usage: usage} = fields,
          %{phase: {:calling, turn, _, content?, calls}} = state

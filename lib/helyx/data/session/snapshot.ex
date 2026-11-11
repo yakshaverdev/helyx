@@ -4,9 +4,8 @@ defmodule Helyx.Session.Snapshot do
   returns it (`docs/features/session-snapshot.md`).
 
     * `instance_id` – the id of the session instance. A client that
-      reconnects drops each event with another `instance_id`: a resume keeps
-      the session id and starts `seq` at 0 again, and two Cores can hold one
-      session id.
+      reconnects drops each event with another `instance_id`
+      (`docs/features/session-instance.md`).
     * `seq` – the seq of the last event sent before the snapshot, 0 if none.
       A client that reconnects drops each later event with a `seq` at or
       below it.
@@ -18,8 +17,7 @@ defmodule Helyx.Session.Snapshot do
     * `turn` – nil, or the running turn: its `id`, the assistant message
       so far as `partial` (nil before the first stream event), and
       `elapsed_ms`, the milliseconds since the turn started, by the clock
-      of the session. A turn whose `:turn_end` waits for the cleanup of the
-      hands still runs, with `partial` nil.
+      of the session.
     * `model` – the session's `provider/model` ref.
     * `queue` – the counts of the queued steers and follow-ups, the
       running background runs, and the held and waiting background ends, as

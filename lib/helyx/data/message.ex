@@ -2,14 +2,15 @@ defmodule Helyx.Message do
   @moduledoc """
   One message in a conversation: from the user, from the assistant, or a tool
   result. Content is a list of blocks. The shape is provider neutral and
-  follows ADR 0001; the field names are the ones `docs/features/coding-agent.md`
-  lists under the session file.
+  follows ADR 0001; the field names are those of the session file
+  (`docs/features/coding-agent.md`).
 
-  A tool result message links to its call with `tool_call_id` and `tool_name`,
-  and flags a failed call with `is_error`. Its `ui_blocks` are the UI blocks
-  that the tool returned for the clients (`Helyx.UIBlock`,
-  `docs/features/ui-blocks.md`); a provider never sends them to the model.
-  Every other message has none.
+  A tool result links to its call with `tool_call_id` and `tool_name`, flags
+  a failed call with `is_error`, and holds the UI blocks for the clients in
+  `ui_blocks`, never for the model (`docs/features/ui-blocks.md`). Core sets
+  `id` on every message that joins a session and `origin` on every user
+  message (`docs/features/message-identity.md`); a message that a provider
+  builds for its own wire has neither.
 
   Core sets `id` on every message that joins a session, and `origin` on
   every user message: `%{kind: :user | :background | :product | :hook, id:
