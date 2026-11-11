@@ -120,15 +120,13 @@ defmodule CodingAgent do
       with {:ok, id, cwd, resumed} <- loading(fn -> open_remote(conn, opts) end) do
         dir = Keyword.fetch!(opts, :sessions_dir)
 
-        CodingAgent.LogFile.run(Path.join(dir, "tui.log"), fn held ->
-          Helyx.TUI.run(
-            session: %Link{conn: conn, id: id},
-            resumed: resumed,
-            cwd: cwd,
-            reconnect: reconnect(dir),
-            notices: notices(held)
-          )
-        end)
+        Helyx.TUI.run(
+          session: %Link{conn: conn, id: id},
+          resumed: resumed,
+          cwd: cwd,
+          reconnect: reconnect(dir),
+          notices: notices(Keyword.fetch!(opts, :held))
+        )
       end
     after
       # The connection ended with the TUI that took it; one that no TUI

@@ -83,9 +83,7 @@ defmodule CodingAgent.Attach do
       # to the file of the TUI (decision 9), and a failed start prints one
       # line.
       :ok ->
-        CodingAgent.LogFile.run(Path.join(dir, "tui.log"), fn _held ->
-          run_server(dir, model, fun)
-        end)
+        run_server(dir, model, fun)
 
       error ->
         fun.(error)

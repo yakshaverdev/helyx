@@ -331,12 +331,25 @@ defmodule CodingAgent.CLI do
     dir = run[:sessions_dir]
 
     case {CodingAgent.Attach.connect(dir), launcher, Bash.check()} do
-      {:none, _launcher, {:error, reason}} -> {:error, {:tool_unavailable, Bash.name(), reason}}
-      {:none, nil, :ok} -> CodingAgent.Attach.serve(dir, @default_model, &attach(opts, run, &1))
-      {:none, launcher, :ok} -> attach(opts, run, CodingAgent.Attach.start(dir, launcher))
-      {found, _launcher, _perl} -> attach(opts, run, found)
+      {:none, _launcher, {:error, reason}} ->
+        {:error, {:tool_unavailable, Bash.name(), reason}}
+
+      # One VM has one set of log handlers: the log of the VM, and of a
+      # server that it runs, goes to tui.log while the TUI runs.
+      found ->
+        CodingAgent.LogFile.run(Path.join(dir, "tui.log"), fn held ->
+          held_start(opts, [held: held] ++ run, dir, found)
+        end)
     end
   end
+
+  defp held_start(opts, run, dir, {:none, nil, :ok}),
+    do: CodingAgent.Attach.serve(dir, @default_model, &attach(opts, run, &1))
+
+  defp held_start(opts, run, dir, {:none, launcher, :ok}),
+    do: attach(opts, run, CodingAgent.Attach.start(dir, launcher))
+
+  defp held_start(opts, run, _dir, {found, _launcher, _perl}), do: attach(opts, run, found)
 
   defp attach(opts, run, {:ok, socket, ws}),
     do: CodingAgent.attach(socket, ws, Keyword.take(opts, [:model]) ++ reattach(opts, run))
