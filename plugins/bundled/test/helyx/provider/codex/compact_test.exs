@@ -75,7 +75,7 @@ defmodule Helyx.Provider.Codex.CompactTest do
              {:event, "t1", {:error, %Helyx.ProviderError{kind: :compaction_failed}}}
            ] = actions
 
-    assert state.turn_id == nil
+    assert state.phase == :idle
     close(state)
     assert request(bin, 1, "thread/compact/start") == nil
   end

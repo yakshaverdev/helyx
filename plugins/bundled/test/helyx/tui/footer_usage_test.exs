@@ -171,14 +171,14 @@ defmodule Helyx.TUI.FooterUsageTest do
           "outputTokens" => 5
         })
 
-      {:done, %{usage: usage}} = Items.terminal(%{"status" => "completed"}, items)
+      {:done, %{usage: usage}} = Items.terminal(%{"status" => "completed"}, items, false)
       model = "codex/gpt-6.1-sol"
 
       assert row([Message.user("one"), assistant(usage, model)], model) ==
                "codex/gpt-6.1-sol · idle · in 52.3k out 10 · cache 68% · $? · 5%"
 
       # A done with no notification: the unknown usage.
-      {:done, %{usage: unknown}} = Items.terminal(%{"status" => "completed"}, %Items{})
+      {:done, %{usage: unknown}} = Items.terminal(%{"status" => "completed"}, %Items{}, false)
       assert row([assistant(unknown, model)], model) == "codex/gpt-6.1-sol · idle · $?"
     end
 
