@@ -22,7 +22,7 @@ Fill this in when the feature replaces or merges a protocol, a state machine, or
 
 ## Bounds
 
-Every input, buffer, and wait, with its bound. A bound that does not exist yet is written as "unbounded, ticket #N", never left out. Each row names where the bound is enforced. Explain any additional checks required by transformations, accumulation, elapsed time, or rendering.
+Every input, buffer, and wait, with its bound. A bound that does not exist yet is written as "unbounded, ticket #N", never left out. Each row names where the bound is enforced. State each bound once: the doc names the function or module attribute that holds the value (for example `CodingAgent.Print.abort_ms/0`) and gives the reason for the value; a test reads the same function; neither repeats the number. Explain any additional checks required by transformations, accumulation, elapsed time, or rendering.
 
 | What | Bound | Over the bound |
 | ---- | ----- | -------------- |

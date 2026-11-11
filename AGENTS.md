@@ -90,7 +90,7 @@ Run from the repository root. The Mix projects are the root, `plugins/bundled` w
 ## Docs conventions
 
 - **Devlogs** (`docs/devlogs/`): one file per work session, named `YYYY-MM-DD-<topic>.md`. Record what was done, what broke, and what is next.
-- **Features** (`docs/features/`): one file per feature, named `<slug>.md`. Write the design before the implementation, starting from `docs/features/TEMPLATE.md`. State the goal, the interface changes, the bounds of every input, buffer, and wait, and what stays out of scope.
+- **Features** (`docs/features/`): one file per feature, named `<slug>.md`. Write the design before the implementation, starting from `docs/features/TEMPLATE.md`. State the goal, the interface changes, the bounds of every input, buffer, and wait, and what stays out of scope. State each bound once: the doc names the function or module attribute that holds the value (for example `CodingAgent.Print.abort_ms/0`) and gives the reason for the value; a test reads the same function; neither repeats the number.
 - **Research** (`docs/research/`): facts gathered from outside sources, named `<topic>.md`, with the date and the source revisions. It records observations; tickets and feature docs hold the decisions.
 - **Reviews** (`docs/reviews/`): outputs of code reviews, named `YYYY-MM-DD-<scope>.md`, with findings and their resolution.
 - **Decisions** (`docs/adr/`): architecture decision records, named `NNNN-<slug>.md`, with context, decision, and consequences.
