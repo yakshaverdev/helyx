@@ -20,10 +20,13 @@ defmodule Helyx.Session.BoundaryTest do
       {Helyx.SessionTest.BytesName, <<"b", 255>>, "d", @empty, "Helyx.SessionTest.BytesName"},
       {Helyx.SessionTest.NilDesc, "t", nil, @empty, "t"},
       {Helyx.SessionTest.BytesDesc, "t", <<"d", 255>>, @empty, "t"},
+      {Helyx.SessionTest.LongDesc, "t", String.duplicate("d", 4_097), @empty, "t"},
       {Helyx.SessionTest.ListParams, "t", "d", [], "t"},
       {Helyx.SessionTest.AtomKeys, "t", "d", Macro.escape(%{type: "object"}), "t"},
       {Helyx.SessionTest.TupleParams, "t", "d", Macro.escape(%{"type" => {:object}}), "t"},
-      {Helyx.SessionTest.BytesParams, "t", "d", Macro.escape(%{"type" => <<255>>}), "t"}
+      {Helyx.SessionTest.BytesParams, "t", "d", Macro.escape(%{"type" => <<255>>}), "t"},
+      {Helyx.SessionTest.BigParams, "t", "d",
+       Macro.escape(%{"type" => "object", "x" => String.duplicate("p", 16_384)}), "t"}
     ]
 
     for {module, name, description, parameters, _label} <- @bad_specs do
