@@ -146,6 +146,11 @@ defmodule Helyx.Hub.Params do
   # The operations that take params, in a guard.
   def ops, do: Map.keys(@ops)
 
+  @doc false
+  # The bounds of a schedule, for the text of the `schedule` tool.
+  def schedule_bounds,
+    do: %{max_ahead_s: @max_ahead_s, every_s: @every_s, max_prompt_bytes: @max_text_bytes}
+
   def check(op, params) when is_map(params) do
     case Map.fetch(@ops, op) do
       {:ok, row} -> run(row, params)

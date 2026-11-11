@@ -32,12 +32,15 @@ defmodule Helyx.Tool.Schedule do
         "id" => %{"type" => "string", "description" => "The id of the session"},
         "at" => %{
           "type" => "integer",
-          "description" => "When, in POSIX seconds, from now to 366 days on"
+          "description" => "When, in POSIX seconds, from now to #{days()} days on"
         },
-        "prompt" => %{"type" => "string", "description" => "The prompt, at most 16,384 bytes"},
+        "prompt" => %{
+          "type" => "string",
+          "description" => "The prompt, at most #{bounds().max_prompt_bytes} bytes"
+        },
         "every" => %{
           "type" => "integer",
-          "description" => "Optional: the period in seconds, 300 to 2,678,400"
+          "description" => "Optional: the period in seconds, #{every()}"
         }
       },
       "required" => ["id", "at", "prompt"]
@@ -70,8 +73,13 @@ defmodule Helyx.Tool.Schedule do
   defp made({:error, :bad_params}),
     do:
       {:error,
-       "at must be from now to 366 days on, every from 300 to 2,678,400 s, " <>
+       "at must be from now to #{days()} days on, every from #{every()} s, " <>
          "and the prompt not empty"}
 
   defp made({:error, reason}), do: {:error, Coordinator.text(reason)}
+
+  # The Hub owns the bounds (`Helyx.Hub.Params`); the text reads them.
+  defp bounds, do: Helyx.Hub.Params.schedule_bounds()
+  defp days, do: div(bounds().max_ahead_s, 86_400)
+  defp every, do: "#{bounds().every_s.first} to #{bounds().every_s.last}"
 end
