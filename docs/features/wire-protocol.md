@@ -306,7 +306,7 @@ message = {id: string, role: "user" | "assistant" | "tool_result",
 block     = {type: "text", text: string} | {type: "thinking", thinking: string}
           | tool_call
 tool_call = {type: "tool_call", id: string, name: string, arguments: object}
-origin    = {kind: "user" | "background" | "product" | "hook" | "unknown",
+origin    = {kind: "user" | "background" | "product" | "hook",
              id: string | null}
 stop_reason = "end_turn" | "tool_use" | "max_tokens" | "refused" | "aborted" | "error"
 usage = {input: int, output: int, cache_read: int, cache_write: int,
@@ -333,7 +333,7 @@ O6 frames of two subscriptions, and a res and an event, have no order
 
 Notes on the codec:
 
-- `origin` `"unknown"` is a user message of a session file from before #649. `id` is null for `"user"` and `"unknown"` (`docs/features/message-identity.md`). `"hook"` is the user message of a continue of a `before_settle` hook, with the name of the hook module as its `id` (`docs/features/before-settle.md`); a client cannot send it, as it cannot send `"user"`. Protocol 4 added it (#880).
+- `origin`: `id` is null for `"user"` (`docs/features/message-identity.md`). `"hook"` is the user message of a continue of a `before_settle` hook, with the name of the hook module as its `id` (`docs/features/before-settle.md`); a client cannot send it, as it cannot send `"user"`. Protocol 4 added it (#880).
 - `error` of `message_end`: `{kind: "aborted"}` for an aborted turn, `{kind: "failed", text}` for a failed one, where `text` is the error text of the turn (ADR 0006 §2). The two are kept apart, because a failure text can be the word "aborted".
 - `turn_end` `error` and `notice` `text` are text for a person; a client shows them as they are.
 - `arguments` of a tool call is a JSON object whose integers have at most 100 digits (`Helyx.Message.cap_integers/1`). The schema does not bound them, and a client takes any integer (#860).

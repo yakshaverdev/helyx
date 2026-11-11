@@ -325,8 +325,7 @@ defmodule Helyx.TUI.Wire.Decode do
        )
        when is_binary(instance_id) and count?(seq) and is_list(messages) and
               is_boolean(persisting) and is_list(asks) and is_list(ui_blocks) do
-    # Additive: an older server sends none, and the client shows no notice.
-    older = Map.get(wire, "older", 0)
+    older = Map.fetch!(wire, "older")
     true = count?(older)
 
     snapshot = %Snapshot{
