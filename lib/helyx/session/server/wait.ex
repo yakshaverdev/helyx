@@ -32,14 +32,8 @@ defmodule Helyx.Session.Server.Wait do
         }
 
   # The end of the turn, at `outcome`: `{:done, stop_reason, usage}`,
-  # `:aborted`, or `{:error, reason}`, whose reason goes to the log and
-  # becomes its text (`Helyx.Reason`). Its prepare Task is killed, its asks
-  # and records end, and its summary call stops. An abort or a failure gives
-  # the queued texts back and revokes the lease of the turn's background runs
-  # (ADR 0014, invariant 4). While a cleanup runs, `turn_end` waits for its
-  # answer (`cleanup/2`). Only an abort of a turn that sent `{:turn, ...}`
-  # gets an interrupt, after the deny of its pending approval requests and
-  # the `aborted` answers of its open tool requests.
+  # `:aborted`, or `{:error, reason}`. The steps and their order are in
+  # docs/features/session-lifecycle.md, "Turn end".
   @spec finish(
           State.t(),
           {:done, Helyx.Message.stop_reason(), map()} | :aborted | {:error, term()}
@@ -163,8 +157,6 @@ defmodule Helyx.Session.Server.Wait do
     Helyx.Reason.text(reason)
   end
 
-  # An abort in a wait gives the queued texts back, like the abort that
-  # started the wait, and its caller gets the reply at the end of the wait.
   # It drops a compaction and a continue that wait, and ends the
   # `before_settle` chain (`Settle.abort/1`).
   @spec abort(State.t(), GenServer.from()) :: State.t()

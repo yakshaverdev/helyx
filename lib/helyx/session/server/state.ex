@@ -29,7 +29,6 @@ defmodule Helyx.Session.Server.State do
     :provider,
     :cwd,
     :hands,
-    # The folder of the background output files (`Helyx.Session.Hands`).
     :background_dir,
     # The session file and its writer lock: `:never` before the session has a
     # file; `{:saving, file, lock}` while an append goes to disk, with the
@@ -40,8 +39,6 @@ defmodule Helyx.Session.Server.State do
     # The sync worker of the instance (`Helyx.Session.Sync`), or nil with no
     # Memory plugin. Before `Sync.open/1`, nil or `{:replay, messages}`.
     :sync,
-    # The registered ModelContext, Compaction, and Memory plugins by
-    # interface, each nil for none.
     plugins: %{model_context: nil, compaction: nil, memory: nil},
     registry: %Helyx.Session.ToolRegistry{},
     sources: %{},

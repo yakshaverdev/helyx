@@ -1,15 +1,7 @@
 defmodule Helyx.Session.ProviderRequest do
   @moduledoc false
-  # A request of Core to the provider process (ADR 0007,
-  # docs/features/session-lifecycle.md).
-  #
-  # Every session request has a kill of the provider process armed at the OTP
-  # timer server (`ask/3`). The loop of `Helyx.Session.ProviderProcess` cancels
-  # the kill when the provider replies, and sends the reply after the cancel
-  # (`answer/5`). A callback that blocks also blocks the cancel, so a blocked
-  # loop is always killed at the bound. The timer can fire during the cancel,
-  # so a reply can still be followed by the kill; the session takes the
-  # `:provider_down` as the last word.
+  # A request of Core to the provider process, with its armed kill (ADR 0007,
+  # docs/features/session-lifecycle.md, "Deadlines").
 
   @type t :: Helyx.Provider.request()
 
