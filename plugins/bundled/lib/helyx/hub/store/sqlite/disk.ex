@@ -1,21 +1,8 @@
 defmodule Helyx.Hub.Store.SQLite.Disk do
   @moduledoc false
   # The store file of the SQLite store and the files that SQLite keeps beside
-  # it (docs/features/hub.md, decision 9). The decisions on the disk:
-  #
-  # 1. `check/1`, before any change: the file and its WAL, SHM, and journal
-  #    files are each a regular file with one name or nothing. A refused
-  #    start changes nothing.
-  # 2. `create/1`, for a missing file: the file is made in a private folder
-  #    and linked into place. The private folder is the protection: it is set
-  #    to 0700 and then must be empty, so a link that another user put in it
-  #    before the chmod refuses the start, and after the chmod no other user
-  #    can add one. A link never replaces a name.
-  # 3. `own/1`, after the store holds the SQLite lock: the file has one
-  #    name, and the four names get mode 0600. A second name that stays
-  #    @link_wait_ms is in a private folder of a create that another start
-  #    has not removed yet, or that a kill left: the holder of the lock
-  #    removes that folder when its file is this file, else refuses.
+  # it (docs/features/hub.md, decision 9: `check/1`, `create/1`, and `own/1`
+  # are its three steps on the disk).
 
   @sidecars ["-wal", "-shm", "-journal"]
   # The second name of a new file lives from its link to the removal of the
