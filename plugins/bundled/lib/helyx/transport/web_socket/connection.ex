@@ -23,14 +23,10 @@ defmodule Helyx.Transport.WebSocket.Connection do
     Process.send_after(self(), :ping, @ping_ms)
     Process.send_after(self(), :idle, @idle_ms)
 
-    # `ids`: the request ids whose reply was not sent => the writer pid.
-    # `flight`: the writers that count against the requests in flight; a
-    # worker until it ends, a subscription until its reply. `subs`: sub id
-    # => pid. `acks`: the subs that handle an ack or wait for their
-    # subscribe reply => the highest ack that waits for them, 0 for none.
-    # `slot`: the writer that holds the one encoder
-    # slot of a large result, and `waiting` the writers that wait for it, in
-    # order. `nonce`: the one challenge of the connection.
+    # `writers` holds one entry for each writer: its kind, the request ids
+    # whose reply was not sent, its sub id, the ack that waits for it, and
+    # its place in the one encoder slot. `waiting` is the order of the
+    # writers that wait for the slot; `nonce` is the one challenge.
     nonce = :crypto.strong_rand_bytes(32)
 
     {:push, texts(%{"type" => "challenge", "nonce" => Base.encode64(nonce)}),
@@ -40,12 +36,8 @@ defmodule Helyx.Transport.WebSocket.Connection do
        auth: nil,
        parts: nil,
        out: Outbound.new(self()),
-       ids: %{},
-       flight: MapSet.new(),
-       subs: %{},
-       acks: %{},
+       writers: %{},
        next_sub: 0,
-       slot: nil,
        waiting: :queue.new(),
        last_in: now()
      })}
@@ -95,9 +87,9 @@ defmodule Helyx.Transport.WebSocket.Connection do
   defp frame(%{"type" => "req", "id" => id} = req, %{phase: :open} = state)
        when is_binary(id) and byte_size(id) in 1..64 do
     cond do
-      Map.has_key?(state.ids, id) -> close(4400, state)
+      owed?(state, id) -> close(4400, state)
       not is_binary(req["op"]) or not is_map(req["params"]) -> error(id, "bad_params", state)
-      MapSet.size(state.flight) >= @max_in_flight -> error(id, "busy", state)
+      in_flight(state) >= @max_in_flight -> error(id, "busy", state)
       true -> request(id, req["op"], req["params"], state)
     end
   end
@@ -108,9 +100,9 @@ defmodule Helyx.Transport.WebSocket.Connection do
   defp frame(%{"type" => "ack", "sub" => sub, "seq" => seq} = ack, %{phase: :open} = state)
        when map_size(ack) == 3 and is_binary(sub) and is_integer(seq) and seq >= 0 do
     # An ack of a sub that ended is ignored.
-    case state.subs do
-      %{^sub => pid} -> {:ok, ack(state, pid, seq)}
-      _ -> {:ok, state}
+    case sub_writer(state, sub) do
+      nil -> {:ok, state}
+      {pid, _writer} -> {:ok, ack(state, pid, seq)}
     end
   end
 
@@ -135,13 +127,12 @@ defmodule Helyx.Transport.WebSocket.Connection do
 
   defp request(id, "subscribe", params, state) do
     with {:ok, session, opts} <- Ops.subscribe_params(state.core, params),
-         true <- map_size(state.subs) < @max_subscriptions || "too_many_subscriptions" do
+         true <- subs(state) < @max_subscriptions || "too_many_subscriptions" do
       sub = Integer.to_string(state.next_sub)
       access = state.authority && {{state.authority, state.auth}, state.core, params}
       pid = Subscription.start_link(state.out, sub, id, session, opts, access)
-      state = %{track(state, pid, id) | subs: Map.put(state.subs, sub, pid)}
-      state = %{state | acks: Map.put(state.acks, pid, 0)}
-      {:ok, %{state | next_sub: state.next_sub + 1}}
+      writer = {:sub, sub, id, nil, 0, :none}
+      {:ok, %{put_writer(state, pid, writer) | next_sub: state.next_sub + 1}}
     else
       :bad_params -> error(id, "bad_params", state)
       code -> error(id, code, state)
@@ -150,15 +141,15 @@ defmodule Helyx.Transport.WebSocket.Connection do
 
   defp request(id, "unsubscribe", %{"sub" => sub} = params, state)
        when map_size(params) == 1 and is_binary(sub) do
-    case state.subs do
-      # The sub leaves the map at once, so it gets one unsubscribe, and a
-      # later ack of it is ignored.
-      %{^sub => pid} ->
-        send(pid, {:unsubscribe, id})
-        {:ok, %{state | ids: Map.put(state.ids, id, pid), subs: Map.delete(state.subs, sub)}}
-
-      _ ->
+    case sub_writer(state, sub) do
+      # The sub leaves the active map at once, so it gets one unsubscribe,
+      # and a later ack of it is ignored.
+      nil ->
         error(id, "unknown_sub", state)
+
+      {pid, writer} ->
+        send(pid, {:unsubscribe, id})
+        {:ok, put_writer(state, pid, unsubscribe(writer, id))}
     end
   end
 
@@ -174,7 +165,7 @@ defmodule Helyx.Transport.WebSocket.Connection do
     case worker(id, op, params, state) do
       {:ok, work} ->
         pid = spawn_link(work)
-        {:ok, track(state, pid, id)}
+        {:ok, put_writer(state, pid, {:worker, id, :none})}
 
       :bad_params ->
         error(id, "bad_params", state)
@@ -200,34 +191,34 @@ defmodule Helyx.Transport.WebSocket.Connection do
   # A sub holds at most one ack, and none before its subscribe reply
   # (`docs/features/wire-protocol.md`, "Subscriptions").
   defp ack(state, pid, seq) do
-    case state.acks do
-      %{^pid => waiting} ->
-        %{state | acks: Map.put(state.acks, pid, max(waiting, seq))}
-
-      _ ->
+    case Map.fetch!(state.writers, pid) do
+      {:sub, sub, req, unsub, nil, slot} ->
         send(pid, {:ack, seq})
-        %{state | acks: Map.put(state.acks, pid, 0)}
+        put_writer(state, pid, {:sub, sub, req, unsub, 0, slot})
+
+      {:sub, sub, req, unsub, waiting, slot} ->
+        put_writer(state, pid, {:sub, sub, req, unsub, max(waiting, seq), slot})
     end
   end
 
   # The sub handled its ack or its subscribe reply went: it gets the ack
   # that waits.
   defp next_ack(state, pid) do
-    case state.acks do
-      %{^pid => 0} ->
-        %{state | acks: Map.delete(state.acks, pid)}
+    case Map.fetch(state.writers, pid) do
+      {:ok, {:sub, _, _, _, nil, _}} ->
+        state
 
-      %{^pid => seq} ->
+      {:ok, {:sub, sub, req, unsub, 0, slot}} ->
+        put_writer(state, pid, {:sub, sub, req, unsub, nil, slot})
+
+      {:ok, {:sub, sub, req, unsub, seq, slot}} ->
         send(pid, {:ack, seq})
-        %{state | acks: Map.put(state.acks, pid, 0)}
+        put_writer(state, pid, {:sub, sub, req, unsub, 0, slot})
 
-      _ ->
+      :error ->
         state
     end
   end
-
-  defp track(state, pid, id),
-    do: %{state | ids: Map.put(state.ids, id, pid), flight: MapSet.put(state.flight, pid)}
 
   @impl true
   def handle_info({:out, texts, size}, state) do
@@ -239,29 +230,25 @@ defmodule Helyx.Transport.WebSocket.Connection do
     Outbound.taken(state.out, size)
     state = release(state, pid)
 
-    case state.ids do
-      %{^id => ^pid} ->
-        {:push, Enum.map(texts, &{:text, &1}), replied(state, pid, id)}
-
-      # The deadline answered first; the late reply is dropped.
-      _ ->
-        {:ok, state}
-    end
+    if owed?(state, pid, id),
+      do: {:push, Enum.map(texts, &{:text, &1}), replied(state, pid, id)},
+      else: {:ok, state}
   end
 
   def handle_info({:deadline, pid, id}, state) do
-    case state.ids do
-      %{^id => ^pid} -> error(id, "timeout", replied(state, pid, id))
-      _ -> {:ok, state}
-    end
+    if owed?(state, pid, id),
+      do: error(id, "timeout", replied(state, pid, id)),
+      else: {:ok, state}
   end
 
   def handle_info({:close, code}, state), do: close(code, state)
 
   def handle_info({:acked, pid}, state), do: {:ok, next_ack(state, pid)}
 
-  def handle_info({:slot, pid}, state),
-    do: {:ok, grant(%{state | waiting: :queue.in(pid, state.waiting)})}
+  def handle_info({:slot, pid}, state) do
+    writer = put_slot(Map.fetch!(state.writers, pid), :wait)
+    {:ok, grant(%{put_writer(state, pid, writer) | waiting: :queue.in(pid, state.waiting)})}
+  end
 
   def handle_info(:ping, state) do
     Process.send_after(self(), :ping, @ping_ms)
@@ -279,35 +266,28 @@ defmodule Helyx.Transport.WebSocket.Connection do
     end
   end
 
-  # A writer ends and frees its place in flight and the slot. One that
-  # ended before its reply gets `failed`.
+  # A writer ends and frees its place in flight and the slot.
   def handle_info({:EXIT, pid, reason}, state) do
-    in_flight? = MapSet.member?(state.flight, pid)
-    # A subscription can hold two ids: its subscribe and an unsubscribe.
-    ids = for {id, ^pid} <- state.ids, do: id
+    writer = Map.get(state.writers, pid)
+    state = release(state, pid)
 
-    state =
-      release(
-        %{
-          state
-          | flight: MapSet.delete(state.flight, pid),
-            subs: Map.reject(state.subs, fn {_sub, writer} -> writer == pid end),
-            acks: Map.delete(state.acks, pid),
-            waiting: :queue.delete(pid, state.waiting),
-            ids: Map.drop(state.ids, ids)
-        },
-        pid
-      )
+    state = %{
+      state
+      | writers: Map.delete(state.writers, pid),
+        waiting: :queue.delete(pid, state.waiting)
+    }
+
+    ids = if writer, do: owed(writer), else: []
+    in_flight? = writer != nil and in_flight?(writer)
 
     cond do
-      # A subscription that ended after its subscribe reply answers its
-      # unsubscribe: it is gone. A writer that ended before its reply fails.
+      # A subscription after its reply answers its unsubscribe: it is gone;
+      # one before its reply fails.
       ids != [] ->
         answer = if in_flight?, do: Outbound.error("failed"), else: {:ok, %{}}
         {:push, Enum.flat_map(ids, &texts(Outbound.res(&1, answer))), state}
 
-      # A writer that ended, or a worker that crashed after its reply: a
-      # subscription in flight still has its subscribe id.
+      # A writer that ended, or a worker that crashed after its reply.
       reason == :normal or in_flight? ->
         {:ok, state}
 
@@ -322,42 +302,56 @@ defmodule Helyx.Transport.WebSocket.Connection do
   # The writers end with the connection, at any close: a normal exit does
   # not end its links.
   @impl true
-  def terminate(_reason, state) do
-    [state.flight, Map.values(state.subs), Map.values(state.ids)]
-    |> Enum.concat()
-    |> Enum.each(&Process.exit(&1, :kill))
-  end
+  def terminate(_reason, state),
+    do: Enum.each(Map.keys(state.writers), &Process.exit(&1, :kill))
 
   # The slot goes to the next waiter when its holder replied or ended.
-  defp release(%{slot: pid} = state, pid), do: grant(%{state | slot: nil})
-  defp release(state, _pid), do: state
+  defp release(state, pid) do
+    case Map.fetch(state.writers, pid) do
+      {:ok, writer} ->
+        if slot(writer) == :hold,
+          do: grant(put_writer(state, pid, put_slot(writer, :none))),
+          else: state
 
-  defp grant(%{slot: nil} = state) do
-    case :queue.out(state.waiting) do
-      {{:value, pid}, waiting} ->
-        send(pid, :slot)
-        %{state | slot: pid, waiting: waiting}
-
-      {:empty, _waiting} ->
+      :error ->
         state
     end
   end
 
-  defp grant(state), do: state
+  defp grant(state) do
+    if Enum.any?(state.writers, fn {_pid, writer} -> slot(writer) == :hold end) do
+      state
+    else
+      case :queue.out(state.waiting) do
+        {{:value, pid}, waiting} ->
+          send(pid, :slot)
+          writer = put_slot(Map.fetch!(state.writers, pid), :hold)
+          put_writer(%{state | waiting: waiting}, pid, writer)
+
+        {:empty, _waiting} ->
+          state
+      end
+    end
+  end
 
   defp now, do: System.monotonic_time(:millisecond)
 
-  # The reply of request `id` went. A subscription stops counting against
-  # the requests in flight and gets the acks that came before it; a worker
-  # counts until it ends.
+  # The reply of request `id` went. A worker counts against the requests in
+  # flight until it ends; a subscription until its subscribe reply, and it
+  # gets the acks that came before it.
   defp replied(state, pid, id) do
-    state = %{state | ids: Map.delete(state.ids, id)}
+    case Map.fetch!(state.writers, pid) do
+      {:worker, ^id, slot} ->
+        put_writer(state, pid, {:worker, nil, slot})
 
-    # A subscription is in `acks` until its subscribe reply went, also when
-    # an unsubscribe came first and took it out of `subs`.
-    if Map.has_key?(state.acks, pid),
-      do: next_ack(%{state | flight: MapSet.delete(state.flight, pid)}, pid),
-      else: state
+      {:sub, sub, ^id, unsub, ack, slot} ->
+        state = put_writer(state, pid, {:sub, sub, nil, unsub, ack, slot})
+        next_ack(state, pid)
+
+      {:sub, sub, req, ^id, ack, slot} ->
+        state = put_writer(state, pid, {:sub, sub, req, nil, ack, slot})
+        next_ack(state, pid)
+    end
   end
 
   defp error(id, code, state), do: {:push, texts(Outbound.res(id, Outbound.error(code))), state}
@@ -367,4 +361,40 @@ defmodule Helyx.Transport.WebSocket.Connection do
   # Not `:normal`: after a normal stop Bandit keeps the process and hands it
   # the later frames of the client.
   defp close(code, state), do: {:stop, {:shutdown, :closed}, code, state}
+
+  # The writers, and the facts of one writer.
+  defp put_writer(state, pid, writer), do: %{state | writers: Map.put(state.writers, pid, writer)}
+
+  defp owed?(state, id), do: Enum.any?(state.writers, fn {_pid, writer} -> id in owed(writer) end)
+
+  defp owed?(state, pid, id) do
+    case Map.fetch(state.writers, pid) do
+      {:ok, writer} -> id in owed(writer)
+      :error -> false
+    end
+  end
+
+  defp owed({:worker, nil, _slot}), do: []
+  defp owed({:worker, id, _slot}), do: [id]
+  defp owed({:sub, _sub, req, unsub, _ack, _slot}), do: Enum.reject([req, unsub], &is_nil/1)
+
+  defp in_flight(state), do: Enum.count(state.writers, fn {_, writer} -> in_flight?(writer) end)
+  defp in_flight?({:worker, _id, _slot}), do: true
+  defp in_flight?({:sub, _sub, req, _unsub, _ack, _slot}), do: req != nil
+
+  # The active subscriptions: a sub that is unsubscribing does not count.
+  defp subs(state), do: Enum.count(state.writers, &match?({_, {:sub, _, _, nil, _, _}}, &1))
+
+  defp sub_writer(state, sub) do
+    Enum.find_value(state.writers, fn
+      {pid, {:sub, ^sub, _req, nil, _ack, _slot} = writer} -> {pid, writer}
+      _other -> nil
+    end)
+  end
+
+  defp unsubscribe({:sub, sub, req, nil, ack, slot}, id), do: {:sub, sub, req, id, ack, slot}
+  defp slot({:worker, _id, slot}), do: slot
+  defp slot({:sub, _sub, _req, _unsub, _ack, slot}), do: slot
+  defp put_slot({:worker, id, _slot}, slot), do: {:worker, id, slot}
+  defp put_slot({:sub, sub, req, unsub, ack, _}, slot), do: {:sub, sub, req, unsub, ack, slot}
 end
