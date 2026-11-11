@@ -474,7 +474,7 @@ defmodule Helyx.Provider.OpenAITest do
       {:ok, state} = OpenAI.Go.init("m", [], session_id: "s")
       {:ok, _, state} = OpenAI.Go.request({:turn, "t1", %Helyx.Context{}}, :from, state)
       assert_receive {:attempt, 1}, Helyx.Test.Events.wait_ms()
-      task = state.task
+      {:calling, "t1", task, false, []} = state.phase
       ref = task.ref
       # The Task is still in its wait: it sent no result.
       refute_receive {^ref, _}, 100
