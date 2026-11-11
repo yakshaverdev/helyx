@@ -238,6 +238,8 @@ defmodule CodingAgent.ServeTest do
              :write,
              :stop_transport,
              :stop_hub,
+             # The Hub store frees the lock of its own file when it closes.
+             :release,
              :stop_core,
              :remove,
              :release
