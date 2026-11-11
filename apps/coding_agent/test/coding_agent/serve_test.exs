@@ -295,6 +295,15 @@ defmodule CodingAgent.ServeTest do
   defp server_json(port),
     do: JSON.encode!(%{address: "127.0.0.1", port: port, token: "the-token"})
 
+  # A free TCP port for the public listener. Another process can take it
+  # between the close and the start, and the test's start would then fail.
+  defp free_port do
+    {:ok, socket} = :gen_tcp.listen(0, ip: {0, 0, 0, 0})
+    {:ok, port} = :inet.port(socket)
+    :gen_tcp.close(socket)
+    port
+  end
+
   defp write_file(file, port), do: File.write!(file, server_json(port))
 
   # A fake server of the token `token`. It passes the upgrade and the
@@ -784,6 +793,10 @@ defmodule CodingAgent.ServeTest do
           {["serve", "--public", "127.0.0.1"], ~s(--public takes host:port, got: "127.0.0.1")},
           {["serve", "--public", "127.0.0.1:70000"],
            ~s(--public takes host:port, got: "127.0.0.1:70000")},
+          {["serve", "--public", "127.0.0.1:0"],
+           ~s(--public takes host:port, got: "127.0.0.1:0")},
+          {["serve", "--public", "exa_mple.com:8443"],
+           ~s(--public takes host:port, got: "exa_mple.com:8443")},
           {["serve", "--runner", "mac"], "--runner does not combine with serve"},
           {["serve", "--resume"], "--resume does not combine with serve"},
           {["serve", "-p", "x"], "--print does not combine with serve"},
@@ -792,7 +805,8 @@ defmodule CodingAgent.ServeTest do
           {["pair", "--runner", "Mac"],
            ~s(--runner takes 1 to 64 bytes of a-z, 0-9, and _, got: "Mac")},
           {["pair", "--runner", String.duplicate("a", 65)],
-           "--runner takes a name, got: " <> inspect(String.duplicate("a", 65))},
+           "--runner takes 1 to 64 bytes of a-z, 0-9, and _, got: " <>
+             inspect(String.duplicate("a", 65))},
           {["pair", "--model", "fake/echo"], "--model does not combine with pair"}
         ] do
       assert capture_io(:stderr, fn -> assert CLI.main(argv) == 1 end) == "helyx: #{text}\n"
@@ -803,11 +817,12 @@ defmodule CodingAgent.ServeTest do
 
   # The second listener of the wire and the link of a runner
   # (`docs/features/remote-hands.md`, "Pairing and the public listener").
-  test "--public starts a TLS listener, and helyx pair prints one link", %{
+  test "--public starts a TLS listener on every interface, and helyx pair prints one link", %{
     sessions: sessions,
     server_file: file
   } do
-    task = serve(["--model", "fake/echo", "--public", "127.0.0.1:0"])
+    port = free_port()
+    task = serve(["--model", "fake/echo", "--public", "example.com:#{port}"])
     _ = ready(file)
 
     tls = Path.join(sessions, "tls")
@@ -818,14 +833,42 @@ defmodule CodingAgent.ServeTest do
     assert [link, line] = String.split(out, "\n", trim: true)
     assert "helyx-pair:1:" <> encoded = link
 
-    assert %{"a" => "127.0.0.1:0", "k" => "hands", "n" => "mac", "p" => pin, "t" => token} =
+    assert %{"a" => address, "k" => "hands", "n" => "mac", "p" => pin, "t" => token} =
              JSON.decode!(Base.url_decode64!(encoded, padding: false))
 
+    assert address == "example.com:#{port}"
     assert String.length(pin) == 43
     assert String.length(token) == 43
     assert line =~ "valid for 10 minutes"
+
+    # The host is the link's address; the listener binds every interface.
+    {:ok, found} = Helyx.Transport.WebSocket.TLS.ensure(sessions)
+    assert found.pin == pin
+
+    assert {:ok, socket} =
+             :ssl.connect(
+               ~c"127.0.0.1",
+               port,
+               [:binary, active: false, verify: :verify_none],
+               5_000
+             )
+
+    :ssl.close(socket)
+
     assert {0, _out, _err} = stop(task)
     free()
+  end
+
+  test "a broken TLS key refuses the start with one line that names the file", %{
+    sessions: sessions
+  } do
+    {:ok, tls} = Helyx.Transport.WebSocket.TLS.ensure(sessions)
+    key = File.read!(tls.keyfile)
+    :ok = File.write(tls.keyfile, binary_part(key, 0, 40))
+
+    assert {1, "", line} = run(["--model", "fake/echo", "--public", "example.com:#{free_port()}"])
+    assert line =~ tls.keyfile
+    assert line =~ "bad_pem"
   end
 
   test "helyx pair with no public listener prints one line and exits 1", %{server_file: file} do

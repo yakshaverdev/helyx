@@ -34,6 +34,7 @@ defmodule CodingAgent.CLI do
   `docs/features/serve.md`, and `docs/features/tui-attach.md`.
   """
 
+  alias CodingAgent.CLI.Pair
   alias CodingAgent.Lease
   alias CodingAgent.Print
   alias Helyx.Tool.Bash
@@ -181,7 +182,7 @@ defmodule CodingAgent.CLI do
         opts[:help] -> IO.write(@help)
         opts[:version] -> IO.puts("helyx " <> version(release_version))
         command == "serve" -> serve(opts, args)
-        command == "pair" -> pair(opts, args)
+        command == "pair" -> Pair.run(opts, args, sessions_dir())
         true -> start_agent(opts, args, launcher, halt)
       end
     end
@@ -224,7 +225,7 @@ defmodule CodingAgent.CLI do
     with :ok <- serve_switches(opts),
          {:ok, ip} <- ip(Keyword.get(opts, :host, "127.0.0.1")),
          {:ok, port} <- port(Keyword.get(opts, :port, 0)),
-         {:ok, public} <- public_option(opts[:public]),
+         {:ok, public} <- Pair.public_option(opts[:public]),
          {:ok, _apps} <- Application.ensure_all_started(:coding_agent) do
       result =
         CodingAgent.Serve.run(
@@ -250,77 +251,6 @@ defmodule CodingAgent.CLI do
     end
   end
 
-  # `helyx pair --runner <name>` makes one link for the runner on the server
-  # machine (`docs/features/remote-hands.md`, "Make a link").
-  defp pair(opts, []) do
-    with :ok <- pair_switches(opts),
-         {:ok, name} <- runner_name(opts[:runner]),
-         {:ok, _apps} <- Application.ensure_all_started(:coding_agent),
-         {:ok, socket, ws} <- find_server_for_pair() do
-      result = create_link(socket, ws, name)
-      with {:error, text} <- result, do: {:error, CodingAgent.clean_line(text)}
-    end
-  end
-
-  defp pair(_opts, args),
-    do: {:error, "pair takes no directory argument, got: #{inspect(args)}"}
-
-  defp pair_switches(opts) do
-    case Enum.find(Keyword.keys(opts), &(&1 != :runner)) do
-      nil -> if opts[:runner], do: :ok, else: {:error, "pair needs --runner name"}
-      name -> {:error, "#{switch(name)} does not combine with pair"}
-    end
-  end
-
-  defp runner_name(name) when is_binary(name) and byte_size(name) in 1..64 do
-    if name =~ ~r/\A[a-z0-9_]+\z/,
-      do: {:ok, name},
-      else: {:error, "--runner takes 1 to 64 bytes of a-z, 0-9, and _, got: #{inspect(name)}"}
-  end
-
-  defp runner_name(name), do: {:error, "--runner takes a name, got: #{inspect(name)}"}
-
-  defp find_server_for_pair do
-    case CodingAgent.Attach.connect(sessions_dir()) do
-      {:ok, socket, ws} -> {:ok, socket, ws}
-      :none -> {:error, "no server runs for #{sessions_dir()}; start one with helyx serve"}
-      {:error, text} -> {:error, text}
-    end
-  end
-
-  defp create_link(socket, ws, name) do
-    {:ok, conn, ref} = Connection.open(socket, ws)
-
-    try do
-      case Connection.pair(conn, "hands", name) do
-        {:ok, %{"link" => link, "expires_ms" => expires_ms}} ->
-          IO.puts(link)
-
-          IO.puts(
-            "helyx: the link is valid for #{div(expires_ms, 60_000)} minutes, for one pairing"
-          )
-
-          :ok
-
-        {:error, code} ->
-          {:error, pair_error(code)}
-      end
-    after
-      Process.exit(conn, :kill)
-      Process.demonitor(ref, [:flush])
-    end
-  end
-
-  defp pair_error(:no_public_listener),
-    do: "the server has no public listener; start it with helyx serve --public <host>:<port>"
-
-  defp pair_error(:too_many_links),
-    do: "the server holds too many pending links; pair one of them, or wait for one to end"
-
-  defp pair_error(:bad_params), do: "the server refused the runner name"
-  defp pair_error(:closed), do: "the connection to the server closed"
-  defp pair_error(code), do: "the server answered #{code}"
-
   defp ip(host) do
     with {:error, _} <- :inet.parse_address(String.to_charlist(host)),
          do: {:error, "--host takes an IP address, got: #{inspect(host)}"}
@@ -328,32 +258,6 @@ defmodule CodingAgent.CLI do
 
   defp port(port) when port in 0..65_535, do: {:ok, port}
   defp port(port), do: {:error, "--port takes 0 to 65535, got: #{port}"}
-
-  # `--public host:port`: the address that a link carries
-  # (`docs/features/remote-hands.md`, "Public listener").
-  defp public_option(nil), do: {:ok, nil}
-
-  defp public_option(value) when is_binary(value) do
-    case Regex.run(~r/\A(?:\[([^\]]+)\]|([^:]+)):(\d+)\z/, value) do
-      [_, bracket, "", port] -> public_address(bracket, port, value)
-      [_, "", host, port] -> public_address(host, port, value)
-      _other -> {:error, "--public takes host:port, got: #{inspect(value)}"}
-    end
-  end
-
-  defp public_address(host, port, value) do
-    with {:ok, ip} <- :inet.parse_address(String.to_charlist(host)),
-         {port, ""} <- Integer.parse(port),
-         true <- port in 0..65_535 do
-      address = address_text(ip, host, port)
-      {:ok, {ip, port, address}}
-    else
-      _bad -> {:error, "--public takes host:port, got: #{inspect(value)}"}
-    end
-  end
-
-  defp address_text(ip, host, port) when tuple_size(ip) == 8, do: "[#{host}]:#{port}"
-  defp address_text(_ip, host, port), do: "#{host}:#{port}"
 
   defp switch(:directory), do: "a directory argument"
   defp switch(:serve), do: "serve"

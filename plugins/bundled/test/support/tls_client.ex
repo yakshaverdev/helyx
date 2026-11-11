@@ -8,8 +8,9 @@ defmodule Helyx.Test.TlsClient do
   alias Helyx.Test.Events
   alias Helyx.Test.WireClient
 
-  def connect(port, pin, timeout \\ 5_000) do
+  def connect(port, pin, opts \\ []) do
     {:ok, _apps} = Application.ensure_all_started(:ssl)
+    timeout = Keyword.get(opts, :timeout, 5_000)
 
     verify =
       if pin do
@@ -23,7 +24,18 @@ defmodule Helyx.Test.TlsClient do
         [verify: :verify_none]
       end
 
-    :ssl.connect(~c"127.0.0.1", port, [:binary, active: false, packet: :line] ++ verify, timeout)
+    versions =
+      case opts[:versions] do
+        nil -> []
+        versions -> [versions: versions]
+      end
+
+    :ssl.connect(
+      ~c"127.0.0.1",
+      port,
+      [:binary, active: false, packet: :line] ++ verify ++ versions,
+      timeout
+    )
   end
 
   def upgrade(port, pin, headers \\ []) do

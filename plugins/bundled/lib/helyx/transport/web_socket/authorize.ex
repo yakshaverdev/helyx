@@ -37,6 +37,20 @@ defmodule Helyx.Transport.WebSocket.Authorize do
   # so a field over 64 bytes is neither.
   defp field(_value), do: {:close, 4401}
 
+  # The proof of the server token: the base64 HMAC-SHA256 of the nonce with
+  # the key, the SHA-256 of the token. A server with no token takes any
+  # proof.
+  @doc false
+  @spec proof?((-> binary()) | nil, binary(), term()) :: boolean()
+  def proof?(nil, _nonce, _given), do: true
+
+  def proof?(key, nonce, given) when is_binary(given) do
+    proof = Base.encode64(:crypto.mac(:hmac, :sha256, key.(), nonce))
+    Plug.Crypto.secure_compare(proof, given)
+  end
+
+  def proof?(_key, _nonce, _given), do: false
+
   # The worker of a request under an authority, or the error of its params.
   # The transport checks the params of an op of Core before `check`; the
   # authority checks those of its own ops in `run`.

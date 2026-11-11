@@ -239,8 +239,23 @@ defmodule CodingAgent.Serve do
         {:ok, tls}
 
       {:error, reason} ->
-        {:error,
-         "could not make the TLS files of the public listener: " <> Helyx.Reason.text(reason)}
+        {:error, "could not make the TLS files of the public listener: " <> tls_text(reason)}
+    end
+  end
+
+  # The one line of a TLS failure names the file (`docs/features/
+  # remote-hands.md`, "Certificate").
+  defp tls_text({:tls_folder, reason}),
+    do: "the tls folder: " <> to_string(:file.format_error(reason))
+
+  defp tls_text({:tls_file, path, reason}), do: "#{path}: " <> tls_reason(reason)
+
+  defp tls_text(reason), do: Helyx.Reason.text(reason)
+
+  defp tls_reason(reason) when is_atom(reason) do
+    case :file.format_error(reason) do
+      ~c"unknown POSIX error" -> Atom.to_string(reason)
+      text -> to_string(text)
     end
   end
 

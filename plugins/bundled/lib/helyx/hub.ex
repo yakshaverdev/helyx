@@ -133,7 +133,9 @@ defmodule Helyx.Hub do
   def peer(hub, kind, name) when is_binary(kind) and is_binary(name),
     do: call(hub, {:peer, kind, name})
 
-  @doc "Deletes a peer, so its next `hello` is refused."
+  @doc false
+  # Deletes the row of a peer. The one revoke path that also closes the
+  # connection is `Helyx.Transport.WebSocket.Pairing.revoke/3`.
   @spec revoke_peer(hub(), String.t(), String.t()) ::
           :ok | {:error, :not_found | :busy | :timeout | :failed}
   def revoke_peer(hub, kind, name) when is_binary(kind) and is_binary(name),

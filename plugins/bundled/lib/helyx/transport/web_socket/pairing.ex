@@ -1,17 +1,19 @@
 defmodule Helyx.Transport.WebSocket.Pairing do
   @moduledoc """
-  The pairing of a peer of the public listener, and the hands registrations
+  The pairing of a runner of the public listener, and the hands registrations
   on it (`docs/features/remote-hands.md`, "Pairing and the public listener").
 
-  This process owns the pending links, as the SHA-256 of their bootstrap
-  tokens, the connection of each paired peer, and the lease of each hands
-  registration. It reads and writes the peer rows of `Helyx.Hub`; it stores
-  no secret of a peer and no bootstrap token. A link is valid for
-  `link_ms/0` and for one successful pairing; at most `max_links/0` links
-  wait.
+  This process owns the pending links, as a closure of the SHA-256 of their
+  bootstrap tokens, the connection of each paired runner, and the lease of
+  each hands registration. The closure keeps the hash out of a crash report
+  or an `inspect` of the state. It reads and writes the peer rows of
+  `Helyx.Hub`; it stores no secret of a peer and no bootstrap token. A link
+  is valid for `link_ms/0` and for one successful pairing; at most
+  `max_links/0` links wait.
 
   The link is `helyx-pair:1:<base64url of the JSON {a, t, p, k, n}>`: the
-  address, the bootstrap token, the pin, the kind, and the name.
+  address, the bootstrap token, the pin, the kind, and the name. This slice
+  pairs only the kind `hands`; the client kind comes with #956.
   """
 
   use GenServer
@@ -25,8 +27,18 @@ defmodule Helyx.Transport.WebSocket.Pairing do
   # The prefix of a link and its version.
   @prefix "helyx-pair:1:"
 
-  # The kinds of a peer.
-  @kinds ~w(hands client)
+  # The one kind that this slice pairs.
+  @kind "hands"
+
+  # The bytes of a base64 value of a 32-byte or a 64-byte part.
+  @b64_32 44
+  @b64_64 88
+  # The bytes of the context text of the signature.
+  @context "helyx-handshake-v1"
+
+  # The bounds of a name and of the folder of a runner.
+  @name_bytes 64
+  @folder_bytes 4_096
 
   @doc "How long a link is valid, in milliseconds."
   @spec link_ms() :: pos_integer()
@@ -35,6 +47,63 @@ defmodule Helyx.Transport.WebSocket.Pairing do
   @doc "The most links that wait at once."
   @spec max_links() :: pos_integer()
   def max_links, do: @max_links
+
+  @doc "The most bytes of the name of a runner."
+  @spec name_bytes() :: pos_integer()
+  def name_bytes, do: @name_bytes
+
+  @doc "The most bytes of the folder of a runner."
+  @spec max_folder_bytes() :: pos_integer()
+  def max_folder_bytes, do: @folder_bytes
+
+  @doc """
+  Whether `name` is 1 to `name_bytes/0` bytes of a-z, 0-9, and `_`. One
+  function holds the rule, for the wire, the pairing, and the command line.
+  """
+  @spec name?(term()) :: boolean()
+  def name?(name) when is_binary(name) and byte_size(name) in 1..@name_bytes,
+    do: name =~ ~r/\A[a-z0-9_]+\z/
+
+  def name?(_name), do: false
+
+  @doc """
+  The bytes that a peer signs for a paired `hello`
+  (`docs/features/remote-hands.md`, "The handshake of a paired peer"): the
+  context text, the nonce, the pin, the kind, and the name, each preceded by
+  its length as a 32-bit big-endian integer.
+  """
+  @spec signature_text(String.t(), String.t(), String.t(), binary()) :: binary()
+  def signature_text(pin, kind, name, nonce),
+    do: part(@context) <> part(nonce) <> part(pin) <> part(kind) <> part(name)
+
+  defp part(value), do: <<byte_size(value)::32, value::binary>>
+
+  @doc """
+  Whether a `hello` of the public listener has the fields of this slice: the
+  role `hands`, a name, and one handshake with parts of the right type and
+  size. The caller checks this before any other work on the frame.
+  """
+  @spec valid_hello?(term()) :: boolean()
+  def valid_hello?(%{"role" => "hands", "runner" => name} = hello) do
+    name?(name) and handshake?(hello)
+  end
+
+  def valid_hello?(_hello), do: false
+
+  defp handshake?(%{"pair" => pair} = hello)
+       when is_map(pair) and not is_map_key(hello, "signature") do
+    map_size(pair) == 3 and
+      base64?(pair["proof"], @b64_32) and
+      base64?(pair["public_key"], @b64_32) and
+      base64?(pair["signature"], @b64_64)
+  end
+
+  defp handshake?(%{"signature" => signature} = hello) when not is_map_key(hello, "pair"),
+    do: base64?(signature, @b64_64)
+
+  defp handshake?(_hello), do: false
+
+  defp base64?(value, bytes), do: is_binary(value) and byte_size(value) == bytes
 
   @doc """
   Starts the pairing of one transport. Options: `:hub` (required), `:address`
@@ -45,12 +114,15 @@ defmodule Helyx.Transport.WebSocket.Pairing do
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
-  @doc "Makes a link for a pairing of `kind` and `name`, or the error of the cap."
+  @doc "Makes a link for a pairing of a runner, or the error of the cap."
   @spec create(GenServer.server(), String.t(), String.t()) ::
           {:ok, %{String.t() => term()}} | {:error, :bad_params | :too_many_links}
   def create(pairing, kind, name), do: GenServer.call(pairing, {:create, kind, name})
 
-  @doc "Deletes a peer and closes its connection."
+  @doc """
+  Deletes the row of a peer and closes its connection, the one path of
+  `pair.revoke` and of the operator API.
+  """
   @spec revoke(GenServer.server(), String.t(), String.t()) :: :ok | {:error, term()}
   def revoke(pairing, kind, name), do: GenServer.call(pairing, {:revoke, kind, name})
 
@@ -87,10 +159,12 @@ defmodule Helyx.Transport.WebSocket.Pairing do
 
   @doc """
   The handshake of a `hello` on the public listener: a pairing with a link,
-  or the key of a paired peer. Gives `{:ok, role, name}` or `{:close, 4401}`.
+  or the key of a paired runner. Gives `{:ok, "hands", name}`, `{:close,
+  4401}` for a handshake that does not hold, or `{:close, 4503}` when the Hub
+  gives no answer.
   """
   @spec hello(GenServer.server(), binary(), map(), pid()) ::
-          {:ok, String.t(), String.t() | nil} | {:close, 4401}
+          {:ok, String.t(), String.t()} | {:close, 4401 | 4503}
   def hello(pairing, nonce, hello, connection),
     do: GenServer.call(pairing, {:hello, nonce, hello, connection})
 
@@ -98,10 +172,10 @@ defmodule Helyx.Transport.WebSocket.Pairing do
   The registration of a hands connection: the answer `{:ok, lease_ms}` when
   the name is the name of its `hello`, else `{:error, :unauthorized}`.
   """
-  @spec register_hands(GenServer.server(), pid(), String.t(), String.t()) ::
+  @spec register_hands(GenServer.server(), pid(), String.t()) ::
           {:ok, pos_integer()} | {:error, :unauthorized}
-  def register_hands(pairing, connection, name, folder),
-    do: GenServer.call(pairing, {:register_hands, connection, name, folder})
+  def register_hands(pairing, connection, name),
+    do: GenServer.call(pairing, {:register_hands, connection, name})
 
   @impl true
   def init(opts) do
@@ -112,7 +186,7 @@ defmodule Helyx.Transport.WebSocket.Pairing do
        pin: Keyword.fetch!(opts, :pin),
        lease_ms: Keyword.fetch!(opts, :lease_ms),
        clock: Keyword.get(opts, :clock, &now/0),
-       links: %{},
+       links: [],
        connections: %{}
      }}
   end
@@ -120,10 +194,10 @@ defmodule Helyx.Transport.WebSocket.Pairing do
   @impl true
   def handle_call({:create, kind, name}, _from, state) do
     cond do
-      kind not in @kinds or not name?(name) ->
+      kind != @kind or not name?(name) ->
         {:reply, {:error, :bad_params}, state}
 
-      map_size(prune(state.links, state)) >= @max_links ->
+      length(prune(state.links, state)) >= @max_links ->
         {:reply, {:error, :too_many_links}, state}
 
       true ->
@@ -133,8 +207,14 @@ defmodule Helyx.Transport.WebSocket.Pairing do
         link = %{"a" => state.address, "t" => token, "p" => state.pin, "k" => kind, "n" => name}
         json = JSON.encode!(link)
 
-        entry = %{kind: kind, name: name, expires_at: at(state) + @link_ms}
-        links = Map.put(prune(state.links, state), key, entry)
+        entry = %{
+          key: fn -> key end,
+          kind: kind,
+          name: name,
+          expires_at: at(state) + @link_ms
+        }
+
+        links = prune(state.links, state) ++ [entry]
 
         value = %{
           "link" => @prefix <> Base.url_encode64(json, padding: false),
@@ -146,18 +226,18 @@ defmodule Helyx.Transport.WebSocket.Pairing do
   end
 
   def handle_call({:revoke, kind, name}, _from, state) do
-    case Hub.revoke_peer(state.hub, kind, name) do
-      :ok ->
-        {:reply, :ok,
-         close(%{state | connections: disconnect(state.connections, {kind, name})}, {kind, name})}
-
-      {:error, _reason} = error ->
-        {:reply, error, state}
+    # The row may be gone already; the connection is the part that still
+    # closes, so a second revoke is not an error (`docs/features/
+    # remote-hands.md`, "Revoke").
+    case hub(fn -> Hub.revoke_peer(state.hub, kind, name) end) do
+      :ok -> {:reply, :ok, close(state, {kind, name})}
+      {:error, :not_found} -> {:reply, :ok, close(state, {kind, name})}
+      {:error, _reason} = error -> {:reply, error, state}
     end
   end
 
   def handle_call(:list, _from, state) do
-    case Hub.peers(state.hub) do
+    case hub(fn -> Hub.peers(state.hub) end) do
       {:ok, peers} ->
         items =
           Enum.map(peers, fn peer ->
@@ -177,29 +257,16 @@ defmodule Helyx.Transport.WebSocket.Pairing do
   end
 
   def handle_call({:hello, nonce, hello, connection}, _from, state) do
-    role = hello["role"]
-    name = hello["runner"]
-    kind = kind(role)
-
-    cond do
-      kind == nil or (role == "hands" and not name?(name)) ->
-        {:reply, {:close, 4401}, state}
-
-      is_map(hello["pair"]) ->
-        pair(state, nonce, kind, name, hello["pair"], connection)
-
-      is_binary(hello["signature"]) ->
-        paired(state, nonce, kind, name, hello["signature"], connection)
-
-      true ->
-        {:reply, {:close, 4401}, state}
+    if valid_hello?(hello) do
+      handshake(state, nonce, hello, connection)
+    else
+      {:reply, {:close, 4401}, state}
     end
   end
 
-  def handle_call({:register_hands, connection, name, folder}, _from, state) do
+  def handle_call({:register_hands, connection, name}, _from, state) do
     case state.connections do
-      %{{"hands", ^name} => {^connection, _monitor}}
-      when is_binary(folder) and byte_size(folder) <= 4_096 ->
+      %{{"hands", ^name} => {^connection, _monitor}} ->
         {:reply, {:ok, state.lease_ms}, state}
 
       _other ->
@@ -217,44 +284,67 @@ defmodule Helyx.Transport.WebSocket.Pairing do
     {:noreply, %{state | connections: connections}}
   end
 
+  # The two handshakes: a pairing with a link, or the key of a paired runner.
+  # The validator holds the shape; these clauses read it.
+  defp handshake(state, nonce, %{"pair" => pair, "runner" => name}, connection),
+    do: pair(state, nonce, name, pair, connection)
+
+  defp handshake(state, nonce, %{"runner" => name, "signature" => signature}, connection),
+    do: paired(state, nonce, name, signature, connection)
+
   # The pairing of a link: the proof, the signature, the peer row, and the
   # consumed link. A wrong proof or signature, an expired link, another
-  # kind, and a full store close with 4401, and the link stays.
-  defp pair(state, nonce, kind, name, %{} = pair, connection) do
+  # kind or name, and a full store close with 4401, and the link stays. The
+  # Hub errors that pass close with 4503, as the authority of the loopback
+  # listener does.
+  defp pair(state, nonce, name, pair, connection) do
     with {:ok, proof} <- decode(pair["proof"]),
          {:ok, public_key} <- decode(pair["public_key"]),
          {:ok, signature} <- decode(pair["signature"]),
          true <- byte_size(public_key) == 32 and byte_size(signature) == 64,
-         {:ok, key} <- link_key(state, kind, name, nonce, proof),
-         true <- :crypto.verify(:eddsa, :none, nonce, signature, [public_key, :ed25519]),
-         :ok <- put_peer(state, kind, name, public_key) do
-      state = register(%{state | links: Map.delete(state.links, key)}, kind, name, connection)
-      {:reply, {:ok, kind, name}, state}
+         {:ok, entry} <- link_entry(state, nonce, proof),
+         true <- entry.kind == @kind and entry.name == name,
+         true <- verify(state.pin, entry.kind, entry.name, public_key, signature, nonce),
+         :ok <- put_peer(state, entry.kind, entry.name, public_key) do
+      state = register(%{state | links: List.delete(state.links, entry)}, entry.name, connection)
+      {:reply, {:ok, "hands", entry.name}, state}
     else
+      {:close, code} -> {:reply, {:close, code}, state}
       _wrong -> {:reply, {:close, 4401}, state}
     end
   end
 
-  defp pair(state, _nonce, _kind, _name, _pair, _connection), do: {:reply, {:close, 4401}, state}
-
-  # The handshake of a paired peer: the signature of the nonce with the key
-  # of its row.
-  defp paired(state, nonce, kind, name, signature, connection) do
+  # The handshake of a paired runner: the signature of the shared bytes with
+  # the key of its row. No row, or a wrong signature, closes with 4401; a
+  # Hub that does not answer closes with 4503.
+  defp paired(state, nonce, name, signature, connection) do
     with {:ok, signature} <- decode(signature),
-         {:ok, %{public_key: public_key}} <- Hub.peer(state.hub, kind, name),
-         true <- :crypto.verify(:eddsa, :none, nonce, signature, [public_key, :ed25519]) do
-      {:reply, {:ok, kind, name}, register(state, kind, name, connection)}
+         true <- byte_size(signature) == 64,
+         {:ok, %{public_key: public_key}} <- peer(state, name),
+         true <- verify(state.pin, @kind, name, public_key, signature, nonce) do
+      {:reply, {:ok, "hands", name}, register(state, name, connection)}
     else
+      {:close, code} -> {:reply, {:close, code}, state}
       _wrong -> {:reply, {:close, 4401}, state}
     end
   end
 
-  # The one pending link of this kind and name whose key makes the proof.
-  defp link_key(state, kind, name, nonce, proof) do
-    Enum.find_value(state.links, :error, fn {key, entry} ->
-      if entry.kind == kind and entry.name == name and entry.expires_at > at(state) and
-           Plug.Crypto.secure_compare(proof_text(key, nonce), Base.encode64(proof)),
-         do: {:ok, key}
+  defp verify(pin, kind, name, public_key, signature, nonce) do
+    :crypto.verify(
+      :eddsa,
+      :none,
+      signature_text(pin, kind, name, nonce),
+      signature,
+      [public_key, :ed25519]
+    )
+  end
+
+  # The one pending link whose key makes the proof. The validated name and
+  # kind are not in the hello again; the link entry holds them.
+  defp link_entry(state, nonce, proof) do
+    Enum.find_value(prune(state.links, state), :error, fn entry ->
+      if Plug.Crypto.secure_compare(proof_text(entry.key.(), nonce), Base.encode64(proof)),
+        do: {:ok, entry}
     end)
   end
 
@@ -262,15 +352,27 @@ defmodule Helyx.Transport.WebSocket.Pairing do
 
   defp put_peer(state, kind, name, public_key) do
     peer = %{kind: kind, name: name, public_key: public_key, created_at: System.os_time(:second)}
-    Hub.put_peer(state.hub, peer, Hub.max_peers())
+
+    case hub(fn -> Hub.put_peer(state.hub, peer, Hub.max_peers()) end) do
+      :ok -> :ok
+      {:error, :too_many_peers} -> {:close, 4401}
+      {:error, reason} when reason in [:busy, :timeout, :failed] -> {:close, 4503}
+    end
+  end
+
+  defp peer(state, name) do
+    case hub(fn -> Hub.peer(state.hub, @kind, name) end) do
+      {:ok, peer} -> {:ok, peer}
+      {:error, reason} when reason in [:busy, :timeout, :failed] -> {:close, 4503}
+      _missing -> :error
+    end
   end
 
   # One connection for each peer name: a new one closes the old one.
-  defp register(state, kind, name, connection) do
-    key = {kind, name}
-    state = close(state, key)
+  defp register(state, name, connection) do
+    state = close(state, {@kind, name})
     monitor = Process.monitor(connection)
-    %{state | connections: Map.put(state.connections, key, {connection, monitor})}
+    %{state | connections: Map.put(state.connections, {@kind, name}, {connection, monitor})}
   end
 
   defp close(state, key) do
@@ -285,28 +387,11 @@ defmodule Helyx.Transport.WebSocket.Pairing do
     end
   end
 
-  defp disconnect(connections, key) do
-    case Map.fetch(connections, key) do
-      {:ok, {connection, monitor}} ->
-        Process.demonitor(monitor, [:flush])
-        send(connection, {:close, 4401})
-        Map.delete(connections, key)
-
-      :error ->
-        connections
-    end
-  end
-
-  defp prune(links, state),
-    do: Map.reject(links, fn {_key, entry} -> entry.expires_at <= at(state) end)
+  defp prune(links, state), do: Enum.reject(links, &(&1.expires_at <= at(state)))
 
   defp at(state), do: state.clock.()
 
   defp now, do: System.monotonic_time(:millisecond)
-
-  defp kind("hands"), do: "hands"
-  defp kind("client"), do: "client"
-  defp kind(_other), do: nil
 
   defp decode(text) when is_binary(text), do: Base.decode64(text) |> ok()
   defp decode(_other), do: :error
@@ -314,9 +399,11 @@ defmodule Helyx.Transport.WebSocket.Pairing do
   defp ok({:ok, value}), do: {:ok, value}
   defp ok(:error), do: :error
 
-  # 1 to 64 bytes of a-z, 0-9, and _.
-  defp name?(name) when is_binary(name) and byte_size(name) in 1..64,
-    do: name =~ ~r/\A[a-z0-9_]+\z/
-
-  defp name?(_name), do: false
+  # A Hub call that exits (a timeout, a Hub that is down) is a passing error,
+  # the same as `{:error, :timeout}`.
+  defp hub(fun) do
+    fun.()
+  catch
+    :exit, _reason -> {:error, :timeout}
+  end
 end

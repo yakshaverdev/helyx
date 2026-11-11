@@ -4,6 +4,8 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
   # "Pairing and the public listener", "Registration and lease").
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Helyx.Hub
   alias Helyx.Provider.Fake
   alias Helyx.Test.TlsClient
@@ -51,11 +53,11 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
   end
 
   # A pairing link over the loopback listener, with the server token.
-  defp link(context, kind \\ "hands", name \\ "mac") do
+  defp link(context, name \\ "mac") do
     socket = WireClient.open(context.loop, @token)
 
     %{"ok" => true, "result" => %{"link" => link, "expires_ms" => expires_ms}} =
-      WireClient.request(socket, "1", "pair.create", %{"kind" => kind, "name" => name})
+      WireClient.request(socket, "1", "pair.create", %{"kind" => "hands", "name" => name})
 
     :gen_tcp.close(socket)
     {link, expires_ms}
@@ -68,48 +70,49 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
 
   defp key_pair, do: :crypto.generate_key(:eddsa, :ed25519)
 
-  defp pair_hello(nonce, link, role, {public_key, private_key}, name \\ nil) do
+  defp pair_hello(nonce, link, keys \\ nil) do
+    keys = keys || key_pair()
+    {public_key, private_key} = keys
     parts = link_parts(link)
     token = parts["t"]
     nonce_bytes = Base.decode64!(nonce)
+    text = Pairing.signature_text(parts["p"], parts["k"], parts["n"], nonce_bytes)
 
-    %{
+    hello = %{
       "type" => "hello",
       "protocol" => WebSocket.protocol(),
-      "role" => role,
-      "runner" => name || parts["n"],
+      "role" => parts["k"],
+      "runner" => parts["n"],
       "pair" => %{
         "proof" =>
           Base.encode64(:crypto.mac(:hmac, :sha256, :crypto.hash(:sha256, token), nonce_bytes)),
         "public_key" => Base.encode64(public_key),
-        "signature" =>
-          Base.encode64(:crypto.sign(:eddsa, :none, nonce_bytes, [private_key, :ed25519]))
+        "signature" => Base.encode64(:crypto.sign(:eddsa, :none, text, [private_key, :ed25519]))
       }
     }
+
+    {hello, keys}
   end
 
-  defp signature_hello(nonce, role, {_public_key, private_key}, name) do
+  # A pairing hello of a link, for one connection.
+  defp hello(link) do
+    fn nonce ->
+      {hello, _keys} = pair_hello(nonce, link)
+      hello
+    end
+  end
+
+  defp signature_hello(nonce, pin, {_public_key, private_key}, name) do
     nonce_bytes = Base.decode64!(nonce)
+    text = Pairing.signature_text(pin, "hands", name, nonce_bytes)
 
     %{
       "type" => "hello",
       "protocol" => WebSocket.protocol(),
-      "role" => role,
+      "role" => "hands",
       "runner" => name,
-      "signature" =>
-        Base.encode64(:crypto.sign(:eddsa, :none, nonce_bytes, [private_key, :ed25519]))
+      "signature" => Base.encode64(:crypto.sign(:eddsa, :none, text, [private_key, :ed25519]))
     }
-  end
-
-  defp pair_socket(context, link, kind \\ "hands") do
-    keys = key_pair()
-
-    {socket, reply} =
-      TlsClient.open(context.port, context.tls.pin, fn nonce ->
-        pair_hello(nonce, link, kind, keys)
-      end)
-
-    {socket, reply, keys}
   end
 
   # The next frame of the server, with a WebSocket ping skipped.
@@ -120,12 +123,28 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
     end
   end
 
+  defp pairing(context) do
+    children = Supervisor.which_children(context.transport)
+    {_, pid, :worker, _} = List.keyfind(children, Pairing, 0)
+    pid
+  end
+
+  defp conn_state(context, name) do
+    %{connections: connections} = :sys.get_state(pairing(context))
+    {conn, _monitor} = Map.fetch!(connections, {"hands", name})
+
+    {_socket, %{connection: %Bandit.WebSocket.Connection{websock_state: state}}} =
+      :sys.get_state(conn)
+
+    state
+  end
+
   describe "the pairing operations on the loopback listener" do
     setup context, do: serve(context)
 
     test "a link carries the address, the token, the pin, the kind, and the name",
          %{tls: tls} = context do
-      {link, expires_ms} = link(context, "hands", "mac")
+      {link, expires_ms} = link(context)
 
       assert expires_ms == Pairing.link_ms()
 
@@ -136,10 +155,11 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
       assert String.length(token) == 43
     end
 
-    test "pair.list shows the peer after the pairing, and pair.revoke closes it",
-         context do
+    test "pair.list shows the peer after the pairing, and pair.revoke closes it", context do
       {link, _expires} = link(context)
-      {peer, {:frame, %{"type" => "welcome"}}, _keys} = pair_socket(context, link)
+      peer = TlsClient.open(context.port, context.tls.pin, hello(link))
+
+      {_socket, {:frame, %{"type" => "welcome"}}} = peer
 
       socket = WireClient.open(context.loop, @token)
 
@@ -157,6 +177,27 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
       assert %{"ok" => true, "result" => %{"peers" => []}} =
                WireClient.request(socket, "4", "pair.list", %{})
 
+      assert {:close, 4401} = TlsClient.until_close(elem(peer, 0))
+      :gen_tcp.close(socket)
+    end
+
+    test "pair.revoke closes a connection whose row is gone", context do
+      {link, _expires} = link(context)
+
+      {peer, {:frame, %{"type" => "welcome"}}} =
+        TlsClient.open(context.port, context.tls.pin, hello(link))
+
+      # The operator path deletes the row and does not own the connection.
+      assert :ok = Hub.revoke_peer(context.hub, "hands", "mac")
+
+      socket = WireClient.open(context.loop, @token)
+
+      assert %{"ok" => true, "result" => %{}} =
+               WireClient.request(socket, "1", "pair.revoke", %{
+                 "kind" => "hands",
+                 "name" => "mac"
+               })
+
       assert {:close, 4401} = TlsClient.until_close(peer)
       :gen_tcp.close(socket)
     end
@@ -168,6 +209,7 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
             %{"kind" => "hands", "name" => "Mac"},
             %{"kind" => "hands", "name" => "maç"},
             %{"kind" => "hands", "name" => String.duplicate("a", 65)},
+            %{"kind" => "client", "name" => "phone"},
             %{"kind" => "robot", "name" => "mac"},
             %{"kind" => "hands", "name" => "mac", "extra" => true}
           ] do
@@ -269,7 +311,7 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
 
     test "a pairing, then a second connection with the key alone", %{tls: tls} = context do
       {link, _expires} = link(context)
-      {socket, reply, keys} = pair_socket(context, link)
+      {socket, reply, keys} = pair(context, link)
       assert {:frame, %{"type" => "welcome"}} = reply
 
       assert %{"ok" => true, "result" => %{"lease_ms" => lease}} =
@@ -283,7 +325,7 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
 
       {second, reply} =
         TlsClient.open(context.port, tls.pin, fn nonce ->
-          signature_hello(nonce, "hands", keys, "mac")
+          signature_hello(nonce, tls.pin, keys, "mac")
         end)
 
       assert {:frame, %{"type" => "welcome"}} = reply
@@ -299,42 +341,62 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
 
     test "a wrong signature closes with 4401", %{tls: tls} = context do
       {link, _expires} = link(context)
-      {socket, {:frame, %{"type" => "welcome"}}, _keys} = pair_socket(context, link)
+      {socket, {:frame, %{"type" => "welcome"}}, _keys} = pair(context, link)
       :ssl.close(socket)
 
       {_public, private} = key_pair()
 
       {other, reply} =
         TlsClient.open(context.port, tls.pin, fn nonce ->
-          signature_hello(nonce, "hands", {nil, private}, "mac")
+          signature_hello(nonce, tls.pin, {nil, private}, "mac")
         end)
 
       assert {:close, 4401} = reply
       _ = other
+    end
+
+    test "a signature over the nonce alone is refused", %{tls: tls} = context do
+      {link, _expires} = link(context)
+      {socket, {:frame, %{"type" => "welcome"}}, keys} = pair(context, link)
+      :ssl.close(socket)
+      {_public, private} = keys
+
+      {_other, reply} =
+        TlsClient.open(context.port, tls.pin, fn nonce ->
+          %{
+            "type" => "hello",
+            "protocol" => WebSocket.protocol(),
+            "role" => "hands",
+            "runner" => "mac",
+            "signature" =>
+              Base.encode64(
+                :crypto.sign(:eddsa, :none, Base.decode64!(nonce), [private, :ed25519])
+              )
+          }
+        end)
+
+      assert {:close, 4401} = reply
+    end
+
+    test "a signature for another name is refused", %{tls: tls} = context do
+      {link, _expires} = link(context)
+      {socket, {:frame, %{"type" => "welcome"}}, keys} = pair(context, link)
+      :ssl.close(socket)
+
+      {_other, reply} =
+        TlsClient.open(context.port, tls.pin, fn nonce ->
+          signature_hello(nonce, tls.pin, keys, "other")
+        end)
+
+      assert {:close, 4401} = reply
     end
 
     test "a used link closes with 4401", %{tls: tls} = context do
       {link, _expires} = link(context)
-      {socket, {:frame, %{"type" => "welcome"}}, _keys} = pair_socket(context, link)
+      {socket, {:frame, %{"type" => "welcome"}}, _keys} = pair(context, link)
       :ssl.close(socket)
 
-      {other, reply} =
-        TlsClient.open(context.port, tls.pin, fn nonce ->
-          pair_hello(nonce, link, "hands", key_pair())
-        end)
-
-      assert {:close, 4401} = reply
-      _ = other
-    end
-
-    test "a link of the other kind closes with 4401", %{tls: tls} = context do
-      {link, _expires} = link(context, "client", "phone")
-
-      {_socket, reply} =
-        TlsClient.open(context.port, tls.pin, fn nonce ->
-          pair_hello(nonce, link, "hands", key_pair(), "phone")
-        end)
-
+      {_other, reply} = TlsClient.open(context.port, tls.pin, hello(link))
       assert {:close, 4401} = reply
     end
 
@@ -344,25 +406,57 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
 
       {_socket, reply} =
         TlsClient.open(context.port, tls.pin, fn nonce ->
-          hello = pair_hello(nonce, link, "hands", key_pair())
+          {hello, _keys} = pair_hello(nonce, link)
           put_in(hello, ["pair", "public_key"], Base.encode64(<<1, 2, 3>>))
         end)
 
       assert {:close, 4401} = reply
     end
 
+    test "a bad hello closes only that connection", context do
+      for hello <- [
+            %{"role" => "client", "signature" => "AAAA"},
+            %{
+              "role" => "hands",
+              "runner" => 12,
+              "pair" => %{"proof" => "AAAA", "public_key" => "AAAA", "signature" => "AAAA"}
+            },
+            %{"role" => "hands", "runner" => "mac", "pair" => "AAAA"}
+          ] do
+        {:ok, socket} = TlsClient.upgrade(context.port, context.tls.pin)
+        TlsClient.challenge(socket)
+
+        TlsClient.send_frame(
+          socket,
+          Map.merge(%{"type" => "hello", "protocol" => WebSocket.protocol()}, hello)
+        )
+
+        assert {:close, 4401} = TlsClient.until_close(socket)
+      end
+
+      # The loopback listener of the same transport still answers.
+      loop = WireClient.open(context.loop, @token)
+      assert %{"ok" => true} = WireClient.request(loop, "1", "sessions.live", %{})
+      :gen_tcp.close(loop)
+    end
+
     test "pair.create on the public listener is unknown_op", %{tls: tls} = context do
-      {link, _expires} = link(context, "client", "phone")
+      {link, _expires} = link(context)
 
       {socket, {:frame, %{"type" => "welcome"}}} =
-        TlsClient.open(context.port, tls.pin, fn nonce ->
-          pair_hello(nonce, link, "client", key_pair(), "phone")
-        end)
+        TlsClient.open(context.port, tls.pin, hello(link))
 
       assert %{"ok" => false, "error" => %{"code" => "unknown_op"}} =
                TlsClient.request(socket, "1", "pair.create", %{"kind" => "hands", "name" => "mac"})
 
       :ssl.close(socket)
+    end
+
+    test "the two listeners share one connection gate", context do
+      children = Supervisor.which_children(context.transport)
+      refute List.keymember?(children, :public_gate, 0)
+      assert List.keymember?(children, :listener, 0)
+      assert WebSocket.max_connections() == 64
     end
   end
 
@@ -371,7 +465,7 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
 
     test "a registration with another name than the hello closes with 4401", context do
       {link, _expires} = link(context)
-      {socket, {:frame, %{"type" => "welcome"}}, _keys} = pair_socket(context, link)
+      {socket, {:frame, %{"type" => "welcome"}}, _keys} = pair(context, link)
 
       TlsClient.send_frame(socket, %{
         "type" => "req",
@@ -383,9 +477,28 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
       assert {:close, 4401} = TlsClient.until_close(socket)
     end
 
+    test "a second registration on one connection is bad_params", context do
+      {link, _expires} = link(context)
+      {socket, {:frame, %{"type" => "welcome"}}, _keys} = pair(context, link)
+
+      assert %{"ok" => true} =
+               TlsClient.request(socket, "1", "hands.register", %{
+                 "runner" => "mac",
+                 "folder" => "/tmp/project"
+               })
+
+      assert %{"ok" => false, "error" => %{"code" => "bad_params"}} =
+               TlsClient.request(socket, "2", "hands.register", %{
+                 "runner" => "mac",
+                 "folder" => "/tmp/project"
+               })
+
+      :ssl.close(socket)
+    end
+
     test "a second registration of a name closes the first connection", %{tls: tls} = context do
       {link, _expires} = link(context)
-      {first, {:frame, %{"type" => "welcome"}}, keys} = pair_socket(context, link)
+      {first, {:frame, %{"type" => "welcome"}}, keys} = pair(context, link)
 
       assert %{"ok" => true} =
                TlsClient.request(first, "1", "hands.register", %{
@@ -395,7 +508,7 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
 
       {second, {:frame, %{"type" => "welcome"}}} =
         TlsClient.open(context.port, tls.pin, fn nonce ->
-          signature_hello(nonce, "hands", keys, "mac")
+          signature_hello(nonce, tls.pin, keys, "mac")
         end)
 
       assert {:close, 4401} = TlsClient.until_close(first)
@@ -411,7 +524,7 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
 
     test "a client operation on a hands connection is unknown_op", context do
       {link, _expires} = link(context)
-      {socket, {:frame, %{"type" => "welcome"}}, _keys} = pair_socket(context, link)
+      {socket, {:frame, %{"type" => "welcome"}}, _keys} = pair(context, link)
 
       assert %{"ok" => false, "error" => %{"code" => "unknown_op"}} =
                TlsClient.request(socket, "1", "sessions.live", %{})
@@ -422,10 +535,41 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
       :ssl.close(socket)
     end
 
+    test "an answer to no open hands.live does not renew the lease", context do
+      {link, _expires} = link(context)
+      {socket, {:frame, %{"type" => "welcome"}}, _keys} = pair(context, link)
+
+      assert %{"ok" => true} =
+               TlsClient.request(socket, "1", "hands.register", %{
+                 "runner" => "mac",
+                 "folder" => "/tmp/project"
+               })
+
+      before = conn_state(context, "mac")
+      assert before.live_id == nil
+
+      TlsClient.send_frame(socket, %{
+        "type" => "res",
+        "id" => "hands.live:0",
+        "ok" => true,
+        "result" => %{"seq" => 0}
+      })
+
+      # A request after it proves that the connection took the answer; the
+      # frames of one connection keep their order.
+      assert %{"ok" => false, "error" => %{"code" => "unknown_op"}} =
+               TlsClient.request(socket, "2", "sessions.live", %{})
+
+      after_answer = conn_state(context, "mac")
+      assert after_answer.lease_at == before.lease_at
+
+      :ssl.close(socket)
+    end
+
     @tag :slow
     test "the lease closes a runner that answers no hands.live", context do
       {link, _expires} = link(context)
-      {socket, {:frame, %{"type" => "welcome"}}, _keys} = pair_socket(context, link)
+      {socket, {:frame, %{"type" => "welcome"}}, _keys} = pair(context, link)
 
       assert %{"ok" => true} =
                TlsClient.request(socket, "1", "hands.register", %{
@@ -456,19 +600,12 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
         )
 
       {:ok, %{"link" => link}} = Pairing.create(pairing, "hands", "mac")
-      keys = key_pair()
       nonce = :crypto.strong_rand_bytes(32)
+      {hello, _keys} = pair_hello(Base.encode64(nonce), link)
 
       :counters.put(clock, 1, Pairing.link_ms() + 1)
 
-      assert {:close, 4401} =
-               Pairing.hello(
-                 pairing,
-                 nonce,
-                 pair_hello(Base.encode64(nonce), link, "hands", keys),
-                 self()
-               )
-
+      assert {:close, 4401} = Pairing.hello(pairing, nonce, hello, self())
       assert Pairing.list(pairing) == {:ok, []}
     end
 
@@ -488,5 +625,68 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
 
       assert Pairing.create(pairing, "hands", "one_too_many") == {:error, :too_many_links}
     end
+  end
+
+  describe "a Hub that does not answer, and the state of the links" do
+    setup context, do: serve(context)
+
+    test "a pairing closes with 4503 when the Hub does not answer", context do
+      {:ok, pairing} =
+        Pairing.start_link(
+          hub: :no_such_hub,
+          address: "127.0.0.1:0",
+          pin: context.tls.pin,
+          lease_ms: WebSocket.hands_lease_ms(),
+          clock: fn -> 0 end
+        )
+
+      {:ok, %{"link" => link}} = Pairing.create(pairing, "hands", "mac")
+      nonce = :crypto.strong_rand_bytes(32)
+      {hello, _keys} = pair_hello(Base.encode64(nonce), link)
+
+      assert {:close, 4503} = Pairing.hello(pairing, nonce, hello, self())
+    end
+
+    test "the link hash is out of the state and out of a crash report", context do
+      {:ok, pairing} =
+        Pairing.start_link(
+          hub: context.hub,
+          address: "127.0.0.1:0",
+          pin: context.tls.pin,
+          lease_ms: WebSocket.hands_lease_ms(),
+          clock: fn -> 0 end
+        )
+
+      {:ok, %{"link" => link}} = Pairing.create(pairing, "hands", "mac")
+      %{"t" => token} = link_parts(link)
+      hash = Base.encode16(:crypto.hash(:sha256, token))
+
+      refute inspect(:sys.get_state(pairing)) =~ token
+      refute inspect(:sys.get_state(pairing)) =~ hash
+
+      Process.flag(:trap_exit, true)
+
+      log =
+        capture_log(fn ->
+          send(pairing, :boom)
+          assert_receive {:EXIT, ^pairing, _reason}
+        end)
+
+      refute log =~ token
+      refute log =~ hash
+    end
+  end
+
+  # A pairing over TLS, its welcome, and the keys that paired.
+  defp pair(context, link) do
+    keys = key_pair()
+
+    {socket, reply} =
+      TlsClient.open(context.port, context.tls.pin, fn nonce ->
+        {hello, _keys} = pair_hello(nonce, link, keys)
+        hello
+      end)
+
+    {socket, reply, keys}
   end
 end

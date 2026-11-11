@@ -55,7 +55,7 @@ defmodule Helyx.Transport.WebSocket do
   # The protocol number and the SHA-256 of the schema in
   # `docs/features/wire-protocol.md`; a schema change needs a new number.
   @protocol 12
-  @schema_sha256 "66fb26dff4e88e84307d74935f9060bdb0805efc4f62110737b913f62d49c528"
+  @schema_sha256 "e6a3a59b5c85e4c8cd30790a3a636cff245c499afcad184993af0c8325d2fc0c"
 
   @max_connections Helyx.Transport.WebSocket.Bounds.get("connections")
   # The webhook endpoint of a Hub (decision 17): one request reads at most
@@ -68,6 +68,17 @@ defmodule Helyx.Transport.WebSocket do
   @lease_ms 45_000
   @min_lease_ms 30_000
   @max_lease_ms 120_000
+
+  @doc "The most connections of the server, shared by both listeners."
+  @spec max_connections() :: pos_integer()
+  def max_connections, do: @max_connections
+
+  @doc """
+  The most TCP connections that one listener admits before the upgrade: the
+  connections in the gate and one that the gate refuses with HTTP 503.
+  """
+  @spec tcp_connections() :: pos_integer()
+  def tcp_connections, do: @max_connections + 1
 
   @doc "The lease of a hands connection by default, in milliseconds."
   @spec hands_lease_ms() :: pos_integer()
@@ -160,7 +171,7 @@ defmodule Helyx.Transport.WebSocket do
                  :listener
                )
              ),
-           {:ok, public_parts} <- public_parts(sup, config, public, tls, pairing) do
+           {:ok, public_parts} <- public_parts(sup, config, public, tls, pairing, gate) do
         {:ok, bandit, gate, public_parts}
       end
 
@@ -198,19 +209,13 @@ defmodule Helyx.Transport.WebSocket do
     )
   end
 
-  # The public listener: its gate and its bandit over TLS. It shares the
-  # pairing of the loopback listener, which serves the `pair.*` operations.
-  defp public_parts(_sup, _config, nil, _tls, _pairing), do: {:ok, []}
+  # The public listener shares the one gate of the server
+  # (`docs/features/remote-hands.md`, "Public listener"): ADR 0012 gives a
+  # server 64 connections, not 64 for each listener.
+  defp public_parts(_sup, _config, nil, _tls, _pairing, _gate), do: {:ok, []}
 
-  defp public_parts(sup, config, public, tls, pairing) do
-    with {:ok, gate} <-
-           Supervisor.start_child(
-             sup,
-             Supervisor.child_spec({Helyx.Transport.WebSocket.Gate, @max_connections},
-               id: :public_gate
-             )
-           ),
-         {:ok, bandit} <-
+  defp public_parts(sup, config, public, tls, pairing, gate) do
+    with {:ok, bandit} <-
            Supervisor.start_child(
              sup,
              listener(
@@ -250,6 +255,9 @@ defmodule Helyx.Transport.WebSocket do
           # within the shutdown of its connections, so one group gives the stop
           # one bound (`docs/features/wire-protocol.md`, Bounds).
           num_acceptors: 1,
+          # A TCP connection that sends nothing before the upgrade is bounded
+          # here; the gate bounds the upgraded ones.
+          num_connections: tcp_connections(),
           shutdown_timeout: 15_000
         ] ++ tls_options(tls),
       websocket_options: [
@@ -268,10 +276,11 @@ defmodule Helyx.Transport.WebSocket do
 
   defp tls_options(tls) do
     [
-      transport_module: ThousandIsland.Transports.SSL,
+      transport_module: Helyx.Transport.WebSocket.TLS.Transport,
       transport_options: [
         certfile: String.to_charlist(tls.certfile),
-        keyfile: String.to_charlist(tls.keyfile)
+        keyfile: String.to_charlist(tls.keyfile),
+        versions: [:"tlsv1.3"]
       ]
     ]
   end
@@ -376,7 +385,18 @@ defmodule Helyx.Transport.WebSocket do
   @impl Plug
   def init(config), do: config
 
+  # The public listener serves no webhook (`docs/features/remote-hands.md`,
+  # "Public listener"): the endpoint of an event subscription is of the
+  # loopback listener, and a public path answers 404 before any other work.
   @impl Plug
+  def call(conn, %{listener: :public} = config) do
+    if webhook_path?(conn) do
+      conn |> Plug.Conn.send_resp(404, "") |> Plug.Conn.halt()
+    else
+      websocket(conn, config)
+    end
+  end
+
   def call(conn, config) do
     if webhook_path?(conn) do
       webhook(conn, config)
