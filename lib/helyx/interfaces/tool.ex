@@ -3,63 +3,79 @@ defmodule Helyx.Tool do
   A tool the model can call. The hands run it in the session's working
   directory.
 
-  A tool plugin implements this behaviour. `name/0` is what the model calls.
-  `parameters/0` is a JSON schema map with string keys. `run/2` gets the
-  decoded argument map and the working directory, and returns the text the
-  model sees. `{:error, text}` marks the result as an error; a tool that
-  raises is reported the same way. `{:ok, text, ui_blocks}` and
-  `{:error, text, ui_blocks}` add at most
-  #{Helyx.UIBlock.max_result_blocks()} UI blocks for the clients
-  (`Helyx.UIBlock`); the model never gets them. A list that fails
-  `Helyx.UIBlock.check_list/1` is a return outside the contract
-  (`docs/features/ui-blocks.md`). The hands make every result text valid
-  UTF-8 and cut a text over `Helyx.Message.max_result_bytes/0` to a notice
-  line, its head, a marker line, and its tail (`Helyx.Message.cut_result/1`).
+  A tool plugin implements `name/0`, `description/0`, `parameters/0`, and
+  `run/2`; a tool source implements `source/1` in place of the first three.
+  Core refuses any other plugin at its start with `{:invalid_tool_plugin,
+  module}`.
 
-  The optional `check/0` runs once per session start or resume, in the
-  caller, before any file or process is created (`check_available/1`): a
-  tool that needs something from the system reports it missing there, the
-  session fails to start with a clear error, and no call fails later for it.
-  The optional `concurrent?/0` returns `true` for a tool whose calls can run
-  with other calls of concurrent tools; any other call runs alone, and at
-  most 8 calls of a turn run at once (`concurrent-tool-calls.md`).
-
-  A tool that creates an OS resource holds it with `hold/1` before the
-  external work starts and implements the optional `release/3`: the hands
-  call `release(handles, mode, deadline)` when a call delivers (`:deliver`)
-  and when its turn is aborted (`:cancel`), with an absolute `deadline` in
-  `System.monotonic_time(:millisecond)` on the node of the hands that the
-  callback must not pass, and keep only the handles it returns. It also frees the
-  resource when its Task dies with no release (ADR 0004). `context/0`,
-  `ask/1`, `transcript/0`, and the background runs of `background/0` and
-  `started/1` are for a call; a background run outlives the normal end of its
-  turn, an abort or a failure of the turn revokes it, and the stop of the
-  session ends it (`background-bash.md`, ADR 0014).
-
-  A tool source exports `source/1` in place of `name/0`, `description/0`,
-  and `parameters/0`: its source process puts the tools that it learns at
-  run time (`announce/1`, `put_tools/2`, `launch/1`), and its `run/2` runs
-  each of them. Its process traps exits, and Core kills it when its hands
-  end; any other exit signal but a kill is a message, and the source must
-  end at an `{:EXIT, pid, reason}` of a pid that is no server Task of its
-  own. Core refuses any other plugin at its start with `{:invalid_tool_plugin,
-  module}`. A tool call finds and activates the deferred tools of the sources
-  with `deferred/2` and `activate/1` (`docs/features/mcp-client.md`).
+  `context/0`, `ask/1`, `transcript/0`, and the background runs of
+  `background/0` and `started/1` are for a call; a background run outlives
+  the normal end of its turn, an abort or a failure of the turn revokes it,
+  and the stop of the session ends it (`background-bash.md`, ADR 0014).
   """
 
   alias Helyx.Session.ToolSpecs
 
   @type spec :: %{name: String.t(), description: String.t(), parameters: map()}
 
+  @doc "What the model calls."
   @callback name() :: String.t()
   @callback description() :: String.t()
+
+  @doc "A JSON schema map with string keys."
   @callback parameters() :: map()
+
+  @doc """
+  Runs a call with the decoded argument map and the working directory, and
+  returns the text the model sees. `{:error, text}` marks the result as an
+  error; a tool that raises is reported the same way. `{:ok, text,
+  ui_blocks}` and `{:error, text, ui_blocks}` add at most
+  #{Helyx.UIBlock.max_result_blocks()} UI blocks for the clients
+  (`Helyx.UIBlock`); the model never gets them. A list that fails
+  `Helyx.UIBlock.check_list/1` is a return outside the contract
+  (`docs/features/ui-blocks.md`). The hands make every result text valid
+  UTF-8 and cut a text over `Helyx.Message.max_result_bytes/0` to a notice
+  line, its head, a marker line, and its tail (`Helyx.Message.cut_result/1`).
+  """
   @callback run(arguments :: map(), cwd :: String.t()) ::
               {:ok | :error, String.t()} | {:ok | :error, String.t(), [Helyx.UIBlock.t()]}
+
+  @doc """
+  Optional. Runs once per session start or resume, in the caller, before
+  any file or process is created (`check_available/1`): a tool that needs
+  something from the system reports it missing there, the session fails to
+  start with a clear error, and no call fails later for it.
+  """
   @callback check() :: :ok | {:error, String.t()}
+
+  @doc """
+  Optional. `true` for a tool whose calls can run with other calls of
+  concurrent tools; any other call runs alone, and at most 8 calls of a
+  turn run at once (`concurrent-tool-calls.md`).
+  """
   @callback concurrent?() :: boolean()
+
+  @doc """
+  Optional, for a tool that holds an OS resource with `hold/1` before the
+  external work starts. The hands call it when a call delivers
+  (`:deliver`) and when its turn is aborted (`:cancel`), with an absolute
+  `deadline` in `System.monotonic_time(:millisecond)` on the node of the
+  hands that it must not pass, and keep only the handles it returns. The
+  plugin also frees the resource when its Task dies with no release
+  (ADR 0004).
+  """
   @callback release(handles :: [term()], mode :: :deliver | :cancel, deadline :: integer()) ::
               [term()]
+
+  @doc """
+  A tool source: its source process puts the tools that it learns at run
+  time (`announce/1`, `put_tools/2`, `launch/1`), and its `run/2` runs each
+  of them. Its process traps exits, and Core kills it when its hands end;
+  any other exit signal but a kill is a message, and the source must end
+  at an `{:EXIT, pid, reason}` of a pid that is no server Task of its own.
+  A tool call finds and activates the deferred tools of the sources with
+  `deferred/2` and `activate/1` (`docs/features/mcp-client.md`).
+  """
   @callback source(%{core: Helyx.Core.name(), session_id: String.t(), cwd: String.t()}) :: term()
 
   @optional_callbacks name: 0, description: 0, parameters: 0, source: 1, check: 0

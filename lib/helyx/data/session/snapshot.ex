@@ -14,8 +14,7 @@ defmodule Helyx.Session.Snapshot do
       newest messages, cut before a user or an assistant message.
     * `older` – the count of the older messages that `messages` leaves out,
       0 when none; their pages come from `Helyx.Session.history/4`, the
-      first with the id of the first message of `messages`. A client can tell the user how much of the transcript it
-      does not show (`docs/features/tui-attach.md`, "Accepted holes").
+      first with the id of the first message of `messages`.
     * `turn` – nil, or the running turn: its `id`, the assistant message
       so far as `partial` (nil before the first stream event), and
       `elapsed_ms`, the milliseconds since the turn started, by the clock
@@ -27,10 +26,8 @@ defmodule Helyx.Session.Snapshot do
       in `queue_update` (`Helyx.Event`).
     * `persisting` – true while the session appends to its file. It is
       false for a session with no file, and after a write failure or the
-      loss of the writer lock stopped the saving. So `false` alone does not
-      say why. A client that tells the user shows
-      `Helyx.Reason.text(:not_saved)`; then a stop before its subscribe
-      reaches it too (`docs/features/session-lock.md`).
+      loss of the writer lock stopped the saving
+      (`docs/features/session-lock.md`).
     * `usage` and `context` – the totals and the context state of every
       message of the transcript, also of those that a tail leaves out
       (`Helyx.Session.Totals`).

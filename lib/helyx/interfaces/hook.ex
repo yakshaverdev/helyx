@@ -7,34 +7,12 @@ defmodule Helyx.Hook do
   settles (ADR 0013, `docs/features/hooks.md`,
   `docs/features/before-settle.md`).
 
-  A hook plugin implements the points that it handles, each optional:
-  `before_tool/1` answers `:allow`, `{:allow, reason}`, or `{:deny,
-  reason}`; `after_tool/1` answers `:keep` or `{:replace, {:ok | :error,
-  text}}`; `before_settle/1` answers `:settle` or `{:continue, text}`. A
-  reason and a text are strings of valid UTF-8, and the text of a continue
-  is at most the bytes of a client text. `limit/1`
-  gives the limit of the hook at a point, an integer of ms from 1 to
-  #{@max_limit_ms}. Core checks it once at its start, and refuses a hook plugin
-  with no point (`{:no_hook_point, module}`), a bad limit
-  (`{:invalid_hook_limit, module}`), and a `before_settle/1` plugin whose
-  name is over the bytes of an origin id (`{:invalid_hook_name, module}`).
-
-  The hooks of a point run in the order of the plugin list. A deny ends
-  the `before_tool` chain, and the call does not run; each `after_tool`
-  hook gets the result that the hook before it left. A raise, a throw, an
-  exit, a hook past its limit, and a return that is not an answer of its
-  point is a failed hook: `before_tool` denies the call, `after_tool`
-  keeps the result and the session emits a `:notice`.
-
-  `before_settle` runs after a turn that ended `done`, not a compaction,
-  before the session takes its queues, with the session id, the turn id,
-  the stop reason, and `cwd`, the session's folder; the first continue
-  ends its chain.
-  A continue starts the next turn with `text` as a user message whose
-  origin is `%{kind: :hook, id: inspect(module)}`. A failed hook there is
-  a `:notice`, and the chain goes on with the next hook; with no continue
-  the session settles. At most 8 turns in a row start from a continue; a
-  client message resets the count.
+  A hook plugin implements the points that it handles, each optional, and
+  `limit/1`. Core refuses a hook plugin with no point
+  (`{:no_hook_point, module}`). A reason and a text are strings of valid
+  UTF-8. The hooks of a point run in the order of the plugin list. A raise,
+  a throw, an exit, a hook past its limit, and a return that is not an
+  answer of its point is a failed hook.
 
   Each hook runs in a Task of the hands of its own, with the call's
   context (`Helyx.Tool.context/0`). It holds an OS resource with
@@ -64,10 +42,37 @@ defmodule Helyx.Hook do
           cwd: String.t()
         }
 
+  @doc """
+  Before a call runs. A deny ends the chain, and the call does not run. A
+  failed hook denies the call.
+  """
   @callback before_tool(call()) :: :allow | {:allow, String.t()} | {:deny, String.t()}
+
+  @doc """
+  After a call. Each hook gets the result that the hook before it left. A
+  failed hook keeps the result, and the session emits a `:notice`.
+  """
   @callback after_tool(%{required(:result) => result(), optional(atom()) => term()}) ::
               :keep | {:replace, result()}
+
+  @doc """
+  After a turn that ended `done`, not a compaction, before the session
+  takes its queues; `cwd` is the session's folder. The first continue ends
+  the chain and starts the next turn with `text`, at most the bytes of a
+  client text, as a user message whose origin is
+  `%{kind: :hook, id: inspect(module)}`. A failed hook is a `:notice`, and
+  the chain goes on; with no continue the session settles. At most 8 turns
+  in a row start from a continue; a client message resets the count. Core
+  refuses a plugin whose name is over the bytes of an origin id
+  (`{:invalid_hook_name, module}`).
+  """
   @callback before_settle(settle()) :: :settle | {:continue, String.t()}
+
+  @doc """
+  The limit of the hook at a point, in ms from 1 to #{@max_limit_ms}. Core
+  reads it once at its start; a bad limit refuses the plugin
+  (`{:invalid_hook_limit, module}`).
+  """
   @callback limit(point()) :: pos_integer()
   @callback release(handles :: [term()], mode :: :deliver | :cancel, deadline :: integer()) ::
               [term()]
