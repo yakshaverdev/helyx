@@ -45,17 +45,17 @@ defmodule Helyx.Tool.MCP.Source do
     |> loop()
   end
 
-  # A server Task of `name`, with the start bound from the request.
+  # A server Task of `name`, with the start bound from the request. The
+  # Task enforces that bound for its whole start, the handshake and the
+  # first listing, so the source holds no timer of its own.
   defp launch(state, name) do
     %{config: config} = server = state.servers[name]
     deadline = System.monotonic_time(:millisecond) + state.wait_ms
     source = self()
     opts = [wait_ms: state.wait_ms, call_ms: call_ms()] ++ watchdog_exe(name)
     ref = Helyx.Tool.launch(fn -> Server.run(config, source, state.cwd, deadline, opts) end)
-    timer = Process.send_after(self(), {:start_timeout, name}, state.wait_ms)
 
-    server =
-      Map.merge(server, %{ref: ref, pid: nil, timer: timer, status: :starting, handles: []})
+    server = Map.merge(server, %{ref: ref, pid: nil, status: :starting, handles: []})
 
     %{
       state
@@ -99,7 +99,6 @@ defmodule Helyx.Tool.MCP.Source do
 
     case state.servers[name] do
       %{status: status} = server when status in [:starting, :ready] ->
-        Process.cancel_timer(server.timer)
         :ok = Helyx.Tool.put_tools(name, {:ok, entries})
         for {caller, ref} <- server.waiting, do: send(caller, {ref, {:ok, pid, server.handles}})
         {:ok, put_in(state.servers[name], %{server | status: :ready, waiting: []})}
@@ -136,16 +135,6 @@ defmodule Helyx.Tool.MCP.Source do
 
       {name, %{status: :restarting}} ->
         {:ok, fail(state, name, "its process group was not confirmed gone; it may still run")}
-
-      _other ->
-        {:ok, state}
-    end
-  end
-
-  defp handle({:start_timeout, name}, state) do
-    case state.servers[name] do
-      %{status: :starting} ->
-        {:ok, fail(state, name, "did not start in #{div(state.wait_ms, 1000)} s")}
 
       _other ->
         {:ok, state}
@@ -201,16 +190,7 @@ defmodule Helyx.Tool.MCP.Source do
   defp started(state, ref, pid) do
     {name, launches} = Map.pop!(state.launches, ref)
     state = %{state | launches: launches, tasks: Map.put(state.tasks, pid, name)}
-
-    case state.servers[name] do
-      %{status: :starting, ref: ^ref} = server ->
-        put_in(state.servers[name], %{server | pid: pid})
-
-      # It failed before the hands answered: its start bound passed.
-      _failed ->
-        Process.exit(pid, :kill)
-        state
-    end
+    update(state, name, &%{&1 | pid: pid})
   end
 
   # The server is failed: its tools leave the session, a search names it
@@ -218,7 +198,6 @@ defmodule Helyx.Tool.MCP.Source do
   # its Task is killed if it still runs.
   defp fail(state, name, text) do
     server = state.servers[name]
-    Process.cancel_timer(server.timer)
     if server.pid, do: Process.exit(server.pid, :kill)
 
     for {caller, ref} <- server.waiting,

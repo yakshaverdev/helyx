@@ -19,12 +19,17 @@ defmodule Helyx.Tool.MCP.Server do
   # The least time from the start of one listing to the next.
   @list_gap_ms 1_000
 
+  # The phases of one server: the handshake (`:initializing`), the first
+  # listing inside the same start bound (`:listing`), then the calls and
+  # the later listings (`:serving`). One loop runs all three; the phase
+  # decides what an exit and the start timer mean.
   defstruct [
     :config,
     :source,
     :port,
     :wait_ms,
     :call_ms,
+    phase: :initializing,
     buffer: Lines.new(),
     next_id: 1,
     pending: %{},
@@ -48,14 +53,23 @@ defmodule Helyx.Tool.MCP.Server do
     case Launch.start(config, cwd, deadline, opts) do
       {:started, port, _pre, handles} ->
         send(source, {:handles, self(), handles})
-        handshake(%{state | port: port}, deadline)
+        Process.send_after(self(), :start_timeout, max(deadline - now(), 0))
+        handshake(%{state | port: port}) |> serve()
 
       {:error, reason} ->
-        fail(state, "did not start: " <> reason)
+        fail(state, start_error(state, reason, deadline))
     end
   end
 
-  defp handshake(state, deadline) do
+  # The watchdog start waits until the same deadline, so a start that ends
+  # past it is the start bound, whichever read ended last.
+  defp start_error(state, reason, deadline) do
+    if now() >= deadline,
+      do: "did not start in #{div(state.wait_ms, 1000)} s",
+      else: "did not start: " <> reason
+  end
+
+  defp handshake(state) do
     params = %{
       protocolVersion: @protocol,
       capabilities: %{},
@@ -63,49 +77,22 @@ defmodule Helyx.Tool.MCP.Server do
     }
 
     {id, state} = request(state, "initialize", params)
-
-    case await(state, id, deadline) do
-      {{:ok, %{"protocolVersion" => version}}, state} when version in @versions ->
-        notify(state, "notifications/initialized")
-        state |> list(deadline) |> serve()
-
-      {{:ok, _result}, state} ->
-        fail(state, "initialize: a protocol version that Helyx does not speak")
-
-      {{:error, text}, state} ->
-        fail(state, "initialize: " <> text)
-    end
+    %{state | pending: Map.put(state.pending, id, :initialize)}
   end
 
-  # Waits for the answer to `id` before `deadline`, and handles every other
-  # line on the way. Only the start waits so: no call can come before the
-  # first listing.
-  defp await(state, id, deadline) do
-    case Map.pop(state.pending, {:await, id}) do
-      {nil, _pending} ->
-        receive do
-          {port, {:data, data}} when port == state.port ->
-            state |> data(data) |> await(id, deadline)
-
-          {port, {:exit_status, _status}} when port == state.port ->
-            fail(state, "the server exited")
-        after
-          max(deadline - now(), 0) ->
-            fail(state, "did not start in #{div(state.wait_ms, 1000)} s")
-        end
-
-      {answer, pending} ->
-        {answer, %{state | pending: pending}}
-    end
-  end
-
+  # One loop for every phase. A message that a phase cannot get waits for no
+  # clause, as each loop of a phase did before; the start timer and the
+  # listing timer are the only bounds, and `@wait_ms` is their whole.
   defp serve(state) do
     receive do
       {port, {:data, data}} when port == state.port ->
         state |> data(data) |> serve()
 
       {port, {:exit_status, _status}} when port == state.port ->
-        exited(state)
+        exit_status(state)
+
+      :start_timeout ->
+        start_timeout(state)
 
       {:call, from, name, args, deadline} ->
         state |> call(from, name, args, deadline) |> serve()
@@ -119,13 +106,26 @@ defmodule Helyx.Tool.MCP.Server do
       :relist ->
         state |> relist() |> serve()
 
-      {:list_timeout, ref} when state.list != nil and state.list.ref == ref ->
-        fail(state, "a listing of tools did not end in #{div(state.wait_ms, 1000)} s")
+      {:list_timeout, ref} ->
+        list_timeout(state, ref)
 
       _other ->
         serve(state)
     end
   end
+
+  defp exit_status(%{phase: :serving} = state), do: exited(state)
+  defp exit_status(state), do: fail(state, "the server exited")
+
+  defp start_timeout(%{phase: :serving} = state), do: serve(state)
+
+  defp start_timeout(state),
+    do: fail(state, "did not start in #{div(state.wait_ms, 1000)} s")
+
+  defp list_timeout(%{phase: :serving, list: %{ref: ref}} = state, ref),
+    do: fail(state, "a listing of tools did not end in #{div(state.wait_ms, 1000)} s")
+
+  defp list_timeout(state, _ref), do: serve(state)
 
   # Lines
 
@@ -169,7 +169,16 @@ defmodule Helyx.Tool.MCP.Server do
 
   defp message(_message, state), do: state
 
-  defp answer(:await, id, reply, state), do: put_in(state.pending[{:await, id}], reply)
+  defp answer(:initialize, _id, {:ok, %{"protocolVersion" => version}}, state)
+       when version in @versions do
+    notify(state, "notifications/initialized")
+    state |> Map.put(:phase, :listing) |> list()
+  end
+
+  defp answer(:initialize, _id, {:ok, _result}, state),
+    do: fail(state, "initialize: a protocol version that Helyx does not speak")
+
+  defp answer(:initialize, _id, {:error, text}, state), do: fail(state, "initialize: " <> text)
 
   defp answer({:call, {pid, ref}, timer, monitor}, _id, reply, state) do
     Process.cancel_timer(timer)
@@ -189,24 +198,11 @@ defmodule Helyx.Tool.MCP.Server do
 
   # Listing
 
-  # The first listing, inside the start deadline.
-  defp list(state, deadline) do
-    state = start_list(state, deadline)
-    wait_list(state, deadline)
-  end
-
-  defp wait_list(%{list: nil} = state, _deadline), do: state
-
-  defp wait_list(state, deadline) do
-    receive do
-      {port, {:data, data}} when port == state.port ->
-        state |> data(data) |> wait_list(deadline)
-
-      {port, {:exit_status, _status}} when port == state.port ->
-        fail(state, "the server exited")
-    after
-      max(deadline - now(), 0) -> fail(state, "did not start in #{div(state.wait_ms, 1000)} s")
-    end
+  # The first listing: the start timer ends it, so it holds no timer of its
+  # own.
+  defp list(state) do
+    state = %{state | list: %{pages: 0, tools: []}, listed_at: now()}
+    request_page(state, nil)
   end
 
   # A change: a listing at once, or one queued after the running one, at
@@ -263,7 +259,7 @@ defmodule Helyx.Tool.MCP.Server do
   defp listed(state) do
     {entries, names, notices} = Listing.entries(state.config.name, state.list.tools)
     send(state.source, {:listed, self(), entries, notices})
-    state = %{state | list: nil, names: names}
+    state = %{state | list: nil, names: names, phase: :serving}
 
     if state.queued?,
       do: queue(state, max(state.listed_at + @list_gap_ms - now(), 0)),
@@ -371,11 +367,7 @@ defmodule Helyx.Tool.MCP.Server do
   defp request(state, method, params) do
     id = state.next_id
     send_json(state, %{jsonrpc: "2.0", id: id, method: method, params: params})
-
-    pending =
-      if method == "initialize", do: Map.put(state.pending, id, :await), else: state.pending
-
-    {id, %{state | next_id: id + 1, pending: pending}}
+    {id, %{state | next_id: id + 1}}
   end
 
   defp notify(state, method), do: send_json(state, %{jsonrpc: "2.0", method: method})
