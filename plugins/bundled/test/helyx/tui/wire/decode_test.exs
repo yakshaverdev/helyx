@@ -86,10 +86,10 @@ defmodule Helyx.TUI.Wire.DecodeTest do
       event(:turn_end, %{outcome: :aborted}),
       event(:turn_end, %{outcome: :error, error: "boom"}),
       event(:queue_update, @queue, nil),
-      event(:queue_dropped, %{texts: ["q1"], messages: [dropped]}, nil),
+      event(:queue_dropped, %{messages: [dropped]}, nil),
       event(:model_change, %{model: "fake/echo"}, nil),
       event(:resume_id, %{provider: "claude", resume_id: "r", lost: true, cut: 2}),
-      event(:steer_unconfirmed, %{text: "s1", message: unconfirmed}),
+      event(:steer_unconfirmed, %{message: unconfirmed}),
       event(:compaction, %{trigger: :auto, tokens_before: nil, tokens_after: 5}),
       event(:compaction, %{trigger: :manual, tokens_before: 9, tokens_after: nil}),
       event(:notice, %{text: "n"}),
@@ -129,8 +129,8 @@ defmodule Helyx.TUI.Wire.DecodeTest do
           %{turn_end | "data" => []},
           # A role that the fold does not take for the event.
           wire(Wire.event(event(:tool_execution_end, %{message: assistant()}))),
-          wire(Wire.event(event(:queue_dropped, %{texts: ["p"], messages: [partial()]}))),
-          wire(Wire.event(event(:steer_unconfirmed, %{text: "", message: result()}))),
+          wire(Wire.event(event(:queue_dropped, %{messages: [partial()]}))),
+          wire(Wire.event(event(:steer_unconfirmed, %{message: result()}))),
           Map.delete(turn_end, "instance_id"),
           "event"
         ] do

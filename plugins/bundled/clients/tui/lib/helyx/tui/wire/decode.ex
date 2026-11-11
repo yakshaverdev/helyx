@@ -143,16 +143,10 @@ defmodule Helyx.TUI.Wire.Decode do
 
   defp data(:queue_update, data), do: queue(data)
 
-  # The wire leaves out the texts; the messages carry them.
-  defp data(:queue_dropped, %{"messages" => messages}) when is_list(messages) do
-    messages = Enum.map(messages, &message!(&1, :user))
-    %{messages: messages, texts: Enum.map(messages, &Message.text/1)}
-  end
+  defp data(:queue_dropped, %{"messages" => messages}) when is_list(messages),
+    do: %{messages: Enum.map(messages, &message!(&1, :user))}
 
-  defp data(:steer_unconfirmed, %{"message" => message}) do
-    message = message!(message, :user)
-    %{message: message, text: Message.text(message)}
-  end
+  defp data(:steer_unconfirmed, %{"message" => message}), do: %{message: message!(message, :user)}
 
   defp data(:model_change, %{"model" => model}), do: %{model: model!(model)}
   defp data(:tools_change, %{"activated" => names}), do: %{activated: activated!(names)}

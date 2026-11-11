@@ -327,7 +327,7 @@ defmodule Helyx.TUI.SwitchTest do
       instance_id: state.instance_id,
       turn_id: nil,
       seq: 0,
-      data: %{texts: ["queued"]}
+      data: %{messages: [Helyx.Message.user("queued")]}
     }
 
     switch = %Switch{task: task, target: {:resume, "AAAAAAAAAAAA"}, dropped: [dropped]}

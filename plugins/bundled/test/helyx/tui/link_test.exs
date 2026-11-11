@@ -462,7 +462,7 @@ defmodule Helyx.TUI.LinkTest do
     assert texts(state, :user) == ["one", "two", "three"]
 
     for {type, data} <- [
-          queue_dropped: %{messages: [Message.user("again")], texts: ["again"]},
+          queue_dropped: %{messages: [Message.user("again")]},
           turn_end: %{outcome: :done}
         ] do
       again = %Event{

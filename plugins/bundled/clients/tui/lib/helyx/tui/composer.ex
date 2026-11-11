@@ -162,8 +162,8 @@ defmodule Helyx.TUI.Composer do
   paste rule cleans each text, so a text cannot forge a marker.
   """
   @spec apply(t(), Event.t()) :: t()
-  def apply(%__MODULE__{} = composer, %Event{type: :queue_dropped, data: %{texts: texts}}),
-    do: join_draft(composer, Enum.map(texts, &Paste.clean/1))
+  def apply(%__MODULE__{} = composer, %Event{type: :queue_dropped, data: %{messages: messages}}),
+    do: join_draft(composer, Enum.map(messages, &Paste.clean(Helyx.Message.text(&1))))
 
   def apply(%__MODULE__{} = composer, %Event{}), do: composer
 

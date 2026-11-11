@@ -469,7 +469,7 @@ defmodule Helyx.Session.LoopTest do
     :ok = Session.abort(session)
     events = collect_until(:turn_end)
     assert stop_reason(events) == :aborted
-    assert [%{texts: ["f"], messages: [%Message{} = message]}] = of_type(events, :queue_dropped)
+    assert [%{messages: [%Message{} = message]}] = of_type(events, :queue_dropped)
     assert Message.text(message) == "f"
 
     assert List.last(queue_counts(events)) == %{

@@ -312,7 +312,7 @@ defmodule Helyx.TUITest do
         instance_id: state.instance_id,
         turn_id: nil,
         seq: state.vm.seq + 1,
-        data: %{texts: ["dropped"]}
+        data: %{messages: [Helyx.Message.user("dropped")]}
       }
 
       {:noreply, state} = TUI.handle_info({:helyx_event, event}, state)

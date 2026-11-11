@@ -160,12 +160,8 @@ defmodule Helyx.Session.Server.Steering do
   defp effect({:take, message}, state), do: Records.take_steer(state, message)
 
   defp effect({:notice, turn_id, message}, state),
-    do: emit(state, turn_id, :steer_unconfirmed, %{text: Message.text(message), message: message})
+    do: emit(state, turn_id, :steer_unconfirmed, %{message: message})
 
   defp effect({:dropped, messages}, state),
-    do:
-      emit(state, :queue_dropped, %{
-        texts: Enum.map(messages, &Message.text/1),
-        messages: messages
-      })
+    do: emit(state, :queue_dropped, %{messages: messages})
 end

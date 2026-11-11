@@ -823,7 +823,7 @@ defmodule Helyx.TUI.ViewModelTest do
   end
 
   test "an unconfirmed steer shows a notice with its text" do
-    assert cells(fold(steer_unconfirmed: %{text: "more"})) == [
+    assert cells(fold(steer_unconfirmed: %{message: Helyx.Message.user("more")})) == [
              {:notice, "the steer was not confirmed; send it again if needed: more"}
            ]
   end
