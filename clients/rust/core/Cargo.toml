@@ -3,7 +3,7 @@ name = "helyx-client-core"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "The client core of Helyx: the frame checks of wire protocol 3, the handshake, and the event fold"
+description = "The client core of Helyx: the frame checks of the wire protocol, the handshake, and the event fold"
 publish = false
 
 [dependencies]
