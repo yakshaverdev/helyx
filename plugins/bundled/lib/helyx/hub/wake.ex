@@ -7,7 +7,7 @@ defmodule Helyx.Hub.Wake do
   # needs no recovery step: a row is pending, with its `next_try_at`, or its
   # run has an outcome.
   #
-  # `tasks`: the monitor ref of a Task => `%{pid, schedule, session, owner,
+  # `tasks`: the monitor ref of a Task => `%{task, schedule, session, owner,
   # subscription, timer}`, at most 4, one for each session. The kill of a
   # Task past its 120,000 ms keeps its entry to its `:DOWN`: a Hub call that
   # the Task sent before the kill comes before its `:DOWN`, so it is taken
@@ -31,9 +31,6 @@ defmodule Helyx.Hub.Wake do
   # The wait before the next try of a wake-up that the session or the cap
   # put off.
   @retry_s 30
-  # The wait for the `:DOWN` of a Task that a delete killed; a kill cannot
-  # be trapped, so it comes at once.
-  @down_ms 1_000
 
   def init(state) do
     {:ok, sup} = Task.Supervisor.start_link()
@@ -96,7 +93,7 @@ defmodule Helyx.Hub.Wake do
         timer = Process.send_after(self(), {:wake_kill, task.ref}, @task_ms)
 
         entry = %{
-          pid: task.pid,
+          task: task,
           schedule: row.id,
           session: row.session_id,
           owner: row.owner,
@@ -293,26 +290,19 @@ defmodule Helyx.Hub.Wake do
   # Task sent before its kill finds no row to write.
   def kill(state, which?) do
     Enum.reduce(state.wake.tasks, state, fn {ref, task}, state ->
-      if which?.(task), do: killed(state, ref, task.pid), else: state
+      if which?.(task) do
+        Task.shutdown(task.task, :brutal_kill)
+        ended(state, ref)
+      else
+        state
+      end
     end)
-  end
-
-  defp killed(state, ref, pid) do
-    Process.exit(pid, :kill)
-
-    receive do
-      {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
-    after
-      @down_ms -> :ok
-    end
-
-    ended(state, ref)
   end
 
   # The kill of a Task 120,000 ms after its start.
   def expired(state, ref) do
     case state.wake.tasks do
-      %{^ref => task} -> Process.exit(task.pid, :kill)
+      %{^ref => task} -> Process.exit(task.task.pid, :kill)
       _ -> :ok
     end
 

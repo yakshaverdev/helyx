@@ -15,7 +15,7 @@ defmodule Helyx.Hub.WakeTasksTest do
   defp poll_suspended(hub) do
     in_hub_replace(hub, fn state ->
       state = Wake.poll(state)
-      tasks = Map.values(state.wake.tasks)
+      tasks = for t <- Map.values(state.wake.tasks), do: Map.put(t, :pid, t.task.pid)
       Enum.each(tasks, &:erlang.suspend_process(&1.pid))
       {tasks, state}
     end)
@@ -143,7 +143,7 @@ defmodule Helyx.Hub.WakeTasksTest do
 
   defp task_ref(hub, pid) do
     in_hub(hub, fn state ->
-      [ref] = for {ref, %{pid: ^pid}} <- state.wake.tasks, do: ref
+      [ref] = for {ref, %{task: %{pid: ^pid}}} <- state.wake.tasks, do: ref
       ref
     end)
   end
