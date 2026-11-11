@@ -123,10 +123,12 @@ defmodule Helyx.Subagent do
     end
   end
 
-  # The child can end before the subscribe or the prompt reaches it.
+  # The child can end before the subscribe or the prompt reaches it. The task
+  # is a text of the model, not of a user, so it has a product origin and no
+  # user command of it is expanded (`docs/features/skills.md`, decision 9).
   defp ask(child, prompt) do
     with {:ok, _snapshot, ref} <- Session.subscribe(child),
-         :ok <- Session.prompt(child, prompt) do
+         :ok <- Session.prompt(child, prompt, origin: %{kind: :product, id: child.id}) do
       await(child, ref, nil)
     else
       {:error, :session_not_found} -> {:error, "the session ended"}
