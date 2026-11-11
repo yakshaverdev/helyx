@@ -137,6 +137,11 @@ fn the_surface_connects_lists_and_takes_a_result() {
     let over = "a".repeat(helyx_client_core::operation::MAX_TEXT_BYTES + 1);
     let refused = connection.prompt("s1".into(), over).unwrap_err();
     assert_eq!(refused.to_string(), "the text is over 4 MiB");
+    // A model ref that is not one is refused before it goes.
+    let refused = connection
+        .set_model("s1".into(), "nope".into())
+        .unwrap_err();
+    assert_eq!(refused.to_string(), "not a model ref: use provider/model");
     // The drop ends the network thread, and the stub sees the end.
     drop(connection);
     stub.join().unwrap();

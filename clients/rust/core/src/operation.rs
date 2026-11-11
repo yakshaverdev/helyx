@@ -1,10 +1,11 @@
 //! The operations that a host sends to a session, typed (`docs/features/
 //! wire-protocol.md`, "Operations"): `prompt`, `steer`, `follow_up`, `abort`,
-//! the answer of an ask, `start`, `resume`, and `sessions.saved`. A
-//! constructor checks its input, so an `Operation` is one that the server
-//! takes; `params` gives the params of the schema, and `name` the op. The
-//! deadline of each op is the table of the wire, "Deadlines"; the server owns
-//! it, and the client records it with the request, not a timer.
+//! `stop`, `set_model`, `compact`, the answer of an ask, `start`, `resume`,
+//! and `sessions.saved`. A constructor checks its input, so an `Operation` is
+//! one that the server takes; `params` gives the params of the schema, and
+//! `name` the op. The deadline of each op is the table of the wire,
+//! "Deadlines"; the server owns it, and the client records it with the
+//! request, not a timer.
 //!
 //! The text of a message is a Rust `String`, so it is UTF-8 by its type: the
 //! core checks its size, and no text reaches the wire that fails the UTF-8
@@ -14,9 +15,11 @@ use crate::json::{self, Json, object};
 use crate::ui_block;
 use std::time::Duration;
 
-/// The largest text of a `prompt`, `steer`, or `follow_up`
+/// The largest text of a `prompt`, `steer`, `follow_up`, or `compact`
 /// (`Helyx.Session.max_text_bytes/0`).
 pub const MAX_TEXT_BYTES: usize = 4 * 1_048_576;
+/// The largest model ref of a `set_model`, in bytes (`Helyx.ModelRef`).
+pub const MAX_MODEL_BYTES: usize = 256;
 /// The largest answer of an ask, as its JSON encode
 /// (`Helyx.Session.max_answer_bytes/0`).
 pub const MAX_ANSWER_BYTES: usize = 16_384;
@@ -49,6 +52,20 @@ enum Request {
     },
     Abort {
         session: String,
+    },
+    /// A `stop` of a session: its running turn aborts first, then it ends.
+    Stop {
+        session: String,
+    },
+    /// A `set_model` of the next turn of a session.
+    SetModel {
+        session: String,
+        model: String,
+    },
+    /// A `compact` of a session, with its instructions when it has them.
+    Compact {
+        session: String,
+        text: String,
     },
     Answer {
         session: String,
@@ -103,6 +120,9 @@ pub enum Invalid {
     Limit,
     /// A folder over `MAX_CWD_BYTES`.
     CwdTooLarge,
+    /// A model ref over `MAX_MODEL_BYTES`, with whitespace or a control
+    /// character, or with an empty provider or model.
+    ModelRef,
 }
 
 impl Invalid {
@@ -117,6 +137,7 @@ impl Invalid {
             Invalid::AnswerInteger => "the answer has an integer over 100 digits",
             Invalid::Limit => "the limit of a page is 1 to 256",
             Invalid::CwdTooLarge => "the folder is over 1024 bytes",
+            Invalid::ModelRef => "not a model ref: use provider/model",
         }
     }
 }
@@ -155,6 +176,34 @@ impl Operation {
         Operation(Request::Abort {
             session: session.to_owned(),
         })
+    }
+
+    /// A `stop` of `session`: a running turn aborts first, then the session
+    /// ends and every subscription of it gets a `session_end`.
+    pub fn stop(session: &str) -> Operation {
+        Operation(Request::Stop {
+            session: session.to_owned(),
+        })
+    }
+
+    /// A `set_model` of `session`: the next turn uses `model`, and a running
+    /// turn keeps its own. The ref takes the bounds of `Helyx.ModelRef`.
+    pub fn set_model(session: &str, model: &str) -> Result<Operation, Invalid> {
+        model_ref(model)?;
+        Ok(Operation(Request::SetModel {
+            session: session.to_owned(),
+            model: model.to_owned(),
+        }))
+    }
+
+    /// A `compact` of `session`, with `text` as its instructions. An empty
+    /// text sends none, so the default of the server holds.
+    pub fn compact(session: &str, text: &str) -> Result<Operation, Invalid> {
+        message(text)?;
+        Ok(Operation(Request::Compact {
+            session: session.to_owned(),
+            text: text.to_owned(),
+        }))
     }
 
     /// The `answer` of the ask `ask_id`: a JSON object of at most
@@ -213,6 +262,9 @@ impl Operation {
             Request::Steer { .. } => "steer",
             Request::FollowUp { .. } => "follow_up",
             Request::Abort { .. } => "abort",
+            Request::Stop { .. } => "stop",
+            Request::SetModel { .. } => "set_model",
+            Request::Compact { .. } => "compact",
             Request::Answer { .. } => "answer",
             Request::Start { .. } => "start",
             Request::Resume { .. } | Request::ResumeFolder { .. } => "resume",
@@ -227,6 +279,9 @@ impl Operation {
             | Request::Steer { session, .. }
             | Request::FollowUp { session, .. }
             | Request::Abort { session }
+            | Request::Stop { session }
+            | Request::SetModel { session, .. }
+            | Request::Compact { session, .. }
             | Request::Answer { session, .. } => Some(session),
             Request::Start { .. }
             | Request::Resume { .. }
@@ -235,12 +290,14 @@ impl Operation {
         }
     }
 
-    /// The text of a `prompt`, a `steer`, or a `follow_up`.
+    /// The text of a `prompt`, a `steer`, or a `follow_up`, or the
+    /// instructions of a `compact` when it has them.
     pub fn text(&self) -> Option<&str> {
         match &self.0 {
             Request::Prompt { text, .. }
             | Request::Steer { text, .. }
             | Request::FollowUp { text, .. } => Some(text),
+            Request::Compact { text, .. } => (!text.is_empty()).then_some(text.as_str()),
             _ => None,
         }
     }
@@ -254,7 +311,21 @@ impl Operation {
                 ("session", session.as_str().into()),
                 ("text", text.as_str().into()),
             ]),
-            Request::Abort { session } => object([("session", session.as_str().into())]),
+            Request::Abort { session } | Request::Stop { session } => {
+                object([("session", session.as_str().into())])
+            }
+            Request::SetModel { session, model } => object([
+                ("session", session.as_str().into()),
+                ("model", model.as_str().into()),
+            ]),
+            Request::Compact { session, text } => {
+                let mut pairs: Vec<(String, Json)> =
+                    vec![("session".to_owned(), session.as_str().into())];
+                if !text.is_empty() {
+                    pairs.push(("text".to_owned(), text.as_str().into()));
+                }
+                Json::Object(pairs)
+            }
             Request::Answer {
                 session,
                 ask_id,
@@ -402,6 +473,25 @@ fn message(text: &str) -> Result<(), Invalid> {
         return Err(Invalid::TextTooLarge);
     }
     Ok(())
+}
+
+/// The check of a model ref, as `Helyx.ModelRef.parse/1` makes it: at most
+/// `MAX_MODEL_BYTES` bytes, a provider and a model of at least one character
+/// around the first `/`, and no whitespace and no control character. The
+/// server also refuses the wider Unicode category C, which the standard
+/// library has no table for, and answers `invalid_model_ref`; this check
+/// catches the mistake of a person before the round trip.
+fn model_ref(model: &str) -> Result<(), Invalid> {
+    let (provider, rest) = model.split_once('/').ok_or(Invalid::ModelRef)?;
+    let valid = model.len() <= MAX_MODEL_BYTES
+        && !provider.is_empty()
+        && !rest.is_empty()
+        && !model.chars().any(|c| c.is_whitespace() || c.is_control());
+    if valid {
+        Ok(())
+    } else {
+        Err(Invalid::ModelRef)
+    }
 }
 
 fn folder(cwd: &str) -> Result<(), Invalid> {
