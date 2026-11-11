@@ -4,22 +4,21 @@ defmodule Helyx.TUI.Wire.Subscriptions do
   # decisions 7, 11, and 18): which `sub` is live or dropped, what the owner
   # has acked, and the reply of a subscribe or a detach. The connection owns
   # the socket, the request ids, the waiting table, and the writer; every
-  # rule about a subscription is here. A sub ends at `session_end`, at the
-  # reply of an `unsubscribe` (a switch's detach), or at the `unsubscribe`
-  # that follows a late subscribe reply; no frame of it follows that reply
+  # rule about a subscription is here. A sub ends at `session_end` or at the
+  # reply of an `unsubscribe` (a switch's detach); a sub that no frame
+  # carries is dropped, with no request, until the server ends it
   # (wire-protocol.md, O4).
 
   require Helyx.TUI.Wire, as: Wire
 
   alias Helyx.Event
 
-  defstruct subs: %{}, acks: %{}, unsubscribes: []
+  defstruct subs: %{}, acks: %{}
 
   @type kind :: :live | :dropped
   @type t :: %__MODULE__{
           subs: %{String.t() => kind()},
-          acks: %{String.t() => non_neg_integer()},
-          unsubscribes: [{String.t(), String.t()}]
+          acks: %{String.t() => non_neg_integer()}
         }
 
   @doc false
@@ -35,8 +34,7 @@ defmodule Helyx.TUI.Wire.Subscriptions do
   @doc false
   @spec ack(t(), String.t(), non_neg_integer()) :: t()
   def ack(state, sub, seq) do
-    # Only an event of a live sub is acked; one that a late reply made is
-    # dropped, and its ack too.
+    # Only an event of a live sub is acked; a dropped sub drops its ack too.
     if live?(state, sub), do: put_in(state.acks[sub], seq), else: state
   end
 
@@ -55,8 +53,8 @@ defmodule Helyx.TUI.Wire.Subscriptions do
 
   @doc false
   # An event of a known sub: the owner hears it when the sub is live, and a
-  # sub that a late reply made drops it. An unknown sub, and an event that
-  # the schema refuses, is a contract break.
+  # dropped sub drops it. An unknown sub, and an event that the schema
+  # refuses, is a contract break.
   @spec event(t(), pid(), String.t(), term()) :: {:ok, t()} | :broken
   def event(state, owner, sub, {:ok, %Event{} = event}) do
     cond do
@@ -95,9 +93,9 @@ defmodule Helyx.TUI.Wire.Subscriptions do
   @doc false
   # The detach of a switch: the pending op of a live sub, or `:unknown_sub`.
   # The sub stays live until the reply, so its late events still ack. A sub
-  # that no frame carries has no `unsubscribe`: it is dropped, as a late one
-  # is, until its `session_end`, or the server's bound of unacked events,
-  # which closes the connection with `4408`.
+  # that no frame carries has no `unsubscribe`: it is dropped until its
+  # `session_end`, or the server's bound of unacked events, which closes the
+  # connection with `4408`.
   @spec detach(t(), String.t()) ::
           {:ok, {:unsub, String.t()}} | {:dropped, t()} | {:error, :unknown_sub}
   def detach(state, sub) do
@@ -111,34 +109,22 @@ defmodule Helyx.TUI.Wire.Subscriptions do
   @doc false
   # The reply of a subscribe or a detach, and `:next` for every other op. A
   # subscribe reply whose `sub` is known is a contract break, whatever its
-  # caller is: the server makes each `sub` unique on the connection. A late
-  # subscribe reply is a subscription that its caller gave up on: it is
-  # dropped, and its `unsubscribe` is due, but for a sub that no frame of
-  # the TUI carries, which the server ends at its bound of unacked events
-  # with a `4408` close of the connection. A
+  # caller is: the server makes each `sub` unique on the connection. A
+  # subscribe reply that comes after its deadline is dropped: the deadline
+  # ends the TUI, and with it the connection, so no owner can take a sub
+  # that it gave up on. A
   # late detach reply ends the sub silently; a live one gives the reply of
   # the wire to its caller.
   @spec reply(t(), term(), term(), term()) ::
-          {:next, t()}
-          | {:detached | :dropped, t()}
-          | {:late_subscribe, String.t(), t()}
-          | :broken
+          {:next, t()} | {:detached | :dropped, t()} | :broken
   def reply(%__MODULE__{subs: subs}, _caller, "subscribe", {:ok, _snapshot_or_replay, sub})
       when is_map_key(subs, sub),
       do: :broken
 
-  def reply(state, :late, "subscribe", {:ok, _snapshot_or_replay, sub})
-      when not Wire.carries?(sub),
-      do: {:dropped, dropped(state, sub)}
-
-  def reply(state, :late, "subscribe", {:ok, _snapshot_or_replay, sub}),
-    do: {:late_subscribe, sub, state}
+  def reply(state, :late, "subscribe", _result), do: {:next, state}
 
   def reply(state, _caller, "subscribe", {:ok, _snapshot_or_replay, sub}),
     do: {:next, subscribed(state, sub, :live)}
-
-  def reply(state, {:unsubscribe, sub}, "unsubscribe", _result),
-    do: {:detached, detached(state, sub)}
 
   def reply(state, :late, {:unsub, sub}, _result), do: {:detached, detached(state, sub)}
 
@@ -147,48 +133,6 @@ defmodule Helyx.TUI.Wire.Subscriptions do
     do: {:next, detached(state, sub)}
 
   def reply(state, _caller, _op, _result), do: {:next, state}
-
-  @doc false
-  # A late subscribe reply: the sub is dropped, and its `unsubscribe`
-  # registers the next request id and goes out when a request frame has a
-  # free place. `write` writes a request frame of the connection; `max` is
-  # its bound of frames that wait.
-  @spec late_subscribe(
-          map(),
-          String.t(),
-          pos_integer(),
-          (map(), String.t(), String.t(), map() -> term())
-        ) :: term()
-  def late_subscribe(state, sub, max, write) do
-    id = Integer.to_string(state.next)
-
-    state = %{
-      state
-      | subs: enqueue(dropped(state.subs, sub), id, sub),
-        next: state.next + 1,
-        waiting: Map.put(state.waiting, id, {"unsubscribe", {:unsubscribe, sub}})
-    }
-
-    flush(state, max, write)
-  end
-
-  @doc false
-  # The next queued unsubscribe, when a request frame has a free place.
-  @spec flush(map(), pos_integer(), (map(), String.t(), String.t(), map() -> term())) :: term()
-  def flush(state, max, write) do
-    case next_unsubscribe(state.subs, state.unwritten, max) do
-      {:write, id, sub, subs} -> write.(%{state | subs: subs}, id, "unsubscribe", %{"sub" => sub})
-      :none -> {:noreply, state}
-    end
-  end
-
-  defp enqueue(state, id, sub), do: %{state | unsubscribes: state.unsubscribes ++ [{id, sub}]}
-
-  defp next_unsubscribe(%{unsubscribes: [{id, sub} | rest]} = state, unwritten, max)
-       when unwritten < max,
-       do: {:write, id, sub, %{state | unsubscribes: rest}}
-
-  defp next_unsubscribe(_state, _unwritten, _max), do: :none
 
   defp subscribed(state, sub, kind), do: %{state | subs: Map.put(state.subs, sub, kind)}
 

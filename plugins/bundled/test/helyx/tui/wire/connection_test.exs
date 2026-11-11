@@ -618,66 +618,6 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     Task.shutdown(steer, :brutal_kill)
   end
 
-  # Subscribes behind a steer that the server does not read pass their
-  # deadlines, the call timeout of the server, 6,000 ms, and the margin,
-  # 15,000 ms; the server then replies to them before it reads them. The
-  # unsubscribe of each late reply waits for a place among the 16 request
-  # frames, and goes out when the writer frees one.
-  @tag :slow
-  @tag timeout: 60_000
-  test "the unsubscribe of a late subscribe reply waits for a place among the 16 request frames" do
-    test = self()
-    ids = Enum.map(2..16, &Integer.to_string/1)
-
-    {conn, _ref} =
-      fake(fn socket ->
-        send(test, {:server, self()})
-        {1, _first_part} = client_raw(socket)
-        send(test, :writing)
-        snapshot = ServerWire.snapshot(snapshot())
-        receive do: (:reply -> :ok)
-
-        :ok =
-          :gen_tcp.send(
-            socket,
-            for(id <- ids, do: text(res(id, %{sub: "x" <> id, snapshot: snapshot})))
-          )
-
-        receive do: (:read -> :ok)
-        send(test, {:unsubscribed, unsubscribes(socket, length(ids), [])})
-      end)
-
-    assert_receive {:server, server}
-    steer = Task.async(fn -> Connection.steer(conn, "s1", String.duplicate("a", 16_777_216)) end)
-    assert_receive :writing
-    subscribes = for _id <- ids, do: Task.async(fn -> Connection.subscribe(conn, "s1") end)
-    for task <- subscribes, do: assert(Task.await(task, 30_000) == {:error, :timeout})
-
-    send(server, :reply)
-    wait_until(fn -> map_size(:sys.get_state(conn).subs.subs) == length(ids) end)
-    # The writer sends the steer; the 15 subscribes wait for it, and no
-    # unsubscribe.
-    assert Process.info(writer(conn), :message_queue_len) == {:message_queue_len, length(ids)}
-
-    send(server, :read)
-    assert_receive {:unsubscribed, subs}
-    assert subs == Enum.sort(for id <- ids, do: "x" <> id)
-    Task.shutdown(steer, :brutal_kill)
-  end
-
-  # The subs of the first `n` unsubscribe frames of the client, sorted.
-  defp unsubscribes(_socket, 0, acc), do: Enum.sort(acc)
-
-  defp unsubscribes(socket, n, acc) do
-    case client_frame(socket) do
-      %{"op" => "unsubscribe", "params" => %{"sub" => sub}} ->
-        unsubscribes(socket, n - 1, [sub | acc])
-
-      _part_or_subscribe ->
-        unsubscribes(socket, n, acc)
-    end
-  end
-
   # docs/features/tui-attach.md, decision 11.
   test "a replay answers a subscribe with after; to one with no after it is a contract break" do
     {conn, ref} =
@@ -828,41 +768,6 @@ defmodule Helyx.TUI.Wire.ConnectionTest do
     send(server, :ping)
     assert_receive {:next, {10, "p"}}
     Enum.each(tasks, &Task.shutdown(&1, :brutal_kill))
-  end
-
-  # The client waits for the subscribe the call timeout of the server,
-  # 6,000 ms, and its margin, 15,000 ms.
-  @tag :slow
-  @tag timeout: 60_000
-  test "a late subscribe reply is dropped: its subscription ends with unsubscribe" do
-    test = self()
-
-    {conn, ref} =
-      fake(fn socket ->
-        send(test, {:server, self()})
-        %{"id" => id, "op" => "subscribe"} = client_frame(socket)
-        receive do: (:late -> :ok)
-        reply = text(res(id, %{sub: "x", snapshot: ServerWire.snapshot(snapshot())}))
-        :ok = :gen_tcp.send(socket, [reply, event("x", notice(1))])
-
-        %{"id" => unsub, "op" => "unsubscribe", "params" => %{"sub" => "x"}} =
-          client_frame(socket)
-
-        :ok = :gen_tcp.send(socket, [event("x", notice(2)), text(res(unsub, %{}))])
-        send(test, :unsubscribed)
-        %{"id" => abort, "op" => "abort"} = client_frame(socket)
-        :ok = :gen_tcp.send(socket, text(res(abort, %{})))
-      end)
-
-    assert_receive {:server, server}
-    assert Connection.subscribe(conn, "s1") == {:error, :timeout}
-    send(server, :late)
-    assert_receive :unsubscribed
-    # The reply of the abort comes after the frames of the dropped
-    # subscription, from the same connection.
-    assert Connection.abort(conn, "s1") == :ok
-    refute_received {:helyx_event, _event}
-    refute_received {:DOWN, ^ref, _, _, _}
   end
 
   # The server makes each `sub` unique on the connection, and a reply is
