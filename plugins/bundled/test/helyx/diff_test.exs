@@ -181,8 +181,8 @@ defmodule Helyx.DiffTest do
     block = block(over, changed_ends(at + 1))
     assert block["hunks"] == []
     assert block["cut"] == true
-    assert block["added"] == at + 1
-    assert block["removed"] == at + 1
+    refute Map.has_key?(block, "added")
+    refute Map.has_key?(block, "removed")
 
     assert block["text"] ==
              "a.txt: #{at + 1} lines written, the diff is not shown over #{at} lines"
@@ -192,8 +192,15 @@ defmodule Helyx.DiffTest do
     block = block("", String.duplicate("x", Helyx.Text.max_file_bytes() + 1))
     assert block["hunks"] == []
     assert block["cut"] == true
-    assert block["added"] == 1
-    assert block["removed"] == 0
+    refute Map.has_key?(block, "added")
+  end
+
+  test "a change of only the final newline or a line end says so" do
+    for {old, new} <- [{"a\nb\n", "a\nb"}, {"a\r\nb\n", "a\nb\n"}] do
+      block = block(old, new)
+      assert block["hunks"] == []
+      assert block["text"] == "a.txt: only the line ends or the final newline changed"
+    end
   end
 
   test "two equal texts give no hunk" do

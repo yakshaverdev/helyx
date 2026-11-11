@@ -61,8 +61,8 @@ defmodule Helyx.Diff do
   stops at `budget_bytes/0`; either cut sets `cut: true`. The common first
   and last lines of the texts are taken off before the search, so a large
   file with a small change costs a walk of its lines. A middle over
-  `max_diff_lines/0` lines is not searched: the block holds the line counts
-  and a text that says so. A text over the split bound is not split.
+  `max_diff_lines/0` lines is not searched: the block holds no counts and a
+  text that says so. A text over the split bound is not split.
   `from_line_hint` is the file line number of the first line of the texts, so
   that hunk starts are file line numbers.
   """
@@ -72,9 +72,17 @@ defmodule Helyx.Diff do
     first = from_line_hint || 1
 
     if byte_size(old_text) > @max_text_bytes or byte_size(new_text) > @max_text_bytes,
-      do: long(path, line_count(new_text), line_count(old_text)),
-      else: changed(path, lines(old_text), lines(new_text), first)
+      do: long(path, line_count(new_text)),
+      else: path |> changed(lines(old_text), lines(new_text), first) |> ends(old_text, new_text)
   end
+
+  # `lines/1` drops the line ends, so a change of only a line end or of the
+  # final newline gives no hunk. The text says so: the file did change.
+  defp ends(%{"hunks" => [], "path" => path} = block, old_text, new_text)
+       when old_text != new_text and not is_map_key(block, "cut"),
+       do: %{block | "text" => "#{path}: only the line ends or the final newline changed"}
+
+  defp ends(block, _old_text, _new_text), do: block
 
   @doc """
   The `diff` block of a write whose old file is not read: an empty hunks
@@ -94,16 +102,14 @@ defmodule Helyx.Diff do
     }
   end
 
-  # A diff over a bound is not shown: the counts stay exact and the text says
-  # which count stopped it.
-  defp long(path, added, removed) do
+  # A diff over a bound is not shown, and the text says which count stopped
+  # it. The counts of the changed lines are absent: no search found them.
+  defp long(path, written) do
     %{
       "kind" => "diff",
       "text" =>
-        "#{path}: #{added} lines written, the diff is not shown over #{@max_diff_lines} lines",
+        "#{path}: #{written} lines written, the diff is not shown over #{@max_diff_lines} lines",
       "path" => path,
-      "added" => added,
-      "removed" => removed,
       "hunks" => [],
       "cut" => true
     }
@@ -113,7 +119,7 @@ defmodule Helyx.Diff do
     {prefix, old_middle, new_middle, suffix} = split(old, new)
 
     if length(old_middle) > @max_diff_lines or length(new_middle) > @max_diff_lines do
-      long(path, length(new), length(old))
+      long(path, length(new))
     else
       rows = rows(build(prefix, difference(old_middle, new_middle), suffix), first, first, [])
 
