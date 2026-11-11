@@ -70,10 +70,14 @@ defmodule Helyx.Tool.SessionCreate do
 
   @impl true
   def run(args, _cwd) do
+    # The checks that cost nothing come first: a call that they refuse makes
+    # no worktree.
     with {:ok, args} <- Args.check(args, parameters()),
          :ok <- folder(args["folder"]),
+         {:ok, env} <- Coordinator.setup(),
+         {:ok, mode_opts} <- Coordinator.mode(args["mode"]),
          {:ok, worktree} <- worktree(args["worktree"], args["folder"]) do
-      create_session(args, worktree)
+      create_session(args, env, mode_opts, worktree)
     else
       {:error, text} -> {:error, "session_create: " <> text}
     end
@@ -97,16 +101,16 @@ defmodule Helyx.Tool.SessionCreate do
     Worktree.create(folder, worktree["branch"], worktree["base"])
   end
 
-  defp create_session(args, worktree) do
+  defp create_session(args, env, mode_opts, worktree) do
     cwd = cwd(worktree, args["folder"])
 
-    with {:ok, env} <- Coordinator.setup(),
-         {:ok, mode_opts} <- Coordinator.mode(args["mode"]),
-         {:ok, session} <- start(env, cwd, mode_opts) do
-      started = started(session, cwd, args["mode"], worktree)
-      sent(env, session, args["prompt"], started, worktree)
-    else
-      {:error, text} -> {:error, error(text, worktree)}
+    case start(env, cwd, mode_opts) do
+      {:ok, session} ->
+        started = started(session, cwd, args["mode"], worktree)
+        sent(env, session, args["prompt"], started, worktree)
+
+      {:error, text} ->
+        {:error, error(text, worktree)}
     end
   end
 

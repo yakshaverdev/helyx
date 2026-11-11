@@ -42,7 +42,8 @@ defmodule Helyx.Worktree do
   folder of `folder` inside the worktree. The caller owns the worktree: a
   failure after the add keeps it. See `docs/features/worktree-sessions.md`.
 
-  The option `:setup_ms` replaces the setup deadline, for tests only.
+  The options `:setup_ms` and `:add_ms` replace the deadline of the setup
+  and of the add, for tests only.
   """
   @spec create(Path.t(), String.t(), String.t() | nil, keyword()) ::
           {:ok, %{path: Path.t(), branch: String.t(), setup: String.t() | nil, rel: Path.t()}}
@@ -56,7 +57,7 @@ defmodule Helyx.Worktree do
          :ok <- check_new_branch(repo.top, branch),
          :ok <- check_base(base, repo.top),
          {:ok, path} <- path(repo, branch),
-         :ok <- add(repo.top, path, branch, base),
+         :ok <- add(repo.top, path, branch, base, opts),
          {:ok, setup} <- setup(repo.top, path, branch, opts) do
       {:ok, %{path: path, branch: "helyx/" <> branch, setup: setup, rel: repo.rel}}
     end
@@ -233,10 +234,11 @@ defmodule Helyx.Worktree do
     Path.basename(top) <> "-" <> hash
   end
 
-  defp add(top, path, branch, base) do
+  defp add(top, path, branch, base, opts) do
     name = "helyx/" <> branch
+    limit = Keyword.get(opts, :add_ms, git_ms())
 
-    case git(["-C", top, "worktree", "add", "-b", name, path, base || "HEAD"], top, git_ms()) do
+    case git(["-C", top, "worktree", "add", "-b", name, path, base || "HEAD"], top, limit) do
       {:ok, _out, 0} ->
         :ok
 
@@ -244,11 +246,29 @@ defmodule Helyx.Worktree do
         {:error, "git worktree add failed with the exit status #{status}: " <> tail(out)}
 
       {:timeout, out} ->
-        {:error, "git worktree add did not finish in time: the group was released: " <> tail(out)}
+        {:error,
+         "git worktree add did not finish in time: the group was released; " <>
+           partial(top, path, branch) <> ": " <> tail(out)}
 
       {:error, text} ->
         {:error, "git worktree add did not start: " <> text}
     end
+  end
+
+  # A released add can leave a part of the checkout and its branch. Nothing
+  # ran in it, so it is no evidence: it is removed, and a retry with the same
+  # name works. The double force removes a worktree that the add left locked.
+  # git refuses to delete a branch that another worktree has checked out.
+  defp partial(top, path, branch) do
+    name = "helyx/" <> branch
+    _ = git(["-C", top, "worktree", "remove", "--force", "--force", path], top, git_ms())
+    _ = File.rm_rf(path)
+    _ = git(["-C", top, "worktree", "prune"], top, git_ms())
+    _ = git(["-C", top, "branch", "-D", name], top, git_ms())
+
+    if not File.exists?(path) and check_new_branch(top, branch) == :ok,
+      do: "its partial worktree was removed",
+      else: "a part of the worktree #{path} or of the branch #{name} can remain"
   end
 
   # The script that runs is the one checked in at the base commit, in the new

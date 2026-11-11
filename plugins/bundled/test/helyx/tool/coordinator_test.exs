@@ -214,24 +214,34 @@ defmodule Helyx.Tool.CoordinatorTest do
       assert cwd == Path.join(path, "apps/web")
     end
 
+    @tag max_live: 1
     test "a failure after the add names the worktree, which stays", context do
       repo = git_repo(Path.join(context.dir, "repo"))
       worktree_root(context)
 
       [result] =
         coordinate(context, context.ann, [
-          create(%{
-            "folder" => repo,
-            "mode" => "nope",
-            "worktree" => %{"branch" => "left"}
-          })
+          create(%{"folder" => repo, "worktree" => %{"branch" => "left"}})
         ])
 
       assert result.is_error
       text = Message.text(result)
-      assert text =~ "no mode nope"
+      assert text =~ "you run as many sessions as you may"
       [_, path] = Regex.run(~r/the worktree (\S+) on the branch helyx\/left stays/, text)
       assert File.dir?(path)
+    end
+
+    test "a mode that does not exist makes no worktree", context do
+      repo = git_repo(Path.join(context.dir, "repo"))
+      root = worktree_root(context)
+
+      [result] =
+        coordinate(context, context.ann, [
+          create(%{"folder" => repo, "mode" => "nope", "worktree" => %{"branch" => "none"}})
+        ])
+
+      assert Message.text(result) =~ "no mode nope"
+      refute File.exists?(root)
     end
 
     test "a worktree with an unknown key, no branch, or a bad name is refused by its checks",

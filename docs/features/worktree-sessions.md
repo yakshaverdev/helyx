@@ -26,10 +26,10 @@ None. The session start, the Hub checks, the prompt, and the tool result are unc
 | the branch name | `@name` in `Helyx.Worktree`: lowercase letters, digits, `.`, `_`, `/`, and `-`, with a letter or a digit first and no `..`, short enough for a path segment; `git check-ref-format --branch` accepts it | an error result | `Helyx.Worktree.create/3` |
 | the base | `@max_base_bytes` in `Helyx.Worktree`, no leading `-`, no NUL byte, and it resolves with `git rev-parse --verify --quiet <base>^{commit}` | an error result | `Helyx.Worktree.create/3` |
 | the worktrees of one repository | `Helyx.Worktree.max_worktrees/0`, counted as the entries of the repository folder under the root | an error result that names `git worktree remove` | `Helyx.Worktree.create/3` |
-| one git command | `Helyx.Worktree.git_ms/0` | the group is released with `:cancel`, and an error result holds the output tail | `Helyx.Worktree` |
+| one git command | `Helyx.Worktree.git_ms/0` | the group is released with `:cancel`, and an error result holds the output tail. A released `worktree add` can leave a part of the checkout and its branch: nothing ran in it, so the helper removes both, and a retry with the same name works. The error result says when a part can remain | `Helyx.Worktree` |
 | the setup script | `Helyx.Worktree.setup_ms/0` | the group is released with `:cancel`, the worktree stays, and an error result holds the output tail and names the path and the branch | `Helyx.Worktree` |
 | the output tail of a git command, and the `setup` text | `Helyx.Worktree.setup_output_bytes/0`, cut from the end, valid UTF-8 | the start is left out | `Helyx.Worktree` |
-| the git processes of one call | one `rev-parse` of the repository, one `check-ref-format`, one branch read, one base read when a base is given, and one `worktree add`; one setup script | n/a | `Helyx.Worktree.create/3` |
+| the git processes of one call | one `rev-parse` of the repository, one `check-ref-format`, one branch read, one base read when a base is given, and one `worktree add`; after a released add, one `worktree remove`, one `worktree prune`, one `branch -D`, and one branch read; one setup script | n/a | `Helyx.Worktree.create/3` |
 | the worktree folder | one folder of a full checkout; a path that exists is an error | an error result | `Helyx.Worktree.create/3` |
 
 Two calls that pass the cap check together can each add a worktree, so the count can pass the cap by the number of calls in flight; accepted, because the tool is concurrent and the check holds no lock.

@@ -158,6 +158,31 @@ defmodule Helyx.WorktreeTest do
     assert git(repo, ["rev-parse", "--verify", "refs/heads/helyx/fails"]) != ""
   end
 
+  # The add gets this long to start under load before its release.
+  @load_add_ms 5_000
+
+  @tag :slow
+  test "an add past the deadline leaves no partial worktree, so a retry works", %{
+    repo: repo,
+    root: root
+  } do
+    # git runs this hook at the end of the add, with the checkout and the
+    # branch made.
+    hook = Path.join([repo, ".git", "hooks", "post-checkout"])
+    File.mkdir_p!(Path.dirname(hook))
+    File.write!(hook, "#!/bin/sh\nsleep 60\n")
+    File.chmod!(hook, 0o755)
+    path = Path.join([root, repo_dir(repo), "slow"])
+
+    assert {:error, text} = Worktree.create(repo, "slow", nil, add_ms: @load_add_ms)
+    assert text =~ "git worktree add did not finish in time"
+    assert text =~ "its partial worktree was removed"
+    refute File.exists?(path)
+
+    File.rm!(hook)
+    assert {:ok, %{path: ^path}} = Worktree.create(repo, "slow", nil)
+  end
+
   test "a setup script past the deadline is released", %{repo: repo, root: root} do
     script(repo, "sleep 30\n")
     commit(repo, "script")
