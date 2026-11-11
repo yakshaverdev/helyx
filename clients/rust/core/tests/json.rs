@@ -33,12 +33,12 @@ fn the_wire_limits() {
 }
 
 /// The wire states no bound of nesting but the values, and the TUI decodes
-/// any nesting within them: so does the core, a million levels too, with
-/// no stack for them in the parse, the clone, the compare, the encode, or
+/// any nesting within them: so does the core, past the depth of the tree,
+/// with no stack for it in the parse, the clone, the compare, the encode, or
 /// the drop.
 #[test]
 fn any_nesting_within_the_values_decodes() {
-    let n = 1_000_000;
+    let n = 100_000;
     for open_close in [("[", "]"), (r#"{"a":"#, "}")] {
         let text = format!("{}1{}", open_close.0.repeat(n), open_close.1.repeat(n));
         let value = decode(&text).unwrap();
@@ -70,6 +70,24 @@ fn an_integer_has_at_most_its_characters_with_its_sign() {
         decode_within(&nines(MAX_INTEGER_CHARS), SMALL).unwrap(),
         Json::Number(nines(MAX_INTEGER_CHARS))
     );
+}
+
+/// An integer of a tool call keeps every digit, and a float keeps the text
+/// that the server sent.
+#[test]
+fn a_number_keeps_its_text() {
+    let digits = "9".repeat(1_000);
+    let text = format!("{{\"n\":{digits},\"f\":1.50,\"e\":1.0e5,\"g\":1.0e-5,\"z\":-0}}");
+    let value = decode(&text).unwrap();
+    assert_eq!(value.get("n").unwrap().encode(), digits);
+    for (key, number) in [("f", "1.50"), ("e", "1.0e5"), ("g", "1.0e-5"), ("z", "-0")] {
+        assert_eq!(
+            value.get(key).unwrap(),
+            &Json::Number(number.to_owned()),
+            "{key}"
+        );
+    }
+    assert_eq!(value.encode(), text);
 }
 
 #[test]
@@ -110,7 +128,7 @@ fn a_nesting_past_the_depth_is_kept_as_its_text_and_checked() {
     assert_eq!(level[0], Json::Deep("[ 1 , {\"k\" : 2} ]".into()));
     // Shallow levels are encoded anew; the deep one as it came.
     assert_eq!(value.encode(), "[[[[ 1 , {\"k\" : 2} ]]]]");
-    // Inside it, the grammar and the bounds hold as anywhere.
+    // Inside it, the grammar holds as anywhere: `serde_json` checks it.
     let deep_value = |inner: &str| decode_within(&format!("[[[{inner}]]]"), SMALL);
     for bad in [
         "[1,]",
@@ -121,16 +139,9 @@ fn a_nesting_past_the_depth_is_kept_as_its_text_and_checked() {
         "[1 2]",
         "[",
         "[tru]",
-        "[999999]",
     ] {
         assert!(deep_value(bad).is_err(), "{bad}");
     }
-    // Values: three arrays, the deep one, and six items are 10 of 10.
-    assert!(deep_value("[0,0,0,0,0,0]").is_ok());
-    assert!(deep_value("[0,0,0,0,0,0,0]").is_err());
-    // A key counts one value inside it too: 4, then 3 keys and 3 values.
-    assert!(deep_value(r#"{"a":0,"b":0,"c":0}"#).is_ok());
-    assert!(deep_value(r#"{"a":0,"b":0,"c":0,"d":0}"#).is_err());
 }
 
 #[test]

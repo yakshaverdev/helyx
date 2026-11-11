@@ -2,8 +2,12 @@
 //! a tool call keeps every digit, and no object key has a meaning of its own.
 //! `decode` holds the outbound decode bounds of `docs/features/wire-protocol.md`
 //! ("Bounds"), and keeps a container nested past `Limits::depth` as its text.
+//! The grammar, the escaping, and the text of a number are the ones of
+//! `serde_json` (`docs/features/client-kit.md`, "Decoded").
 
-use std::fmt::Write;
+use serde::Serialize;
+use serde::ser::{SerializeMap, Serializer};
+use serde_json::value::RawValue;
 
 /// A JSON value. An object keeps its pairs in their order; a lookup takes the
 /// first pair of a key, as `JSON.decode/1` of Elixir and the frame decoder
@@ -30,7 +34,8 @@ pub struct Limits {
     /// The bytes of the text.
     pub frame_bytes: usize,
     /// The values, counted as the server counts them: each value, and each
-    /// object key.
+    /// object key of the tree. A container past `depth` is kept as its text,
+    /// and the frame bound holds it.
     pub values: usize,
     /// The characters of an integer, the minus sign included.
     pub integer_chars: usize,
@@ -106,41 +111,37 @@ impl Json {
 
     /// The JSON text of the value.
     pub fn encode(&self) -> String {
-        let mut out = String::new();
-        self.write(&mut out);
-        out
+        serde_json::to_string(self).expect("a Json is JSON")
     }
+}
 
-    fn write(&self, out: &mut String) {
+impl Serialize for Json {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
         match self {
-            Json::Null => out.push_str("null"),
-            Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-            Json::Number(text) | Json::Deep(text) => out.push_str(text),
-            Json::String(text) => write_string(text, out),
-            Json::Array(items) => write_list(out, ['[', ']'], items, |item, out| item.write(out)),
-            Json::Object(pairs) => write_list(out, ['{', '}'], pairs, |(key, value), out| {
-                write_string(key, out);
-                out.push(':');
-                value.write(out);
-            }),
+            Json::Null => serializer.serialize_unit(),
+            Json::Bool(value) => serializer.serialize_bool(*value),
+            // The text as it came: a number, or a container that the decoder
+            // kept whole. Neither is read back into a value here.
+            Json::Number(text) | Json::Deep(text) => raw(text).serialize(serializer),
+            Json::String(text) => serializer.serialize_str(text),
+            Json::Array(items) => items.serialize(serializer),
+            Json::Object(pairs) => {
+                let mut map = serializer.serialize_map(Some(pairs.len()))?;
+                for (key, value) in pairs {
+                    map.serialize_entry(key, value)?;
+                }
+                map.end()
+            }
         }
     }
 }
 
-fn write_list<T>(
-    out: &mut String,
-    [open, close]: [char; 2],
-    items: &[T],
-    item: impl Fn(&T, &mut String),
-) {
-    out.push(open);
-    for (i, each) in items.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        item(each, out);
-    }
-    out.push(close);
+/// The JSON text of a number or of a deep container, to write as it is.
+fn raw(text: &str) -> Box<RawValue> {
+    RawValue::from_string(text.to_owned()).expect("the decoder kept JSON text")
 }
 
 impl From<&str> for Json {
@@ -168,24 +169,6 @@ pub(crate) fn natural(text: &str) -> Option<&str> {
 /// An object of `pairs`, for the frames that the client sends.
 pub fn object<const N: usize>(pairs: [(&str, Json); N]) -> Json {
     Json::Object(pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
-}
-
-fn write_string(text: &str, out: &mut String) {
-    out.push('"');
-    for c in text.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
 }
 
 mod decode;
