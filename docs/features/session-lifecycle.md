@@ -22,8 +22,8 @@ The Core turn contract: how a session starts, runs, and ends a turn with its pro
 |---|---|---|
 | `Flow.Idle` | gone, connecting, or up | no turn and no wait |
 | `Flow.Preparing` | connecting, up, or `:none` | a turn before its `{:turn, ...}`; the context builds |
-| `Flow.Sending` | up, or `:none` | the send of `{:turn, ...}` or `{:compact, ...}` to its answer |
-| `Flow.Live` | up, or `:none` | the `:ok` answer to the turn end |
+| `Flow.Sending` | up | the send of `{:turn, ...}` or `{:compact, ...}` to its answer |
+| `Flow.Live` | up | the `:ok` answer to the turn end |
 | `Flow.Waiting` | gone, connecting, up, or dying | the wait after a turn |
 
 A turn phase is `Preparing`, `Sending`, or `Live`; the variant is the phase. `Sending` and
@@ -109,7 +109,7 @@ The session monitors its provider process, and the hands send `{:provider_down, 
 - The start is a request to the hands (`Hands.start_provider/3`), not a call: the hands can be busy with a release, so the session waits for their answer in its loop (#677). Until the answer `{:provider_start, ref, result}`, the `Connecting` provider has the ref in `start` and no pid; the turn stays `Preparing`, and the session takes client calls and an abort. An answer `{:error, text}` fails a turn with `text`; in a wait it only clears the provider. With `{:ok, pid}`, in the turn or in the wait after it, the session monitors the process and sends it `:start`. So a turn that ends before the answer keeps the process, as one that ends after it does (#726). The process is `Connecting` until its `{:provider_ready, pid}`. The next turn of its model takes it; after a model switch it closes (`close_switched/1`). The process waits for `:start` before `init/3`: `{:provider_ready, pid}` comes from the process and the answer from the hands, and two senders have no order. The process of a summary call (`docs/features/summary-compaction.md`) waits for `:start` too, but a call that ended before the answer stops its process at the answer: that process serves only its call.
 - The process is `%Helyx.Session.Server.Flow.Dying{}` until its `provider_down`. Four events make it `Dying`: an answer to an interrupt or an idle close that stops it (`Wait.answered/3`), a stop by the session (`TurnLoop.stop_provider/2`), the `:close` of a model switch (`close_switched/1`), and its `:DOWN` outside a sent turn (`monitor_down/1`). In a sent turn, its `:DOWN` and an error answer to `{:turn, ...}` leave it `Up`.
 - Only `provider_down` takes the process out of the phase. A `Dying` process holds the wait (`TurnLoop.progress/1`), and `Connect.run/1` never reuses it.
-- Outside a turn, the `:DOWN` makes the process `:ending` and starts a wait, so the next turn waits for its `provider_down`.
+- Outside a turn, the `:DOWN` makes the process `Dying` and starts a wait, so the next turn waits for its `provider_down`.
 - In a sent turn (`Sending` or `Live`), the `provider_down` fails the turn with `reason`.
 - In `Preparing`, the `:DOWN` holds back `{:turn, ...}`. When the process was started by an earlier turn, its `provider_down` makes the turn connect a new one, once, and the queued steers stay for that turn: `Queue.provider_down/2` settles only the steer ledger. A process that this turn started fails the turn.
 - At `provider_down` each sent steer with no notice gets `steer_unconfirmed`, except a background end, which goes back to the ends, and the ledger drops every entry of that process.
@@ -125,7 +125,7 @@ With a ready provider process and no turn and no wait, the session arms one idle
 
 ## Session stop
 
-`terminate/2` runs `Helyx.Session.Server.Stop.run/1` on the list of `TurnLoop.work/1`. In a turn, the prepare Task is killed, and the provider process ends with the hands. With no turn, the provider process gets `:close`, also when it is `:ending`, with its armed kill. Then the session stops the hands (`Helyx.Session.Hands.stop/3`) and waits for them, and deletes its background folder.
+`terminate/2` runs `Helyx.Session.Server.Stop.run/1` on the list of `Stop.work/1`, which is private to `Helyx.Session.Server.Stop`. In a turn, the prepare Task is killed, and the provider process ends with the hands. With no turn, the provider process gets `:close`, also when it is `Dying`, with its armed kill. Then the session stops the hands (`Helyx.Session.Hands.stop/3`) and waits for them, and deletes its background folder.
 
 - The stop of the hands kills every Task that still runs, the provider process of a turn and a background run too, and releases their handles with `:cancel`, as an abort does (`docs/features/tool-resource-release.md`, rule 10). Its answer is every handle that a release of the hands left unconfirmed: at a delivery, at an abort, or at this stop.
 - The stop report (#752). `Helyx.Sessions.stop/1` returns `:ok` only when every handle of the session was released, and `{:error, {:not_released, handles}}` when a release failed or timed out. `handles` is the list of the handles still held, the terms of the plugins that hold them, or `:unknown` when the stop got no answer of the hands: hands that did not answer within the bound of their stop and were killed, or a session that another end, such as a second stop or a Core stop, stopped first, also during the abort of the stop. `{:error, :session_not_found}` means that no session ran at the call. The stop has no time parameter and no retry: its bounds are those of the row "session stop" in "Bounds". A stop by another path, such as `GenServer.stop/3` or a Core stop, runs the same releases, and its report goes to no caller; the log names the handles.
