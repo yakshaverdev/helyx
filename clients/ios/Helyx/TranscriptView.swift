@@ -164,10 +164,17 @@ private struct MessageView: View {
     private func blockView(_ block: Block, at index: Int) -> some View {
         switch block {
         case .text(let text):
-            if message.role == .toolResult {
+            switch message.role {
+            case .toolResult:
                 BoundedText(text: text)
-            } else {
+            case .user:
                 Text(text)
+                    .padding(10)
+                    .background(.tint.opacity(0.15))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            case .assistant:
+                Text(inline(text))
             }
         case .thinking(let text):
             ThinkingView(
@@ -183,6 +190,17 @@ private struct MessageView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// The inline Markdown of an assistant text (bold, italic, code, links),
+    /// with its line breaks kept. Block Markdown stays as written, and a
+    /// text that does not parse shows as plain text.
+    private func inline(_ text: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .inlineOnlyPreservingWhitespace
+        )
+        return (try? AttributedString(markdown: text, options: options))
+            ?? AttributedString(text)
     }
 }
 
