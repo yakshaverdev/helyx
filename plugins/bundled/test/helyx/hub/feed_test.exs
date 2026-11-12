@@ -179,7 +179,7 @@ defmodule Helyx.Hub.FeedTest do
     Events.wait_until(fn -> not Live.running?(:sys.get_state(context.hub), id) end)
     wait_listed(owner, id)
 
-    assert %{"result" => %{"record" => %{"stored" => true}}} =
+    assert %{"result" => %{"record" => %{"status" => "stopped"}}} =
              req(owner, "hub.records.get", %{"session" => id})
 
     # The prompt loads the session and binds the starter of the owner; the
