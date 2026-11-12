@@ -197,8 +197,9 @@ defmodule Helyx.Hub.FeedTest do
   # so the live checks do not race the idle stop.
   test "a prompt to a stopped session takes the place of the user and binds the starter",
        context do
-    context =
-      serve(context, [max_live_sessions: 1], fn _context -> :ok end, idle_stop_ms: Idle.idle_ms())
+    # The test stops the session itself: with the idle stop of the tests, a
+    # loaded session could stop again before the prompt under load.
+    context = serve(context, max_live_sessions: 1)
 
     holder = :"block_#{System.unique_integer([:positive])}"
     Process.register(self(), holder)
@@ -206,6 +207,7 @@ defmodule Helyx.Hub.FeedTest do
 
     owner = open(context.port)
     %{"result" => %{"session" => id}} = start(owner, "fake/block")
+    :ok = Helyx.Sessions.stop(%Helyx.Session{id: id, core: context.core})
     Events.wait_until(fn -> not Live.running?(:sys.get_state(context.hub), id) end)
 
     assert %{"ok" => true} = req(owner, "prompt", %{"session" => id, "text" => "again"})

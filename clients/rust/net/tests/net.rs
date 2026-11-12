@@ -1030,9 +1030,13 @@ fn a_live_command_sends_nothing_with_a_feed() {
     until(&changes, &shared, |s| {
         s.records && s.client.records().rows().len() == 1
     });
-    // The saved page of the welcome is answered, so the command below goes.
+    // The saved page of the welcome is answered and taken, so the command
+    // below goes: a saved command while a page is on the way sends nothing.
     let saved = request(&mut ws, "sessions.saved");
-    ok(&mut ws, id_of(&saved), r#"{"items":[],"next":null}"#);
+    let page =
+        r#"{"items":[{"id":"a","cwd":"/r","model":"m","mtime":0,"prompt":"first"}],"next":null}"#;
+    ok(&mut ws, id_of(&saved), page);
+    until(&changes, &shared, |s| s.saved.len() == 1);
     // The live command sends nothing; the saved one that follows sends its
     // page. The commands go in order, so the first request is the saved one.
     commands.send(Command::Live).unwrap();
