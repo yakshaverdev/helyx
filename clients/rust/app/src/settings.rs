@@ -3,7 +3,9 @@
 //! a regular file of at most 4,096 bytes, a JSON object with `address` an IP
 //! address, `port` from 1 to 65535, and `token` a string. A data folder that
 //! its group or other users can write is refused: such a user could write a
-//! server file that sends the prompts of the user to another server.
+//! server file that sends the prompts of the user to another server. `source`
+//! gives the read to the network thread, which reads the file again before
+//! each connection (`docs/features/client-kit.md`, "The network layer").
 
 use helyx_client_core::json::{Json, decode};
 use std::io::Read;
@@ -54,6 +56,15 @@ pub fn read(folder: &Path) -> Result<Server, String> {
         return Err(invalid());
     }
     parse(&text).ok_or_else(invalid)
+}
+
+/// A source of the server of `folder` for the network thread: it reads the
+/// file again at each call, so a server that restarted at another port and
+/// with another token is found again (`read`). The app gives it to
+/// `helyx_client_net::run`, which calls it before each connection.
+pub fn source(folder: &Path) -> impl Fn() -> Result<Server, String> + Send + Sync + 'static {
+    let folder = folder.to_path_buf();
+    move || read(&folder)
 }
 
 fn parse(text: &str) -> Option<Server> {

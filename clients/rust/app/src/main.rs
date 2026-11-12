@@ -17,7 +17,9 @@ fn main() {
         std::process::exit(1);
     };
     match settings::read(&folder) {
-        Ok(server) => start(server),
+        // The read fails now: no window opens for a folder with no server.
+        // The window reads the folder again before each connection.
+        Ok(server) => start(folder, server),
         Err(line) => {
             eprintln!("helyx-desktop: {line}");
             std::process::exit(1);
@@ -26,12 +28,12 @@ fn main() {
 }
 
 #[cfg(target_os = "macos")]
-fn start(server: settings::Server) {
-    ui::run(server);
+fn start(folder: PathBuf, server: settings::Server) {
+    ui::run(folder, server);
 }
 
 #[cfg(not(target_os = "macos"))]
-fn start(_server: settings::Server) {
+fn start(_folder: PathBuf, _server: settings::Server) {
     eprintln!("helyx-desktop: the window runs on macOS only");
     std::process::exit(1);
 }
