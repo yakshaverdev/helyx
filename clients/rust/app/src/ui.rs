@@ -656,17 +656,19 @@ impl Desktop {
             .w(px(280.))
             .border_r_1()
             .border_color(rgb(0x3a3a3a))
-            .child(dim_row(if feed { "sessions" } else { "live" }))
-            .children(rows)
-            .when_some(records_more, |d, line| d.child(line))
-            .child(dim_row("saved"))
+            // One scroll area for both lists: the rows of the feed have no
+            // small bound, and the field of a new session stays in view.
             .child(
                 div()
-                    .id("saved-list")
+                    .id("session-lists")
                     .flex()
                     .flex_col()
                     .flex_1()
                     .overflow_y_scroll()
+                    .child(dim_row(if feed { "sessions" } else { "live" }))
+                    .children(rows)
+                    .when_some(records_more, |d, line| d.child(line))
+                    .child(dim_row("saved"))
                     .children(saved_rows)
                     .when_some(more, |d, more| d.child(more)),
             )

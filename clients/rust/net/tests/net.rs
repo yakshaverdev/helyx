@@ -751,8 +751,8 @@ fn records_end_subscribes_again_after_the_pause() {
     until(&changes, &shared, |s| {
         s.records && s.client.records().rows().len() == 1
     });
-    ws.send(Message::text(r#"{"type":"records_end"}"#)).unwrap();
     let ended = Instant::now();
+    ws.send(Message::text(r#"{"type":"records_end"}"#)).unwrap();
     let second = request(&mut ws, "records.subscribe");
     // The subscribe waits the pause of a reconnect; load only makes it later.
     assert!(ended.elapsed() >= waits.pause, "{:?}", ended.elapsed());
@@ -816,6 +816,12 @@ fn a_new_connection_subscribes_again() {
     ws.get_mut().set_read_timeout(Some(FRAME_WAIT)).unwrap();
     welcome(&mut ws, "tok-q4");
     let again = request(&mut ws, "records.subscribe");
+    // The rows of the old connection stay until the new reply.
+    {
+        let shared = shared.lock().unwrap();
+        assert!(shared.records);
+        assert_eq!(shared.client.records().rows().len(), 1);
+    }
     let second = record("s2", "", "", "idle", 2, None);
     let first = record("s1", "", "", "idle", 1, None);
     ok(
@@ -825,6 +831,33 @@ fn a_new_connection_subscribes_again() {
     );
     until(&changes, &shared, |s| {
         s.records && s.client.records().rows().len() == 2
+    });
+}
+
+#[test]
+fn a_transient_error_of_the_records_subscribe_asks_again() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (_commands, changes) = drive(stub::local(port), shared.clone());
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    ws.get_mut().set_read_timeout(Some(FRAME_WAIT)).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let first = request(&mut ws, "records.subscribe");
+    error(&mut ws, id_of(&first), "timeout");
+    let second = request(&mut ws, "records.subscribe");
+    error(&mut ws, id_of(&second), "busy");
+    let third = request(&mut ws, "records.subscribe");
+    ok(
+        &mut ws,
+        id_of(&third),
+        &format!(
+            r#"{{"records":[{}],"more":false}}"#,
+            record("s1", "", "", "idle", 1, None)
+        ),
+    );
+    until(&changes, &shared, |s| {
+        s.records && s.client.records().rows().len() == 1
     });
 }
 

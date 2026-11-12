@@ -167,9 +167,9 @@ pub struct Shared {
     /// Whether the connection has the records feed: a server with a Hub
     /// answers `records.subscribe`, and the window takes its list from
     /// `client.records()`. False on a server with no Hub, whose list is
-    /// `live`, and false again at each new connection until its reply. A
-    /// `records_end` keeps it true, because the thread subscribes again on
-    /// the same connection.
+    /// `live`. A `records_end` and a new connection keep it true, with the
+    /// rows of the last reply, until the next reply replaces them; an error
+    /// reply that is not transient makes it false.
     pub records: bool,
     /// The session that the host follows.
     pub followed: Option<String>,
@@ -383,13 +383,12 @@ fn connection(
     shared.lock().unwrap().client.connect();
     let mut welcomed = false;
     // The records feed of this connection: whether a subscription is
-    // wanted, the id of the one in flight, when the pause after a feed end
-    // allows the next, and whether the server has no feed. One request is in
-    // flight at most.
+    // wanted, the id of the one in flight, and when the pause after a feed
+    // end or a transient error allows the next. One request is in flight at
+    // most.
     let mut records_wanted = false;
     let mut records_request: Option<String> = None;
     let mut records_at: Option<Instant> = None;
-    let mut records_off = false;
     // The end of the connection after an error: a break when the server
     // sent a binary frame, whatever error ended it, else a lost connection.
     let ended = |ws: &mut Socket, welcomed: bool| {
@@ -410,7 +409,7 @@ fn connection(
     loop {
         // The subscribe that waits for a free place, or for the pause after
         // the end of the feed.
-        if records_wanted && records_request.is_none() && !records_off {
+        if records_wanted && records_request.is_none() {
             let due = records_at.is_none_or(|at| Instant::now() >= at);
             if due && let Some((id, frames)) = records_subscribe(&mut shared.lock().unwrap()) {
                 records_at = None;
@@ -494,9 +493,6 @@ fn connection(
                     // it, and then no `sessions.live` goes on this
                     // connection. A server with no Hub answers `unknown_op`,
                     // and the live list follows at that reply.
-                    guard.records = false;
-                    records_at = None;
-                    records_off = false;
                     records_wanted = true;
                     if let Some((id, subscribe)) = records_subscribe(&mut guard) {
                         records_request = Some(id);
@@ -532,16 +528,21 @@ fn connection(
                                 // The server has no Hub: the rest of this
                                 // connection keeps the path of `sessions.live`.
                                 guard.records = false;
-                                records_wanted = false;
-                                records_off = true;
                                 frames.extend(live(&mut guard));
                             }
+                            // The Hub is full or does not answer now (after
+                            // its restart, for example): ask again after the
+                            // pause, and keep the list as it is.
+                            Err((code, _)) if code == "busy" || code == "timeout" => {
+                                records_wanted = true;
+                                records_at = Some(Instant::now() + waits.pause);
+                            }
                             Err((code, text)) => {
-                                records_wanted = false;
-                                records_off = true;
+                                guard.records = false;
                                 guard.line = format!("records.subscribe: {code}: {text}");
                             }
-                            Ok(_) => guard.records = true,
+                            // An ok reply comes as `RecordsChanged`.
+                            Ok(_) => {}
                         }
                         continue;
                     }
