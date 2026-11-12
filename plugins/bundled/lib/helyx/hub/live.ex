@@ -175,6 +175,10 @@ defmodule Helyx.Hub.Live do
     end
   end
 
+  # The live set holds the session under a process that is not `pid`.
+  def replaces?(%{live: live}, session_id, pid),
+    do: Enum.any?(live, fn {_ref, {id, entry, _status}} -> id == session_id and entry != pid end)
+
   # One entry for each session: a new process of a session replaces the entry
   # of an old one whose `:DOWN` has not come yet, and drops its starter. An
   # entry that already holds this pid takes the new status, so a status

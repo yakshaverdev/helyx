@@ -625,10 +625,12 @@ defmodule Helyx.Hub.RecordsFeedTest do
     # The answer ends the ask, and the Hub loses its `:ask_end`.
     :ok = Session.answer(session, ask.data.ask_id, %{"answers" => [%{"selected" => ["a"]}]})
     _ = collect_until(:turn_end)
-    :ok = :sys.resume(hub)
 
     # The stale set is still there, and the Sync at the next poll replaces it.
+    # The state is read before the resume: a poll timer of the Hub can fire
+    # at once after it.
     assert Live.status(:sys.get_state(hub), session.id) == "waiting"
+    :ok = :sys.resume(hub)
 
     send(hub, :wake_poll)
 
@@ -657,9 +659,9 @@ defmodule Helyx.Hub.RecordsFeedTest do
     [ask] = of_type(collect_until(:ask), :ask)
     :ok = Session.answer(session, ask.data.ask_id, %{"answers" => [%{"selected" => ["a"]}]})
     _ = collect_until(:turn_end)
-    :ok = :sys.resume(hub)
 
     refute Live.running?(:sys.get_state(hub), session.id)
+    :ok = :sys.resume(hub)
 
     send(hub, :wake_poll)
 
@@ -671,6 +673,24 @@ defmodule Helyx.Hub.RecordsFeedTest do
     {records, _more} = subscribe(open(context.port))
     assert %{"status" => status} = Enum.find(records, &(&1["session"] == session.id))
     assert status != "waiting"
+  end
+
+  test "an ask of a session that is not in the live set is not kept", context do
+    context = serve(context)
+    id = "none_#{System.unique_integer([:positive])}"
+
+    event = %Helyx.Event{
+      type: :ask,
+      session_id: id,
+      instance_id: "i",
+      turn_id: "t",
+      seq: 1,
+      data: %{ask_id: "a1"}
+    }
+
+    send(context.hub, {:helyx_feed, self(), event})
+
+    refute ask_open?(:sys.get_state(context.hub), id, "a1")
   end
 
   test "a records_end that races an unsubscribe answers the unsubscribe", context do

@@ -155,6 +155,9 @@ defmodule Helyx.Hub.RecordFeed do
     end
   end
 
+  # With no subscriber the marks end and nothing is read.
+  defp flush_row(%{records: records} = state, _session_id) when map_size(records) == 0, do: state
+
   defp flush_row(state, session_id) do
     with {:ok, row} <- state.store.record(state.db, session_id),
          {:ok, view} <- Records.view(row, row.owner, state) do

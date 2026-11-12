@@ -456,7 +456,7 @@ defmodule Helyx.Hub.Server do
   # A notice of the session feed.
   @impl true
   def handle_info({:helyx_feed, pid, %Helyx.Sessions.Live{} = live}, state),
-    do: {:noreply, seen(state, live, pid)}
+    do: {:noreply, state |> new_process(live.id, pid) |> seen(live, pid)}
 
   # `Helyx.Sessions.sync/1`: the full state of a session at its send. The Sync
   # replaces the open-ask set before the row, so one change carries the right
@@ -471,15 +471,16 @@ defmodule Helyx.Hub.Server do
   end
 
   # An ask opens or ends: the record of the session waits, or stops waiting
-  # (`docs/features/live-records.md`).
-  def handle_info({:helyx_feed, _pid, %Helyx.Event{type: :ask} = event}, state) do
+  # (`docs/features/live-records.md`). An ask of a session that is not in the
+  # live set is dropped: the Hub has no monitor that would clear its set, and
+  # the Sync that brings the session in carries its open asks.
+  def handle_info({:helyx_feed, _pid, %Helyx.Event{type: type} = event}, state)
+      when type in [:ask, :ask_end] do
     %Helyx.Event{session_id: id, data: %{ask_id: ask_id}} = event
-    {:noreply, state |> RecordFeed.ask(id, ask_id) |> RecordFeed.changed(id, "changed")}
-  end
 
-  def handle_info({:helyx_feed, _pid, %Helyx.Event{type: :ask_end} = event}, state) do
-    %Helyx.Event{session_id: id, data: %{ask_id: ask_id}} = event
-    {:noreply, state |> RecordFeed.ask_end(id, ask_id) |> RecordFeed.changed(id, "changed")}
+    if Live.running?(state, id),
+      do: {:noreply, state |> ask(type, id, ask_id) |> RecordFeed.changed(id, "changed")},
+      else: {:noreply, state}
   end
 
   def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
@@ -515,6 +516,17 @@ defmodule Helyx.Hub.Server do
   # traps exits, stops it before this clause): a crash would lose the live
   # set.
   def handle_info(_message, state), do: {:noreply, state}
+
+  # The first notice of a new process of a session: the asks of the old
+  # process ended with it, and its `:DOWN` is flushed with its entry.
+  defp new_process(state, id, pid) do
+    if Live.replaces?(state, id, pid) and not Live.stale?(state, id, pid),
+      do: RecordFeed.clear_asks(state, id),
+      else: state
+  end
+
+  defp ask(state, :ask, id, ask_id), do: RecordFeed.ask(state, id, ask_id)
+  defp ask(state, :ask_end, id, ask_id), do: RecordFeed.ask_end(state, id, ask_id)
 
   # The stop kills the delivery Tasks, then closes the store (decision 16).
   @impl true

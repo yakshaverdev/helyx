@@ -117,7 +117,12 @@ carries no ask, so the set of a session also comes from its `Sync`:
   a `Sync` does not have to find it. A `Sync` or a `Live` whose pid is not the
   current pid of its session in the sessions Registry is stale: the Hub skips
   it, so the notices of a resumed session win over those of the process before
-  it.
+  it;
+- a set exists only for a session of the live set, whose monitor removes it.
+  The Hub drops an `:ask` or `:ask_end` of a session that is not in the live
+  set (its `Live` was dropped; the `Sync` of the repair carries its open
+  asks), and the first `Live` of a new process of a session removes the set
+  of the process before it.
 
 With no records subscription, Hub writes no record view and sends no frame.
 It keeps the open-ask set from the feed: one map update for each `:ask` and

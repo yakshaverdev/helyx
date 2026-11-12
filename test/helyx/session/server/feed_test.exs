@@ -330,16 +330,22 @@ defmodule Helyx.Session.Server.FeedTest do
     {:ok, _one} = Sessions.start(core, cwd: "/repo", model: "test/ok")
     {:ok, _two} = Sessions.start(core, cwd: "/repo", model: "test/ok")
 
+    # The Live of each open is in the mailbox before it fills, so the only
+    # notices that the feed drops after this are the two Sync.
+    queue = fn -> elem(Process.info(watcher, :message_queue_len), 1) end
+    wait_until(fn -> queue.() == 2 end)
+
     max = Sessions.max_feed_queue()
     for _ <- 1..max, do: send(watcher, :filler)
-    wait_until(fn -> elem(Process.info(watcher, :message_queue_len), 1) >= max end)
+    wait_until(fn -> queue.() == max + 2 end)
 
     before = Sessions.dropped(dropped)
     send(watcher, :sync)
     assert_receive {:synced, :ok}
 
-    # One dropped Sync for each of the two sessions.
-    assert Sessions.dropped(dropped) - before == 2
+    # One dropped Sync for each of the two sessions, when each has handled
+    # the message of the sync.
+    wait_until(fn -> Sessions.dropped(dropped) - before == 2 end)
     send(watcher, :stop)
   end
 
