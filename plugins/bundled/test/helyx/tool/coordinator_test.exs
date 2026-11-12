@@ -253,7 +253,7 @@ defmodule Helyx.Tool.CoordinatorTest do
       ]
 
       texts = context |> coordinate(context.ann, calls) |> Enum.map(&Message.text/1)
-      assert Enum.at(texts, 0) =~ "worktree.extra is not a known argument"
+      assert Enum.at(texts, 0) =~ "worktree.extra is not an argument"
       assert Enum.at(texts, 1) =~ "worktree.branch is required"
       assert Enum.at(texts, 2) =~ "the branch must be 1 to 64 bytes"
     end
