@@ -12,9 +12,10 @@ defmodule Helyx.Transport.WebSocket.Connection do
     Authorize,
     Bounds,
     Frame,
+    HandsLease,
+    Hello,
     Ops,
     Outbound,
-    Pairing,
     PairOps,
     Records,
     Subscription
@@ -25,12 +26,6 @@ defmodule Helyx.Transport.WebSocket.Connection do
   @idle_ms Bounds.get("idle_ms")
   @max_in_flight Bounds.get("requests_in_flight")
   @max_subscriptions Bounds.get("subscriptions")
-
-  # The id of the liveness request that the server sends a hands connection
-  # (`docs/features/remote-hands.md`, "Registration and lease"). The request
-  # id carries its sequence, so an answer of an older request does not renew
-  # the lease.
-  @live_prefix "hands.live:"
 
   @impl true
   def init(config) do
@@ -85,26 +80,8 @@ defmodule Helyx.Transport.WebSocket.Connection do
   def handle_control(_ping_or_pong, state), do: {:ok, %{state | last_in: now()}}
 
   defp frame(%{"type" => "hello", "protocol" => protocol} = hello, %{phase: :hello} = state)
-       when is_integer(protocol) and protocol >= 0 do
-    server = Helyx.Transport.WebSocket.protocol()
-
-    # The protocol number first: a client of another protocol learns that it
-    # must update, whatever its proof.
-    if protocol != server do
-      refused = %{"type" => "refused", "code" => "protocol", "server_protocol" => server}
-      {:stop, {:shutdown, :closed}, 4426, texts(refused), state}
-    else
-      case authenticate(state, hello) do
-        {:ok, auth, role, runner} ->
-          welcome = texts(%{"type" => "welcome", "protocol" => server})
-          state = %{state | phase: :open, auth: auth, role: role, runner: runner}
-          {:push, welcome, state}
-
-        {:close, code} ->
-          close(code, state)
-      end
-    end
-  end
+       when is_integer(protocol) and protocol >= 0,
+       do: Hello.frame(state, hello)
 
   defp frame(%{"type" => "req", "id" => id} = req, %{phase: :open} = state)
        when is_binary(id) and byte_size(id) in 1..64 do
@@ -140,90 +117,11 @@ defmodule Helyx.Transport.WebSocket.Connection do
 
   defp frame(_frame, state), do: close(4400, state)
 
-  # The public listener takes no server token: only a pairing link or the key
-  # of a paired runner (`docs/features/remote-hands.md`, "Pairing and the
-  # public listener"). The pairing validates every field of the `hello`
-  # before it reads any: a client role, a runner that is not a name, and a
-  # handshake of the wrong type or size close this connection with `4401`.
-  defp authenticate(%{listener: :public} = state, hello) do
-    case Pairing.hello(state.pairing, state.nonce, hello, self()) do
-      {:ok, "hands", name} -> {:ok, nil, "hands", name}
-      {:close, code} -> {:close, code}
-    end
-  end
-
-  # A pairing attempt on the loopback listener is not a handshake there.
-  defp authenticate(%{listener: :loopback} = state, hello) do
-    with nil <- hello["pair"],
-         nil <- hello["signature"],
-         {:ok, role} <- role(hello),
-         :ok <- runner(role, hello["runner"]),
-         {:ok, auth} <- loopback_auth(state, hello) do
-      {:ok, auth, role, hello["runner"]}
-    else
-      {:close, code} -> {:close, code}
-      _other -> {:close, 4400}
-    end
-  end
-
-  # With an authority, the authority decides the credential of the
-  # connection; with none, the proof of the server token.
-  defp loopback_auth(%{authority: nil} = state, hello) do
-    if Authorize.proof?(state.key, state.nonce, hello["proof"]),
-      do: {:ok, nil},
-      else: {:close, 4401}
-  end
-
-  defp loopback_auth(state, hello), do: Authorize.hello(state.authority, state.nonce, hello)
-
-  defp role(%{"role" => "hands"}), do: {:ok, "hands"}
-  defp role(%{"role" => "client"}), do: {:ok, "client"}
-  defp role(%{"role" => _other}), do: :error
-  defp role(_hello), do: {:ok, "client"}
-
-  # A hands role names its runner: the one name rule of `Pairing.name?/1`.
-  defp runner("hands", name), do: if(Pairing.name?(name), do: :ok, else: :error)
-
-  defp runner("client", _name), do: :ok
-  defp runner(_role, _name), do: :error
-
   # A pairing operation runs in a worker of `PairOps`, so a Hub call in it
   # does not hold the socket.
   defp pair_request(id, op, params, pairing, state) do
     pid = PairOps.start(state.out, id, op, params, pairing)
     {:ok, put_writer(state, pid, {:worker, id, :none})}
-  end
-
-  # The folder of a session on a runner is the folder of the runner
-  # (`docs/features/remote-hands.md`, decision 5). One connection holds one
-  # registration: its lease timer chain starts once.
-  defp register(id, _params, %{lease_ms: lease_ms} = state) when is_integer(lease_ms),
-    do: error(id, "bad_params", state)
-
-  defp register(id, %{"runner" => runner, "folder" => folder} = params, state)
-       when map_size(params) == 2 and is_binary(folder) do
-    if runner == state.runner and byte_size(folder) <= Pairing.max_folder_bytes() do
-      case Pairing.register_hands(state.pairing, self(), runner) do
-        {:ok, lease_ms} ->
-          state = lease(state, lease_ms)
-          {:push, texts(Outbound.res(id, {:ok, %{"lease_ms" => lease_ms}})), state}
-
-        {:error, _unauthorized} ->
-          close(4401, state)
-      end
-    else
-      close(4401, state)
-    end
-  end
-
-  defp register(id, _params, state), do: error(id, "bad_params", state)
-
-  # The lease runs on the server's clock: one liveness request each third,
-  # and a close when its answer came no later than one lease before.
-  defp lease(state, lease_ms) do
-    Process.send_after(self(), :hands_live, div(lease_ms, 3))
-    Process.send_after(self(), :hands_lease, lease_ms)
-    %{state | lease_ms: lease_ms, lease_at: now()}
   end
 
   # The pairing operations of the loopback listener, and the registration of
@@ -254,7 +152,7 @@ defmodule Helyx.Transport.WebSocket.Connection do
     do: close(4401, state)
 
   defp request(id, "hands.register", params, %{role: "hands"} = state),
-    do: register(id, params, state)
+    do: HandsLease.register(id, params, state)
 
   defp request(id, "hands." <> _op, _params, state), do: error(id, "unknown_op", state)
 
@@ -441,40 +339,9 @@ defmodule Helyx.Transport.WebSocket.Connection do
     {:push, [{:ping, ""}], state}
   end
 
-  def handle_info(:hands_live, %{lease_ms: lease_ms} = state) when is_integer(lease_ms) do
-    Process.send_after(self(), :hands_live, div(lease_ms, 3))
+  def handle_info(:hands_live, state), do: HandsLease.live(state)
 
-    if state.live_id == nil do
-      id = @live_prefix <> Integer.to_string(state.live_seq)
-
-      request = %{
-        "type" => "req",
-        "id" => id,
-        "op" => "hands.live",
-        "params" => %{"seq" => state.live_seq, "ack" => state.live_ack}
-      }
-
-      {:push, texts(request), %{state | live_id: id, live_seq: state.live_seq + 1}}
-    else
-      {:ok, state}
-    end
-  end
-
-  def handle_info(:hands_live, state), do: {:ok, state}
-
-  def handle_info(:hands_lease, %{lease_ms: lease_ms, lease_at: at} = state)
-      when is_integer(lease_ms) do
-    idle = now() - at
-
-    if idle >= lease_ms do
-      close(4408, state)
-    else
-      Process.send_after(self(), :hands_lease, lease_ms - idle)
-      {:ok, state}
-    end
-  end
-
-  def handle_info(:hands_lease, state), do: {:ok, state}
+  def handle_info(:hands_lease, state), do: HandsLease.expiry(state)
 
   def handle_info(:idle, state) do
     case now() - state.last_in do
