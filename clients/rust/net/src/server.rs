@@ -3,7 +3,7 @@
 //! handshake, or a remote server over TLS with the pin of its certificate.
 //! `Debug` holds no token and no key byte.
 
-use crate::state::State;
+use crate::state::{State, Store};
 use helyx_client_core::handshake::{Credential, Token};
 use helyx_client_core::key::Key;
 use helyx_client_core::link::Link;
@@ -51,6 +51,22 @@ impl Server {
                 key,
             },
             token: Some(link.token.clone()),
+        }
+    }
+
+    /// The pairing of `link` with a new key, unless `store` holds a state of
+    /// the name for another server: a pairing replaces only the state of its
+    /// own server, so the key of the other one is not lost. The check runs
+    /// before the connection, so the link is not used.
+    pub fn pair(link: &Link, store: &dyn Store) -> Result<Server, String> {
+        match store.load(&link.name)? {
+            Some(old) if (&old.host, old.port, &old.pin) != (&link.host, link.port, &link.pin) => {
+                Err(format!(
+                    "the name {} is paired with {}:{}; make a link with another name",
+                    link.name, old.host, old.port
+                ))
+            }
+            _ => Ok(Server::pairing(link, Key::generate())),
         }
     }
 

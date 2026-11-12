@@ -236,6 +236,21 @@ fn a_server_of_tls_12_only_is_refused() {
 }
 
 #[test]
+fn a_pairing_keeps_the_state_of_another_server_of_the_name() {
+    let old = net::stub::state(1, "phone", Key::generate());
+    let store = Memory::default();
+    *store.state.lock().unwrap() = Some(old.clone());
+    // No server listens: the refusal comes before a connection.
+    let link = net::stub::link(2, "phone", "boot-1");
+    let shared = Mutex::new(Shared::new());
+    let (_commands, receive) = channel();
+    let line = net::run_pair_with(&link, &store, &shared, &receive, &|| {}, fast());
+    assert!(line.starts_with("the name phone is paired with"), "{line}");
+    assert!(!store.saved.load(Ordering::SeqCst));
+    assert_eq!(*store.state.lock().unwrap(), Some(old));
+}
+
+#[test]
 fn a_refused_link_saves_nothing() {
     let token = "boot-1";
     let name = "phone";
@@ -276,7 +291,10 @@ fn a_revoked_app_stops_with_the_pair_again_line() {
         fast(),
     );
     stub.join().unwrap();
-    assert_eq!(line, "the server no longer accepts this app; pair it again");
+    assert_eq!(
+        line,
+        "the server closed this app: another connection uses its name, or it was revoked"
+    );
 }
 
 #[test]

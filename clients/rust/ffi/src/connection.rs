@@ -6,7 +6,6 @@
 use crate::convert;
 use crate::types::{NetError, Snapshot};
 use helyx_client_core::json;
-use helyx_client_core::key::Key;
 use helyx_client_core::link::Link;
 use helyx_client_core::operation::{Invalid, Operation};
 use helyx_client_net::{self, Command, Server, Shared, State, Store};
@@ -86,8 +85,9 @@ impl Connection {
         let link = Link::parse(&link).map_err(|fault| NetError::Invalid {
             reason: fault.text().to_owned(),
         })?;
-        let server = Server::pairing(&link, Key::generate());
         let store = Arc::new(CallbackStore(storage));
+        let server =
+            Server::pair(&link, store.as_ref()).map_err(|reason| NetError::Invalid { reason })?;
         Ok(start(server, Some(store), listener))
     }
 

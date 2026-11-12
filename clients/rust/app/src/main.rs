@@ -5,7 +5,6 @@
 #[cfg(target_os = "macos")]
 mod ui;
 
-use helyx_client_core::key::Key;
 use helyx_desktop::cli::{self, Launch};
 use helyx_desktop::net::{FileStore, Server, Store};
 use helyx_desktop::settings;
@@ -40,8 +39,10 @@ fn pair(link: helyx_client_core::link::Link) {
     let Some(store) = FileStore::default_store() else {
         stop("no home folder: set HOME");
     };
-    let server = Server::pairing(&link, Key::generate());
-    start(server, Some(Arc::new(store)));
+    match Server::pair(&link, &store) {
+        Ok(server) => start(server, Some(Arc::new(store))),
+        Err(line) => stop(&line),
+    }
 }
 
 /// The paired client of the saved state of `name`.

@@ -19,7 +19,6 @@ use crate::state::Store;
 use helyx_client_core::client::{Client, Follow, Hold, Next, Output, Refusal, UNAUTHORIZED, Wait};
 use helyx_client_core::frame::{LiveSession, Reply, SavedSession};
 use helyx_client_core::json::object;
-use helyx_client_core::key::Key;
 use helyx_client_core::link::Link;
 use helyx_client_core::operation::{MAX_LIMIT, Operation, Saved};
 use helyx_client_core::parts::FRAME_BYTES;
@@ -334,8 +333,10 @@ pub fn run_pair_with(
     notify: &dyn Fn(),
     waits: Waits,
 ) -> String {
-    let server = Server::pairing(link, Key::generate());
-    run_with(&server, Some(store), shared, commands, notify, waits)
+    match Server::pair(link, store) {
+        Ok(server) => run_with(&server, Some(store), shared, commands, notify, waits),
+        Err(line) => line,
+    }
 }
 
 /// `run` with other waits, for tests.
@@ -399,7 +400,9 @@ impl Kind {
         match self {
             Kind::Local => "the server refused the token",
             Kind::Pairing => "the server refused the link",
-            Kind::Paired => "the server no longer accepts this app; pair it again",
+            Kind::Paired => {
+                "the server closed this app: another connection uses its name, or it was revoked"
+            }
         }
     }
 }
