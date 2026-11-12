@@ -1,0 +1,31 @@
+[package]
+name = "helyx-client-ffi"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The bindings of the Helyx client kit for Swift, through UniFFI"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "cdylib", "lib"]
+
+[dependencies]
+helyx-client-core = { path = "../core" }
+helyx-client-net = { path = "../net" }
+uniffi = { version = "=0.32.2", default-features = false }
+
+# The stub server of the test of the surface speaks WebSocket, as the tests of
+# the network layer do, and the feature `stub` of the layer builds it.
+[dev-dependencies]
+helyx-client-net = { path = "../net", features = ["stub"] }
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+
+[features]
+# The generator of the Swift bindings, which a build for a device does not
+# need (bindgen.sh).
+bindgen = ["uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]

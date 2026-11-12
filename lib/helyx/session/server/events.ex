@@ -9,7 +9,7 @@ defmodule Helyx.Session.Server.Events do
 
   alias Helyx.{Event, ModelRef}
   alias Helyx.Session.{History, Queue, Ring, Snapshot, Totals, Turn}
-  alias Helyx.Session.Server.{Asks, Flow, State, UIBlocks, Wait}
+  alias Helyx.Session.Server.{Asks, Feed, Flow, IdleStop, State, UIBlocks, Wait}
 
   # The unacked events of one subscriber (ADR 0008 §5).
   @credits 16_384
@@ -32,7 +32,8 @@ defmodule Helyx.Session.Server.Events do
         _none -> Process.monitor(pid)
       end
 
-    {reply, put_in(state.subscribers[pid], {monitor, ref, base, answers?})}
+    state = put_in(state.subscribers[pid], {monitor, ref, base, answers?})
+    {reply, IdleStop.arm(state)}
   end
 
   defp replay(%State{instance_id: id, ring: %Ring{seq: seq} = ring}, {id, after_seq})
@@ -51,14 +52,16 @@ defmodule Helyx.Session.Server.Events do
 
   def ack(state, _pid, _acked), do: state
 
+  # A subscriber leaves: the session can become idle with no watcher
+  # (docs/features/idle-unload.md).
   def unsubscribe(%State{} = state, pid) do
     {entry, subscribers} = Map.pop(state.subscribers, pid)
     _ = entry && Process.demonitor(elem(entry, 0), [:flush])
-    %{state | subscribers: subscribers}
+    IdleStop.arm(%{state | subscribers: subscribers})
   end
 
   def subscriber_down(%State{subscribers: subscribers} = state, pid),
-    do: %{state | subscribers: Map.delete(subscribers, pid)}
+    do: IdleStop.arm(%{state | subscribers: Map.delete(subscribers, pid)})
 
   # The state of the session in one value (`Helyx.Session.Snapshot`), with the
   # `seq` of its last event. A nil `tail` gives the whole transcript.
@@ -78,7 +81,7 @@ defmodule Helyx.Session.Server.Events do
       turn: turn(state.phase),
       model: ModelRef.to_string(state.model),
       queue: Queue.counts(state.queue),
-      persisting: match?({:saving, _, _}, state.save),
+      persisting: match?({:saving, _}, state.save),
       usage: usage,
       context: context,
       asks: Asks.snapshot(state),
@@ -101,6 +104,8 @@ defmodule Helyx.Session.Server.Events do
     do: emit(state, nil, type, data)
 
   def emit(state, turn_id, type, data) do
+    # A change of status goes out before the events of the new status.
+    state = Feed.sync(state)
     seq = state.ring.seq + 1
 
     event = %Event{
@@ -114,7 +119,18 @@ defmodule Helyx.Session.Server.Events do
 
     slow = for {pid, entry} <- state.subscribers, deliver(pid, entry, event) == :slow, do: pid
 
-    %{state | ring: Ring.push(state.ring, event), subscribers: Map.drop(state.subscribers, slow)}
+    state = %{
+      state
+      | ring: Ring.push(state.ring, event),
+        subscribers: Map.drop(state.subscribers, slow)
+    }
+
+    # A slow subscriber leaves in place of its event; it can be the last one
+    # (docs/features/idle-unload.md).
+    state = if slow == [], do: state, else: IdleStop.arm(state)
+
+    _ = Feed.event(state.core, event)
+    state
   end
 
   # Past the credits the slow subscriber ends in place of its event, and no

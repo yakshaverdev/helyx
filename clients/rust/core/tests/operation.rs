@@ -10,15 +10,15 @@ use helyx_client_core::client::{Client, Next, Output, Refusal};
 use helyx_client_core::frame::Reply;
 use helyx_client_core::json::{Json, decode};
 use helyx_client_core::operation::{
-    FormAnswer, Invalid, MAX_ANSWER_BYTES, MAX_CWD_BYTES, MAX_LIMIT, MAX_TEXT_BYTES, Operation,
-    Saved, approval_answer, deadline, form_answer,
+    FormAnswer, Invalid, MAX_ANSWER_BYTES, MAX_CWD_BYTES, MAX_LIMIT, MAX_MODEL_BYTES,
+    MAX_TEXT_BYTES, Operation, Saved, approval_answer, deadline, form_answer,
 };
 use serde_json::json;
 use std::time::Duration;
 
 const CHALLENGE: &str =
     r#"{"type":"challenge","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}"#;
-const WELCOME: &str = r#"{"type":"welcome","protocol":12}"#;
+const WELCOME: &str = r#"{"type":"welcome","protocol":14}"#;
 
 /// The frames that the client sends among `outputs`, decoded.
 fn sent(outputs: &[Output]) -> Vec<Json> {
@@ -33,7 +33,7 @@ fn sent(outputs: &[Output]) -> Vec<Json> {
 
 /// A client past the handshake of a new connection.
 fn welcomed(client: &mut Client) -> Vec<Output> {
-    client.connect();
+    client.connect(None);
     let hello = client.receive(CHALLENGE).unwrap();
     assert_eq!(
         sent(&hello)[0].get("type").and_then(Json::as_str),
@@ -63,6 +63,23 @@ fn each_operation_gives_the_params_of_the_schema() {
             r#"{"session":"s1","text":"hi"}"#,
         ),
         (Operation::abort("s1"), "abort", r#"{"session":"s1"}"#),
+        (Operation::stop("s1"), "stop", r#"{"session":"s1"}"#),
+        (
+            Operation::set_model("s1", "fake/echo").unwrap(),
+            "set_model",
+            r#"{"session":"s1","model":"fake/echo"}"#,
+        ),
+        (
+            Operation::compact("s1", "trim").unwrap(),
+            "compact",
+            r#"{"session":"s1","text":"trim"}"#,
+        ),
+        (
+            // An empty text sends none, so the default of the server holds.
+            Operation::compact("s1", "").unwrap(),
+            "compact",
+            r#"{"session":"s1"}"#,
+        ),
         (
             Operation::answer("s1", "a1", approval_answer(true)).unwrap(),
             "answer",
@@ -105,7 +122,14 @@ fn each_operation_gives_the_params_of_the_schema() {
         assert_eq!(operation.params(), decode(params).unwrap(), "{name}");
     }
     // Only a session operation names a session.
-    assert_eq!(Operation::abort("s1").session(), Some("s1"));
+    for operation in [
+        Operation::abort("s1"),
+        Operation::stop("s1"),
+        Operation::set_model("s1", "fake/echo").unwrap(),
+        Operation::compact("s1", "").unwrap(),
+    ] {
+        assert_eq!(operation.session(), Some("s1"), "{}", operation.name());
+    }
     for other in [
         Operation::start("/r", None).unwrap(),
         Operation::resume("abc"),
@@ -140,6 +164,48 @@ fn a_text_is_checked_by_its_bytes() {
         Err(Invalid::TextTooLarge)
     );
     assert_eq!(Invalid::TextTooLarge.text(), "the text is over 4 MiB");
+}
+
+#[test]
+fn a_model_ref_is_checked_by_its_bytes_and_its_slash() {
+    // A ref of exactly the bound is accepted, and one byte more is refused.
+    let at = format!("p/{}", "a".repeat(MAX_MODEL_BYTES - 2));
+    assert_eq!(at.len(), MAX_MODEL_BYTES);
+    assert!(Operation::set_model("s1", &at).is_ok());
+    let over = format!("{at}a");
+    assert_eq!(Operation::set_model("s1", &over), Err(Invalid::ModelRef));
+    // The bound counts bytes: 127 characters of two bytes fill it.
+    let multibyte = format!("p/{}", "é".repeat((MAX_MODEL_BYTES - 2) / 2));
+    assert_eq!(multibyte.len(), MAX_MODEL_BYTES);
+    assert!(Operation::set_model("s1", &multibyte).is_ok());
+    // A space, a tab, a control character, no slash, and an empty part on
+    // either side of the slash are refused.
+    for bad in ["p/m x", "p/m\tx", "p/m\u{7}", "pm", "/m", "p/"] {
+        assert_eq!(
+            Operation::set_model("s1", bad),
+            Err(Invalid::ModelRef),
+            "{bad:?}"
+        );
+    }
+    assert_eq!(
+        Invalid::ModelRef.text(),
+        "not a model ref: use provider/model"
+    );
+}
+
+#[test]
+fn compact_takes_the_bound_of_a_message_and_no_text_when_it_is_empty() {
+    let empty = Operation::compact("s1", "").unwrap();
+    assert_eq!(empty.text(), None);
+    let instructions = Operation::compact("s1", "trim").unwrap();
+    assert_eq!(instructions.text(), Some("trim"));
+    // The text is the message bound of a prompt.
+    let at = "a".repeat(MAX_TEXT_BYTES);
+    assert!(Operation::compact("s1", &at).is_ok());
+    assert_eq!(
+        Operation::compact("s1", &format!("{at}a")),
+        Err(Invalid::TextTooLarge)
+    );
 }
 
 #[test]
@@ -294,6 +360,9 @@ fn the_deadline_is_the_table_of_the_wire() {
     assert_eq!(deadline("history"), ms(6_000));
     assert_eq!(deadline("abort"), ms(46_000));
     assert_eq!(deadline("stop"), ms(77_000));
+    // A model switch and a compaction take the default of the table.
+    assert_eq!(deadline("set_model"), ms(6_000));
+    assert_eq!(deadline("compact"), ms(6_000));
     // 10,000 ms, or 15,000 ms under a Hub: the client knows the larger.
     assert_eq!(deadline("sessions.saved"), ms(15_000));
     assert_eq!(deadline("subscribe"), ms(5_000));
@@ -304,7 +373,7 @@ fn the_deadline_is_the_table_of_the_wire() {
 
 #[test]
 fn a_request_is_in_flight_until_its_reply_matches_it() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     let (id, frames) = client
         .perform(Operation::prompt("s1", "hi").unwrap())
@@ -336,7 +405,7 @@ fn a_request_is_in_flight_until_its_reply_matches_it() {
     );
     assert_eq!(client.outstanding(), [(start.as_str(), "start", None)]);
     // A reply of no request in flight is a break.
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     let reply = json!({"type": "res", "id": "0", "ok": true, "result": {}}).to_string();
     assert!(client.receive(&reply).is_err());
@@ -344,8 +413,8 @@ fn a_request_is_in_flight_until_its_reply_matches_it() {
 
 #[test]
 fn a_request_waits_for_the_welcome_and_is_not_queued() {
-    let mut client = Client::new(None);
-    client.connect();
+    let mut client = Client::new();
+    client.connect(None);
     client.receive(CHALLENGE).unwrap();
     assert_eq!(
         client.perform(Operation::abort("s1")),
@@ -353,7 +422,7 @@ fn a_request_waits_for_the_welcome_and_is_not_queued() {
     );
     assert!(client.outstanding().is_empty());
     // After a close, nothing of the old connection waits for the next one.
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     let (id, _) = client.perform(Operation::abort("s1")).unwrap();
     assert_eq!(client.closed(None).unknown, [(id, "abort")]);
@@ -365,7 +434,7 @@ fn a_request_waits_for_the_welcome_and_is_not_queued() {
 
 #[test]
 fn a_lost_reply_is_unknown_and_never_sent_again() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     let (prompt, _) = client
         .perform(Operation::prompt("s1", "hi").unwrap())
@@ -375,13 +444,13 @@ fn a_lost_reply_is_unknown_and_never_sent_again() {
     assert_eq!(closed.next, Next::Reconnect);
     assert_eq!(closed.unknown, [(prompt, "prompt"), (abort, "abort")]);
     // The next connection states no intent of its own: neither goes again.
-    client.connect();
+    client.connect(None);
     client.receive(CHALLENGE).unwrap();
     assert_eq!(client.receive(WELCOME).unwrap(), [Output::Welcome]);
     assert!(client.outstanding().is_empty());
     // A `start` and a `resume` have no session, and a lost reply of one is
     // unknown too.
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     let (start, _) = client
         .perform(Operation::start("/r", None).unwrap())
@@ -397,7 +466,7 @@ fn a_lost_reply_is_unknown_and_never_sent_again() {
 
 #[test]
 fn a_reconciling_request_is_not_a_lost_reply() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     // The subscribe waits for the welcome, so the intent outlives it.
     client.subscribe("s1").unwrap();
     welcomed(&mut client);
@@ -409,7 +478,7 @@ fn a_reconciling_request_is_not_a_lost_reply() {
     assert_eq!(closed.next, Next::Reconnect);
     // The next connection states the intent again.
     let outputs = {
-        client.connect();
+        client.connect(None);
         client.receive(CHALLENGE).unwrap();
         client.receive(WELCOME).unwrap()
     };
@@ -422,7 +491,7 @@ fn a_reconciling_request_is_not_a_lost_reply() {
 
 #[test]
 fn a_break_ends_the_connection_and_its_requests() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     let (id, _) = client.perform(Operation::abort("s1")).unwrap();
     // A frame that is not a server frame after the welcome.

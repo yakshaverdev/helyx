@@ -124,7 +124,7 @@ None.
 
 ## Ownership
 
-No new resource. The entry is one more append to the session file, through the file handle that the session already holds, with its lock and release rules (`docs/features/session-lock.md`).
+No new resource. The entry is one more append to the session file, through the file handle that the session already holds, under the lock of the data folder and its edit exclusion (`docs/features/session-lock.md`).
 
 ## Out of scope
 

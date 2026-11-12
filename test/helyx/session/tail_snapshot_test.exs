@@ -145,7 +145,7 @@ defmodule Helyx.Session.TailSnapshotTest do
     })
     |> Helyx.Test.SessionFile.append_message(Message.user("later"))
 
-    {:ok, session} = Session.resume(core, sessions_dir: dir)
+    {:ok, session, _} = Session.resume(core, sessions_dir: dir)
     {:ok, tail, _} = Session.subscribe(session, tail: 1)
     assert [%{role: :user} = later] = tail.messages
     assert Message.text(later) == "later"

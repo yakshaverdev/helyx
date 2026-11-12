@@ -25,6 +25,48 @@ defmodule Helyx.Tool.EditTest do
     assert File.read!(Path.join(dir, "a.txt")) == "one\n2\n2b\nthree\n"
   end
 
+  test "the result keeps its text and carries a diff of the file lines", %{
+    tmp_dir: dir,
+    run: run
+  } do
+    File.write!(Path.join(dir, "b.txt"), Enum.map_join(1..12, "\n", &"l#{&1}") <> "\n")
+
+    result = run.(%{"path" => "b.txt", "old_text" => "l10\n", "new_text" => "TEN\n"})
+    refute result.is_error
+    assert Helyx.Message.text(result) == "Edited b.txt"
+
+    assert [%{"kind" => "diff"} = block] = result.ui_blocks
+    assert block["path"] == "b.txt"
+    assert block["added"] == 1
+    assert block["removed"] == 1
+
+    assert [hunk] = block["hunks"]
+    assert hunk["old_start"] == 10 - Helyx.Diff.context_lines()
+    changed = Enum.find_index(hunk["lines"], &String.starts_with?(&1, "-"))
+    assert hunk["old_start"] + changed == 10
+    assert Enum.at(hunk["lines"], changed + 1) == "+TEN"
+  end
+
+  test "a normalized match gives a diff of the line it matched", %{tmp_dir: dir, run: run} do
+    File.write!(Path.join(dir, "n.txt"), "a\nb\nc\nx \u2018q\u2019 y\nz\n")
+
+    result = run.(%{"path" => "n.txt", "old_text" => "x 'q' y", "new_text" => "w"})
+    refute result.is_error
+    assert Helyx.Message.text(result) == "Edited n.txt"
+
+    assert [block] = result.ui_blocks
+    assert [hunk] = block["hunks"]
+    changed = Enum.find_index(hunk["lines"], &String.starts_with?(&1, "-"))
+    assert hunk["old_start"] + changed == 4
+    assert Enum.at(hunk["lines"], changed) == "-x \u2018q\u2019 y"
+  end
+
+  test "an error result carries no block", %{run: run} do
+    result = run.(%{"path" => "nope", "old_text" => "a", "new_text" => "b"})
+    assert result.is_error
+    assert result.ui_blocks == []
+  end
+
   test "a file that is not valid UTF-8 is an error and the file is untouched", %{
     tmp_dir: dir,
     run: run

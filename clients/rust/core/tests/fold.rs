@@ -204,3 +204,117 @@ fn message_end_adds_a_user_or_assistant_message_and_not_a_tool_result() {
     assert_eq!(ids, ["u2", "a3"]);
     assert_eq!(state.partial, None);
 }
+
+/// The totals of a snapshot with no usage counted.
+fn no_totals() -> Value {
+    json!({"input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
+           "cost": null, "unknown": false, "list": false})
+}
+
+/// A snapshot of `instance_id` with `usage` and `context`.
+fn snapshot_with(instance_id: &str, usage: Value, context: Value) -> Subscribed {
+    let mut value = snapshot_json(instance_id, Value::Null);
+    value["usage"] = usage;
+    value["context"] = context;
+    Subscribed::Snapshot(Box::new(Snapshot::parse(&j(&value)).unwrap()))
+}
+
+/// The data of a `message_end` of an assistant message that used `input`
+/// prompt tokens.
+fn assistant_end(id: &str, input: u64) -> Value {
+    json!({"message": {"id": id, "role": "assistant", "content": [],
+                       "usage": {"input": input, "output": 0,
+                                 "cache_read": 0, "cache_write": 0}}})
+}
+
+#[test]
+fn a_snapshot_and_two_assistant_messages_sum_the_totals() {
+    let totals = json!({"input": 100, "output": 10, "cache_read": 50, "cache_write": 5,
+                        "cost": 0.5, "unknown": false, "list": false});
+    let context = json!({"tokens": 1_000, "window": 10_000, "model": "fake/echo", "bytes": 0});
+    let usage = |input: u64| {
+        json!({"message": {"id": format!("a{input}"), "role": "assistant", "content": [],
+                           "usage": {"input": input, "output": 1,
+                                     "cache_read": 0, "cache_write": 0, "cost": 0.25}}})
+    };
+    let mut state = State::default();
+    state
+        .subscribed(snapshot_with("i1", totals, context))
+        .unwrap();
+    state
+        .apply(event("i1", 5, "message_end", usage(10)))
+        .unwrap();
+    state
+        .apply(event("i1", 6, "message_end", usage(20)))
+        .unwrap();
+    assert_eq!(state.usage.input, 130);
+    assert_eq!(state.usage.output, 12);
+    assert_eq!(state.usage.cache_read, 50);
+    assert_eq!(state.usage.cache_write, 5);
+    assert_eq!(state.usage.cost, Some(1.0));
+    assert!(!state.usage.unknown);
+}
+
+#[test]
+fn a_compaction_resets_the_context_tokens_and_bytes() {
+    let context = json!({"tokens": 1_000, "window": 10_000, "model": "fake/echo", "bytes": 400});
+    let mut state = State::default();
+    state
+        .subscribed(snapshot_with("i1", no_totals(), context))
+        .unwrap();
+    let data = json!({"trigger": "manual", "tokens_before": 1_000, "tokens_after": 200});
+    state.apply(event("i1", 5, "compaction", data)).unwrap();
+    let context = state.context.as_ref().unwrap();
+    assert_eq!(context.tokens, Some(200));
+    assert_eq!(context.bytes, 0);
+    assert_eq!(context.window, Some(10_000));
+    assert_eq!(context.model.as_deref(), Some("fake/echo"));
+}
+
+#[test]
+fn a_compaction_with_no_tokens_leaves_no_percent() {
+    let context = json!({"tokens": 1_000, "window": 10_000, "model": "fake/echo", "bytes": 0});
+    let mut state = State::default();
+    state
+        .subscribed(snapshot_with("i1", no_totals(), context))
+        .unwrap();
+    let data = json!({"trigger": "auto", "tokens_before": 1_000, "tokens_after": null});
+    state.apply(event("i1", 5, "compaction", data)).unwrap();
+    assert_eq!(state.context.as_ref().unwrap().tokens, None);
+}
+
+#[test]
+fn a_user_message_adds_bytes_to_the_context_and_no_tokens() {
+    let context = json!({"tokens": 500, "window": 10_000, "model": "fake/echo", "bytes": 0});
+    let mut state = State::default();
+    state
+        .subscribed(snapshot_with("i1", no_totals(), context))
+        .unwrap();
+    let message = json!({"message": {"id": "u1", "role": "user",
+                                     "content": [{"type": "text", "text": "hello"}]}});
+    state.apply(event("i1", 5, "message_end", message)).unwrap();
+    let context = state.context.as_ref().unwrap();
+    assert_eq!(context.tokens, Some(500));
+    assert_eq!(context.bytes, 5);
+    assert_eq!(state.usage.input, 0);
+    assert_eq!(state.usage.output, 0);
+}
+
+#[test]
+fn a_replay_after_a_reconnect_keeps_the_totals() {
+    let totals = json!({"input": 10, "output": 0, "cache_read": 0, "cache_write": 0,
+                        "cost": null, "unknown": false, "list": false});
+    let mut state = State::default();
+    state
+        .subscribed(snapshot_with("i1", totals, Value::Null))
+        .unwrap();
+    state
+        .apply(event("i1", 5, "message_end", assistant_end("a1", 5)))
+        .unwrap();
+    assert_eq!(state.usage.input, 15);
+    let replay = vec![event("i1", 6, "message_end", assistant_end("a2", 7))];
+    state.subscribed(Subscribed::Replay(replay)).unwrap();
+    assert_eq!(state.usage.input, 22);
+    // The reconnect sends the seq of the last event that it applied.
+    assert!(state.subscribe_params("s1").encode().contains(r#""seq":6"#));
+}

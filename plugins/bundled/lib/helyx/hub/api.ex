@@ -15,11 +15,34 @@ defmodule Helyx.Hub.Api do
 
   def start_session(arg, user_id, opts) do
     auth = %{user: user_id, token: nil}
-    params = %{"cwd" => opts[:cwd], "model" => opts[:model]}
+
+    # `thread_of` is the link of a thread, a coordinator concept that the
+    # wire does not carry: the `result` writes it into the row (hub.md,
+    # decision 8).
+    params = %{
+      "cwd" => opts[:cwd],
+      "model" => opts[:model],
+      "thread_of" => opts[:thread_of]
+    }
 
     with :ok <- cwd(opts[:cwd]),
          :ok <- answer(safe(fn -> Access.check(arg, auth, "start", params) end)),
          do: core_start(arg, auth, params, opts)
+  end
+
+  # The resume of a session as the wire `resume` does, for a user with no
+  # token: the place of the live sessions, the Core resume, and the starter
+  # (docs/features/idle-unload.md). The load is the one of the wire
+  # authority, `Helyx.Hub.Access.resume/3`; this edge maps its error to the
+  # atoms of the Elixir API.
+  def resume(arg, user_id, session_id) do
+    auth = %{user: user_id, token: nil}
+
+    case safe(fn -> Access.resume(arg, auth, session_id) end) do
+      {:ok, session} -> {:ok, session}
+      {:close, 4403} -> {:error, :unknown_user}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp core_start(arg, auth, params, opts) do

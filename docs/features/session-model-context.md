@@ -20,6 +20,7 @@ Decisions (ticket #854, orchestrator run, owner away):
 - `Helyx.Session.start/2` and `Helyx.Sessions.start/2`: the option `:model_context`, `module() | nil`. Error: `{:error, :invalid_model_context}`.
 - `Helyx.Tool.context/0`: the new key `model_context: module() | nil`.
 - `Helyx.Tool.Agent`: the child starts with `model_context: context.model_context`.
+- `Helyx.ModelContext`: the optional callback `user_text/2`, which replaces the text of a user message of the user origin before the session checks it (`docs/features/skills.md`, decision of 2026-11-11). The call runs in the caller of `Helyx.Session.prompt/3`, `steer/3`, and `follow_up/3`, with `:core`, `:session_id`, and `:cwd`.
 
 ## Replaced mechanism
 

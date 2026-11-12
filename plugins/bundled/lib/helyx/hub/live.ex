@@ -3,12 +3,18 @@ defmodule Helyx.Hub.Live do
   # The live set and the reserved places of a Hub (`docs/features/hub.md`,
   # decision 14), in the state of the Hub process.
   #
-  # `live`: monitor ref => session id. `reserved`: caller pid => place, with
-  # a monitor of the caller and a timer; a place ends at `result`, at
-  # `release`, at the `:DOWN` of its caller, or @place_ms after its `check`.
-  # `starters`: session id => the user whose start or resume through Hub made
-  # or attached to the entry, for whom the coordinator tools act
-  # (`docs/features/coordinator.md`, decision 3); a seeded entry has none.
+  # `live`: monitor ref => `{session id, pid, status}`, where `status` is the
+  # `"idle"` or `"running"` of the last `Live` or `Sync` that the feed sent for
+  # that process, or `"stopped"` for a session with no entry (`status/2`). It
+  # holds every session of the Core: the feed sends one at the open of the
+  # process, and the `Sync` answers of `Helyx.Sessions.sync/1` add the sessions
+  # that ran before Hub started. `reserved`: caller pid => place, with a
+  # monitor of the caller and a timer; a place ends at `result`, at `release`,
+  # at the `:DOWN` of its caller, or @place_ms after its `check`. `starters`:
+  # session id => the user whose start or resume through Hub made or attached
+  # to the entry, for whom the coordinator tools act
+  # (`docs/features/coordinator.md`, decision 3); an entry that a `Sync` added
+  # has none.
 
   alias Helyx.Hub.Rules
 
@@ -16,11 +22,6 @@ defmodule Helyx.Hub.Live do
   @place_ms 60_000
 
   def init(state), do: Map.merge(state, %{live: %{}, reserved: %{}, starters: %{}})
-
-  # The sessions of the Core when Hub starts, `{session id, pid}`, read by a
-  # process of `Helyx.Hub.Server` before the Hub takes any call.
-  def seed(state, sessions),
-    do: Enum.reduce(sessions, state, fn {id, pid}, s -> watch(s, id, pid) end)
 
   # A place for `caller` of `user`: a place among the live sessions of the
   # user, and for a start of a user who is not the default owner, a place
@@ -44,6 +45,12 @@ defmodule Helyx.Hub.Live do
     end
   end
 
+  # Whether a start of a user who is not the default owner is in flight: its
+  # reserved place names no session id, so a `Live` of a session with no row
+  # cannot be told from it (`docs/features/live-records.md`).
+  def start_in_flight?(%{reserved: reserved}),
+    do: Enum.any?(reserved, fn {_caller, place} -> place.record? end)
+
   defp record_room(_state, _user, _places, false), do: :ok
 
   defp record_room(%{store: mod, db: db}, user, places, true) do
@@ -54,10 +61,10 @@ defmodule Helyx.Hub.Live do
     end
   end
 
-  # The entries of the live set whose record, stored or derived, names the
-  # user as owner: one query for the ids of the set, at most 64.
+  # The entries of the live set whose record names the user as owner: one
+  # query for the ids of the set, at most 64.
   defp live_of(%{live: live, store: mod, db: db} = state, user) do
-    ids = Map.values(live)
+    ids = for {_ref, {id, _pid, _status}} <- live, do: id
 
     with {:ok, rows} <- mod.records(db, ids) do
       {:ok,
@@ -68,13 +75,22 @@ defmodule Helyx.Hub.Live do
   end
 
   # The `result` of a start or a resume: the place of the caller ends and
-  # the session enters the live set.
+  # the session enters the live set. A `Live` of the session may have come
+  # first, so its status stays.
   def started(state, caller, session_id, pid, user) when is_pid(pid) do
-    state = state |> release(caller) |> watch(session_id, pid)
+    status = status_of(state, pid) || "idle"
+    state = state |> release(caller) |> watch(session_id, pid, status)
     %{state | starters: Map.put(state.starters, session_id, user)}
   end
 
   def started(state, caller, _session_id, nil, _user), do: release(state, caller)
+
+  # The status of the live entry of a process, or nil.
+  defp status_of(%{live: live}, pid) do
+    Enum.find_value(live, fn {_ref, {_id, entry, status}} ->
+      if entry == pid, do: status
+    end)
+  end
 
   # The user of the start or resume through Hub of the running entry of a
   # session, or nil.
@@ -92,13 +108,49 @@ defmodule Helyx.Hub.Live do
     end
   end
 
-  def running?(%{live: live}, session_id), do: session_id in Map.values(live)
+  def running?(%{live: live}, session_id),
+    do: Enum.any?(live, fn {_ref, {id, _pid, _status}} -> id == session_id end)
+
+  # Every live session id, at most the 64 of the Core cap.
+  def ids(%{live: live}), do: Enum.map(live, fn {_ref, {id, _pid, _status}} -> id end)
+
+  # The session id of an entry of the live set, or nil.
+  def watched(%{live: live}, ref) do
+    case Map.fetch(live, ref) do
+      {:ok, {id, _pid, _status}} -> id
+      :error -> nil
+    end
+  end
+
+  # The derived status of a session's record: `"waiting"` while it has an
+  # open ask, else the status of its live entry, else `"stopped"`. Never
+  # stored (hub.md, decision 8; live-records.md).
+  def status(state, session_id) do
+    if waiting?(state, session_id), do: "waiting", else: live_status(state, session_id)
+  end
+
+  defp live_status(%{live: live}, session_id) do
+    Enum.find_value(live, "stopped", &entry_status(&1, session_id))
+  end
+
+  defp entry_status({_ref, {id, _pid, status}}, id), do: status
+  defp entry_status(_entry, _id), do: nil
+
+  defp waiting?(state, session_id) do
+    case Map.get(state, :asks, %{}) do
+      %{^session_id => set} -> MapSet.size(set) > 0
+      _none -> false
+    end
+  end
 
   # A `:DOWN` of a session of the live set or of the caller of a place.
   def down(state, ref, pid) do
     case Map.pop(state.live, ref) do
-      {nil, _live} -> expired(state, pid, ref)
-      {id, live} -> %{state | live: live, starters: Map.delete(state.starters, id)}
+      {nil, _live} ->
+        expired(state, pid, ref)
+
+      {{id, _pid, _status}, live} ->
+        %{state | live: live, starters: Map.delete(state.starters, id)}
     end
   end
 
@@ -111,16 +163,53 @@ defmodule Helyx.Hub.Live do
     end
   end
 
-  # One entry for each session: a new process of the session replaces the
-  # entry of an old one whose `:DOWN` has not come yet.
-  # A new entry has no starter until `started/5` gives one.
-  defp watch(state, session_id, pid) do
-    {old, live} = Map.split_with(state.live, fn {_ref, id} -> id == session_id end)
+  # A notice of a session from a process that is not the session's current
+  # process in the sessions Registry is stale: a new process of the session
+  # sends the newer state, and its notices replace the old entry. The Hub
+  # never lets a stale notice replace or delete the entry and starter of the
+  # current process (`live-records.md`).
+  def stale?(%{core: core}, session_id, pid) do
+    case Helyx.Session.pid(%Helyx.Session{id: session_id, core: core}) do
+      nil -> false
+      current -> current != pid
+    end
+  end
+
+  # The live set holds the session under a process that is not `pid`.
+  def replaces?(%{live: live}, session_id, pid),
+    do: Enum.any?(live, fn {_ref, {id, entry, _status}} -> id == session_id and entry != pid end)
+
+  # One entry for each session: a new process of a session replaces the entry
+  # of an old one whose `:DOWN` has not come yet, and drops its starter. An
+  # entry that already holds this pid takes the new status, so a status
+  # change of the feed moves the record, and keeps the starter that
+  # `started/5` gives it, also when the Live of its start came first.
+  def watch(state, session_id, pid, status) do
+    case live_ref(state.live, pid) do
+      nil ->
+        replace(state, session_id, pid, status)
+
+      ref ->
+        {id, ^pid, _old_status} = Map.fetch!(state.live, ref)
+        %{state | live: Map.put(state.live, ref, {id, pid, status})}
+    end
+  end
+
+  defp live_ref(live, pid) do
+    Enum.find_value(live, fn {ref, {_id, entry, _status}} ->
+      if entry == pid, do: ref
+    end)
+  end
+
+  defp replace(state, session_id, pid, status) do
+    {old, live} =
+      Map.split_with(state.live, fn {_ref, {id, _pid, _status}} -> id == session_id end)
+
     Enum.each(Map.keys(old), &Process.demonitor(&1, [:flush]))
 
     %{
       state
-      | live: Map.put(live, Process.monitor(pid), session_id),
+      | live: Map.put(live, Process.monitor(pid), {session_id, pid, status}),
         starters: Map.delete(state.starters, session_id)
     }
   end

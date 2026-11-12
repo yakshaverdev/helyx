@@ -8,30 +8,37 @@
 //! the turn. A `form` or an `approval` of an ask is answered here
 //! (`ask::Panel`), by its keys or its buttons.
 
+mod diff;
+
 use gpui::{
     AnyElement, App, Application, Bounds, ClipboardItem, Context, FocusHandle, FontWeight,
     KeyDownEvent, ListAlignment, ListState, SharedString, Window, WindowBounds, WindowOptions, div,
     list, prelude::*, px, rgb, size,
 };
+use helyx_client_core::attention::{Seen, attention};
 use helyx_client_core::fold::State;
-use helyx_client_core::frame::SavedSession;
+use helyx_client_core::frame::{LiveSession, SavedSession};
 use helyx_client_core::json::Json;
 use helyx_client_core::message::{Ask, Block, Message, Role};
 use helyx_client_core::operation::Operation;
+use helyx_client_core::records::{Record, Status};
 use helyx_client_core::transcript::{Row, open_calls, rows};
 use helyx_client_core::ui_block::MAX_BYTES;
 use helyx_client_core::vocabulary::{
     Approval, Form, MAX_ARGUMENTS_BYTES, MAX_NAME_BYTES, MAX_TITLE_BYTES, UiBlock, View, head,
 };
 use helyx_desktop::ask::{FormState, Kind, Outcome, Panel};
-use helyx_desktop::composer::SendId;
+use helyx_desktop::composer::{SendId, SendOutcome};
+use helyx_desktop::controls::confirm_stop;
 use helyx_desktop::input::{Focus, Input, Intent, Press};
 use helyx_desktop::net::{self, Command, RequestLine, RequestState, Shared};
+use helyx_desktop::notify;
+use helyx_desktop::records::{saved_only, texts};
 use helyx_desktop::settings::Server;
 use std::collections::HashMap;
 use std::sync::mpsc::{Sender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How often the window takes the changes of the network thread.
 const REDRAW: Duration = Duration::from_millis(50);
@@ -39,6 +46,8 @@ const DIM: u32 = 0x9a9a9a;
 const OK: u32 = 0x8fce8f;
 const FAILED: u32 = 0xd06060;
 const UNKNOWN: u32 = 0xc0a060;
+/// The mark of a row that waits for the user.
+const WAITING: u32 = 0xffc857;
 /// The lines of the composer that the window shows, as the TUI.
 const COMPOSER_LINES: usize = 8;
 /// The request lines that the window shows; the rest are counted.
@@ -63,19 +72,43 @@ struct Desktop {
     commands: Sender<Command>,
     transcript: ListState,
     input: Input,
+    /// The live row whose **stop** was clicked once, and when: a second click
+    /// on the same row inside `STOP_CONFIRM` sends the stop. A click
+    /// elsewhere clears it.
+    armed: Option<(String, Instant)>,
+    /// The number of the `stop` of a row whose outcome asks for a fresh live
+    /// list on a server with no Hub: a stopped session leaves the live list,
+    /// and that server sends no live list of its own. With a records feed the
+    /// change comes as a record frame, and no list is asked again.
+    stop_send: Option<SendId>,
+    /// Whether a stop was answered `ok` and the live list of a server with no
+    /// Hub is due again.
+    live_due: bool,
+    /// The facts of the state of the followed session that the last frame
+    /// saw, from which a change posts a notification while the window is not
+    /// active. The state itself holds the transcript, so it is not kept.
+    seen: Option<Seen>,
     /// The window holds the keys, so the root takes every press.
     focus: FocusHandle,
 }
 
-/// Opens the window and runs the network thread for `server`.
-pub fn run(server: Server) {
-    let shared = Arc::new(Mutex::new(Shared::new(server.token.clone())));
+/// Opens the window and runs the network thread for `folder`. The first
+/// connection uses `server`, which the start read; each later one reads the
+/// folder again, so a restarted server is found (`settings::source`).
+pub fn run(folder: std::path::PathBuf, server: Server) {
+    let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, receive) = channel();
     // One slot: a change that finds it full is in the next redraw anyway.
     let (changed, changes) = sync_channel::<()>(1);
     let thread_shared = shared.clone();
     std::thread::spawn(move || {
-        net::run(&server, &thread_shared, &receive, &|| {
+        let first = Mutex::new(Some(server));
+        let again = helyx_desktop::settings::source(&folder);
+        let source = move || match first.lock().unwrap().take() {
+            Some(server) => Ok(server),
+            None => again(),
+        };
+        net::run(&source, &thread_shared, &receive, &|| {
             let _ = changed.try_send(());
         })
     });
@@ -106,6 +139,10 @@ pub fn run(server: Server) {
                     commands,
                     transcript: ListState::new(0, ListAlignment::Bottom, px(500.)),
                     input: Input::new(),
+                    armed: None,
+                    stop_send: None,
+                    live_due: false,
+                    seen: None,
                     focus: focus.clone(),
                 }
             });
@@ -122,7 +159,20 @@ impl Desktop {
     fn changed(&mut self, cx: &mut Context<Self>) {
         self.settle();
         self.default_cwd();
+        self.refresh_live();
         cx.notify();
+    }
+
+    /// Asks the live sessions again after the server answered a `stop` with
+    /// `ok` on a server with no Hub: the stopped session already left the
+    /// live list, and no push carries the new one. With a records feed the
+    /// feed sends the change, and no path sets `live_due`.
+    fn refresh_live(&mut self) {
+        if !self.live_due {
+            return;
+        }
+        self.live_due = false;
+        self.send_command(Command::Live);
     }
 
     /// The state of the network thread. A panic of the thread while it held
@@ -161,18 +211,40 @@ impl Desktop {
             .as_deref()
             .and_then(|session| shared.client.state(session))
             .map_or(&[], |state| &state.asks);
+        // A stop whose reply asks for a fresh live list; a pending report
+        // waits, and a failed one stops the wait. A records feed sends the
+        // change itself, so only a server with no Hub asks again.
+        if let Some(send) = self.stop_send
+            // One read can hold the pending report and the reply: the last counts.
+            && let Some((_, outcome)) = outcomes.iter().rev().find(|(id, _)| *id == send)
+        {
+            match outcome {
+                SendOutcome::Pending => {}
+                SendOutcome::Ok => {
+                    self.stop_send = None;
+                    if !shared.records {
+                        self.live_due = true;
+                    }
+                }
+                SendOutcome::Failed(_) => self.stop_send = None,
+            }
+        }
         self.input.settle_outcomes(&outcomes);
         self.input.sync(asks, session.as_deref());
     }
 
     /// The folder of a new session, until the user gives one: the newest
-    /// saved session, else the first live one.
+    /// saved session, else the first live one, else the first record of the
+    /// feed.
     fn default_cwd(&mut self) {
         let cwd = {
             let shared = self.shared();
             (shared.saved.first())
                 .map(|session| session.cwd.clone())
                 .or_else(|| shared.live.first().map(|session| session.cwd.clone()))
+                .or_else(|| {
+                    (shared.client.records().rows().first()).map(|record| record.cwd.clone())
+                })
         };
         if let Some(cwd) = cwd {
             self.input.default_cwd(&cwd);
@@ -230,6 +302,22 @@ impl Desktop {
     /// Sends an operation that no send of the composer numbers.
     fn send(&mut self, operation: Operation) {
         self.send_operation(None, operation);
+    }
+
+    /// The `set_model` of the ref in the field, from a click: the same path as
+    /// Enter in the field.
+    fn model(&mut self, session: Option<&str>) {
+        if let Intent::Send { send, operation } = self.input.set_model(session) {
+            self.send_operation(send, operation);
+        }
+    }
+
+    /// The `compact` of the composer text, from a click: a numbered send, so
+    /// `ok` empties the composer as a send does.
+    fn compact(&mut self, session: Option<&str>) {
+        if let Intent::Send { send, operation } = self.input.compact(session) {
+            self.send_operation(send, operation);
+        }
     }
 
     /// Hands a command with no send number to the network thread, and tells
@@ -338,10 +426,23 @@ fn text(message: &Message) -> String {
 }
 
 impl Render for Desktop {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.settle();
         self.default_cwd();
-        let (live, followed, line, running, saved, saved_next, requests) = {
+        let (
+            records_feed,
+            record_rows,
+            records_more,
+            live,
+            followed,
+            line,
+            running,
+            saved,
+            saved_next,
+            requests,
+            seen,
+            posted,
+        ) = {
             let shared = self.shared();
             let state = shared
                 .followed
@@ -353,7 +454,19 @@ impl Render for Desktop {
                 .as_deref()
                 .and_then(|session| net::follow_line(session, &shared.client.follow(session)?))
                 .unwrap_or_else(|| shared.line.clone());
+            // The facts of the state and the attention of its change are read
+            // under the lock; the notification goes after it.
+            let seen = state.map(Seen::of);
+            let posted = match (self.seen.as_ref(), state) {
+                (Some(before), Some(after)) if !window.is_window_active() => {
+                    attention(before, after)
+                }
+                _ => None,
+            };
             (
+                shared.records,
+                shared.client.records().rows().to_vec(),
+                shared.client.records().more(),
                 shared.live.clone(),
                 shared.followed.clone(),
                 line,
@@ -361,8 +474,14 @@ impl Render for Desktop {
                 shared.saved.clone(),
                 shared.saved_next.clone(),
                 shared.requests.clone(),
+                seen,
+                posted,
             )
         };
+        self.seen = seen;
+        if let Some(posted) = posted {
+            notify::post(&posted);
+        }
         // The count of the list and the rows that it draws are one snapshot.
         let shown = self.items();
         if shown.len() != self.transcript.item_count() {
@@ -370,6 +489,7 @@ impl Render for Desktop {
         }
         let asked = self.input.ask.clone();
         div()
+            .id("window")
             .flex()
             .size_full()
             .bg(rgb(0x1e1e24))
@@ -378,11 +498,23 @@ impl Render for Desktop {
             .on_key_down(
                 cx.listener(|this, event: &KeyDownEvent, window, cx| this.key(event, window, cx)),
             )
+            // Any click that the stop control does not take clears its armed
+            // state.
+            .on_click(cx.listener(|this, _, _, cx| {
+                if this.armed.take().is_some() {
+                    cx.notify();
+                }
+            }))
             .child(self.sidebar(
-                &live,
-                &saved,
-                saved_next.as_deref(),
-                followed.as_deref(),
+                Sidebar {
+                    feed: records_feed,
+                    records: &record_rows,
+                    more: records_more,
+                    live: &live,
+                    saved: &saved,
+                    saved_next: saved_next.as_deref(),
+                    followed: followed.as_deref(),
+                },
                 cx,
             ))
             .child(
@@ -409,48 +541,128 @@ impl Render for Desktop {
                     .child(self.status(&requests))
                     .child(match &asked {
                         Some(panel) => self.ask_panel(panel, cx),
-                        None => self.composer(running, cx).into_any_element(),
+                        None => {
+                            // The model ref and the two controls of the
+                            // followed session sit above its composer.
+                            let mut column = div().flex().flex_col();
+                            if followed.is_some() {
+                                column = column.child(self.controls(cx));
+                            }
+                            column.child(self.composer(running, cx)).into_any_element()
+                        }
                     }),
             )
     }
 }
 
+/// What a click on a row does.
+enum Click {
+    /// Follow the session of the row.
+    Follow(String),
+    /// Resume the stopped session of the row: its reply follows it.
+    Resume(String),
+}
+
+/// The state that the left column draws, as one snapshot.
+struct Sidebar<'a> {
+    /// Whether the connection has a records feed.
+    feed: bool,
+    records: &'a [Record],
+    more: bool,
+    live: &'a [LiveSession],
+    saved: &'a [SavedSession],
+    saved_next: Option<&'a str>,
+    followed: Option<&'a str>,
+}
+
 impl Desktop {
-    fn sidebar(
-        &self,
-        live: &[helyx_client_core::frame::LiveSession],
-        saved: &[SavedSession],
-        saved_next: Option<&str>,
-        followed: Option<&str>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let live_rows = (live.iter()).map(|session| {
-            let id = session.id.clone();
-            let chosen = followed == Some(id.as_str());
-            div()
-                .id(SharedString::from(format!("live-{id}")))
-                .p_2()
-                .when(chosen, |d| d.bg(rgb(0x3a3a4a)))
-                .child(format!("{} · {}", session.cwd, session.model))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.send_command(Command::Follow(id.clone()));
-                    cx.notify();
-                }))
-        });
-        let saved_rows = (saved.iter()).map(|session| {
-            let id = session.id.clone();
-            div()
-                .id(SharedString::from(format!("saved-{id}")))
-                .p_2()
-                .flex()
-                .flex_col()
-                .cursor_pointer()
-                .child(session.prompt.clone())
-                .child(dim(&session.cwd))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.send(Operation::resume(&id));
-                    cx.notify();
-                }))
+    fn sidebar(&self, state: Sidebar<'_>, cx: &mut Context<Self>) -> impl IntoElement {
+        let Sidebar {
+            feed,
+            records,
+            more,
+            live,
+            saved,
+            saved_next,
+            followed,
+        } = state;
+        // The core holds the order of the feed: the window draws it as it
+        // comes.
+        let rows: Vec<AnyElement> = if feed {
+            (records.iter())
+                .map(|record| {
+                    let id = record.session.clone();
+                    let chosen = followed == Some(id.as_str());
+                    let armed = self.armed.as_ref().is_some_and(|(row, _)| row == &id);
+                    let stop = (record.status != Status::Stopped)
+                        .then(|| self.stop_control(&id, armed, cx));
+                    let click = match record.status {
+                        Status::Stopped => Click::Resume(id.clone()),
+                        _ => Click::Follow(id.clone()),
+                    };
+                    let texts = texts(record, records);
+                    self.row_view(
+                        format!("record-{id}"),
+                        texts.title,
+                        Some(texts.detail),
+                        texts.parent,
+                        if texts.waiting { WAITING } else { 0xffffff },
+                        chosen,
+                        stop,
+                        click,
+                        cx,
+                    )
+                    .into_any_element()
+                })
+                .collect()
+        } else {
+            (live.iter())
+                .map(|session| {
+                    let id = session.id.clone();
+                    let chosen = followed == Some(id.as_str());
+                    let armed = self.armed.as_ref().is_some_and(|(row, _)| row == &id);
+                    let stop = Some(self.stop_control(&id, armed, cx));
+                    self.row_view(
+                        format!("live-{id}"),
+                        format!("{} · {}", session.cwd, session.model),
+                        None,
+                        None,
+                        0xdddddd,
+                        chosen,
+                        stop,
+                        Click::Follow(id),
+                        cx,
+                    )
+                    .into_any_element()
+                })
+                .collect()
+        };
+        // With a feed a session shows in one list only.
+        let shown: Vec<&SavedSession> = match feed {
+            true => saved_only(saved, records),
+            false => saved.iter().collect(),
+        };
+        let saved_rows: Vec<AnyElement> = (shown.into_iter())
+            .map(|session| {
+                let id = session.id.clone();
+                self.row_view(
+                    format!("saved-{id}"),
+                    session.prompt.clone(),
+                    Some(session.cwd.clone()),
+                    None,
+                    0xdddddd,
+                    false,
+                    None,
+                    Click::Resume(id),
+                    cx,
+                )
+                .into_any_element()
+            })
+            .collect();
+        let records_more = (feed && more).then(|| {
+            div().px_2().text_color(rgb(DIM)).child(
+                "the owner has more sessions than this list shows; the saved list below holds them",
+            )
         });
         let more = saved_next.map(|next| {
             let next = next.to_owned();
@@ -470,7 +682,7 @@ impl Desktop {
         let cwd = self.input.cwd.display();
         let cwd_color = match self.input.focus {
             Focus::Cwd => 0xffffff,
-            Focus::Composer => DIM,
+            _ => DIM,
         };
         div()
             .flex()
@@ -478,16 +690,19 @@ impl Desktop {
             .w(px(280.))
             .border_r_1()
             .border_color(rgb(0x3a3a3a))
-            .child(dim_row("live"))
-            .children(live_rows)
-            .child(dim_row("saved"))
+            // One scroll area for both lists: the rows of the feed have no
+            // small bound, and the field of a new session stays in view.
             .child(
                 div()
-                    .id("saved-list")
+                    .id("session-lists")
                     .flex()
                     .flex_col()
                     .flex_1()
                     .overflow_y_scroll()
+                    .child(dim_row(if feed { "sessions" } else { "live" }))
+                    .children(rows)
+                    .when_some(records_more, |d, line| d.child(line))
+                    .child(dim_row("saved"))
                     .children(saved_rows)
                     .when_some(more, |d, more| d.child(more)),
             )
@@ -551,7 +766,158 @@ impl Desktop {
             )
     }
 
+    /// One row of the left column: the lines of `title`, `detail`, and
+    /// `parent`, the highlight of the followed row, and the control of the
+    /// stop when the row has one. A click does `click`.
+    #[allow(clippy::too_many_arguments)]
+    fn row_view(
+        &self,
+        key: String,
+        title: String,
+        detail: Option<String>,
+        parent: Option<String>,
+        color: u32,
+        chosen: bool,
+        stop: Option<AnyElement>,
+        click: Click,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let mut lines = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .flex_1()
+            .child(div().text_color(rgb(color)).child(title));
+        // The parent of a child is the second line, dim; the folder, the
+        // model, and the status follow.
+        if let Some(parent) = parent {
+            lines = lines.child(dim(&parent));
+        }
+        if let Some(detail) = detail {
+            lines = lines.child(dim(&detail));
+        }
+        let mut row = div()
+            .id(SharedString::from(key))
+            .p_2()
+            .flex()
+            .gap_2()
+            .items_center()
+            .cursor_pointer()
+            .when(chosen, |d| d.bg(rgb(0x3a3a4a)))
+            .child(lines);
+        if let Some(stop) = stop {
+            row = row.child(stop);
+        }
+        row.on_click(cx.listener(move |this, _, _, cx| {
+            match &click {
+                Click::Follow(id) => this.send_command(Command::Follow(id.clone())),
+                Click::Resume(id) => this.send(Operation::resume(id)),
+            }
+            cx.notify();
+        }))
+    }
+
+    /// The **stop** control of a row: one click arms it as **stop?**, and a
+    /// second click inside `controls::STOP_CONFIRM` sends the stop.
+    fn stop_control(&self, session: &str, armed: bool, cx: &mut Context<Self>) -> AnyElement {
+        let stop_row = session.to_owned();
+        div()
+            .id(SharedString::from(format!("stop-{stop_row}")))
+            .px_1()
+            .rounded_md()
+            .bg(rgb(0x5a3030))
+            .cursor_pointer()
+            .child(if armed { "stop?" } else { "stop" })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                // The stop control takes the click, so the row below does not
+                // follow it and the root does not clear it.
+                cx.stop_propagation();
+                let now = Instant::now();
+                match confirm_stop(this.armed.as_ref(), &stop_row, now) {
+                    true => {
+                        this.armed = None;
+                        let send = this.input.send_number();
+                        this.stop_send = Some(send);
+                        this.send_operation(Some(send), Operation::stop(&stop_row));
+                    }
+                    false => this.armed = Some((stop_row.clone(), now)),
+                }
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
     fn status(&self, requests: &[RequestLine]) -> gpui::Div {
+        use helyx_client_core::usage::{Level, context_percent, cost_text, level, tokens_text};
+
+        // The usage of the followed session, as its fold holds it.
+        let (usage, context, model) = {
+            let shared = self.shared();
+            match shared
+                .followed
+                .as_deref()
+                .and_then(|session| shared.client.state(session))
+            {
+                Some(state) => (
+                    state.usage.clone(),
+                    state.context.clone(),
+                    state.model.clone(),
+                ),
+                None => (Default::default(), None, String::new()),
+            }
+        };
+        let prompt = usage
+            .input
+            .saturating_add(usage.cache_read)
+            .saturating_add(usage.cache_write);
+        let mut parts: Vec<(String, u32)> = Vec::new();
+        if prompt.saturating_add(usage.output) > 0 {
+            parts.push((
+                format!(
+                    "in {} out {}",
+                    tokens_text(prompt),
+                    tokens_text(usage.output)
+                ),
+                DIM,
+            ));
+        }
+        if prompt > 0 {
+            let percent = u128::from(usage.cache_read) * 100 / u128::from(prompt);
+            parts.push((format!("cache {percent}%"), DIM));
+        }
+        if let Some(cost) = cost_text(&usage) {
+            parts.push((cost, DIM));
+        }
+        if let Some(context) = context.as_ref()
+            && let Some(percent) = context_percent(context, &model)
+        {
+            // The display caps the percent; the level follows the exact one.
+            let text = if percent > 999 {
+                ">999%".to_owned()
+            } else {
+                format!("{percent}%")
+            };
+            let color = match level(percent) {
+                Level::Normal => DIM,
+                Level::Warn => 0xffb000,
+                Level::Bad => FAILED,
+            };
+            parts.push((text, color));
+        }
+        let followed = (!parts.is_empty()).then(|| {
+            div()
+                .flex()
+                .gap_1()
+                .px_2()
+                .text_size(px(11.))
+                .text_color(rgb(DIM))
+                .children(
+                    parts
+                        .into_iter()
+                        .map(|(text, color)| div().text_color(rgb(color)).child(text)),
+                )
+        });
+
         let shown = &requests[requests.len().saturating_sub(SHOWN_REQUESTS)..];
         let older = requests.len() - shown.len();
         div()
@@ -571,6 +937,7 @@ impl Desktop {
                     .text_size(px(11.))
                     .child(line.text())
             }))
+            .when_some(followed, |d, row| d.child(row))
             .when_some(self.input.notice.as_ref(), |d, notice| {
                 d.child(
                     div()
@@ -642,6 +1009,68 @@ impl Desktop {
             } else {
                 "Enter sends · Shift+Enter a new line · Cmd+V pastes"
             }))
+    }
+
+    /// The controls of the followed session above its composer: the model ref
+    /// of its next turn, a switch to it, and a compaction with the composer
+    /// text.
+    fn controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let model_color = match self.input.focus {
+            Focus::Model => 0xffffff,
+            _ => DIM,
+        };
+        div()
+            .flex()
+            .gap_2()
+            .items_center()
+            .px_2()
+            .py_1()
+            .border_t_1()
+            .border_color(rgb(0x3a3a3a))
+            .child(
+                div()
+                    .id("model-ref")
+                    .flex_1()
+                    .p_1()
+                    .bg(rgb(0x26262e))
+                    .text_color(rgb(model_color))
+                    .font_family("Menlo")
+                    .child(self.input.model.display())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.input.focus = Focus::Model;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .id("model")
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(rgb(0x2f4a2f))
+                    .cursor_pointer()
+                    .child("model")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let session = this.followed().0;
+                        this.model(session.as_deref());
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .id("compact")
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(rgb(0x2f4a2f))
+                    .cursor_pointer()
+                    .child("compact")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let session = this.followed().0;
+                        this.compact(session.as_deref());
+                        cx.notify();
+                    })),
+            )
     }
 
     /// The ask that takes the keys, in the place of the composer: a form with
@@ -807,11 +1236,11 @@ impl Desktop {
     }
 }
 
-/// A UI block: a `form` and an `approval` natively, any other kind, and a
-/// known kind whose fields the app cannot read, as its fallback text; a mark
-/// when it was cut. `note` is the line of an ask: whether this window answers
-/// it now, later, or not at all, since an ask that it cannot read stays open
-/// for another client (ADR 0011 §4).
+/// A UI block: a `form`, an `approval`, and a `diff` natively, any other
+/// kind, and a known kind whose fields the app cannot read, as its fallback
+/// text; a mark when it was cut. `note` is the line of an ask: whether this
+/// window answers it now, later, or not at all, since an ask that it cannot
+/// read stays open for another client (ADR 0011 §4).
 fn ui_block(block: &UiBlock, note: Option<&'static str>) -> AnyElement {
     // The text of an ask has no size check in the client: the bound of a
     // block holds when it is drawn.
@@ -819,6 +1248,7 @@ fn ui_block(block: &UiBlock, note: Option<&'static str>) -> AnyElement {
     let body = match &block.view {
         View::Form(form) => form_body(form),
         View::Approval(approval) => approval_body(&block.text, approval),
+        View::Diff(diff) => diff::body(diff, &block.text),
         View::Text => div().child(format!("▪ {text}")),
     };
     let cut = block.cut || (block.view == View::Text && more);

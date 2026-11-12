@@ -3,39 +3,20 @@
 //! a regular file of at most 4,096 bytes, a JSON object with `address` an IP
 //! address, `port` from 1 to 65535, and `token` a string. A data folder that
 //! its group or other users can write is refused: such a user could write a
-//! server file that sends the prompts of the user to another server.
+//! server file that sends the prompts of the user to another server. `source`
+//! gives the read to the network thread, which reads the file again before
+//! each connection (`docs/features/client-kit.md`, "The network layer").
 
 use helyx_client_core::json::{Json, decode};
 use std::io::Read;
-use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+
+/// The server of the network layer: the address, the port, and the token of
+/// its handshake.
+pub use helyx_client_net::Server;
 
 /// The bytes of the server file.
 pub const MAX_FILE_BYTES: u64 = 4_096;
-
-/// The server of a data folder. `Debug` leaves out the token.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Server {
-    pub address: IpAddr,
-    pub port: u16,
-    pub token: String,
-}
-
-impl std::fmt::Debug for Server {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Server({})", self.url())
-    }
-}
-
-impl Server {
-    /// The URL of the WebSocket, as `CodingAgent.Serve.url/2` writes it.
-    pub fn url(&self) -> String {
-        match self.address {
-            IpAddr::V4(ip) => format!("ws://{ip}:{}", self.port),
-            IpAddr::V6(ip) => format!("ws://[{ip}]:{}", self.port),
-        }
-    }
-}
 
 /// The default data folder of the server, `~/.helyx/sessions`.
 pub fn default_folder() -> Option<PathBuf> {
@@ -75,6 +56,15 @@ pub fn read(folder: &Path) -> Result<Server, String> {
         return Err(invalid());
     }
     parse(&text).ok_or_else(invalid)
+}
+
+/// A source of the server of `folder` for the network thread: it reads the
+/// file again at each call, so a server that restarted at another port and
+/// with another token is found again (`read`). The app gives it to
+/// `helyx_client_net::run`, which calls it before each connection.
+pub fn source(folder: &Path) -> impl Fn() -> Result<Server, String> + Send + Sync + 'static {
+    let folder = folder.to_path_buf();
+    move || read(&folder)
 }
 
 fn parse(text: &str) -> Option<Server> {

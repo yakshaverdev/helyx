@@ -5,15 +5,15 @@ defmodule Helyx.Session.ModelContextTest do
   use ExUnit.Case, async: true
 
   import Helyx.Test.Events, only: [collect_until: 1]
-  import Helyx.Test.SessionCase, only: [start_core: 1, final_text: 1]
+  import Helyx.Test.SessionCase, only: [start_core: 2, final_text: 1]
 
   alias Helyx.Session
 
   @moduletag :tmp_dir
 
-  setup do
+  setup %{tmp_dir: dir} do
     plugins = [Helyx.Test.Provider, Helyx.Test.ModelContext, Helyx.Test.PrepareContext]
-    %{core: start_core(plugins)}
+    %{core: start_core(plugins, sessions_dir: dir)}
   end
 
   defp start(core, dir, opts),
@@ -48,10 +48,12 @@ defmodule Helyx.Session.ModelContextTest do
     core =
       :"core_#{System.unique_integer([:positive])}"
 
+    d = Path.join(dir, "sessions")
+
     start_supervised!(
       {Helyx.Core,
        name: core,
-       sessions_dir: dir,
+       sessions_dir: d,
        model: "test/system",
        plugins: [Helyx.Test.Provider, Helyx.Test.ModelContext, Helyx.Test.PrepareContext]},
       id: core
@@ -85,16 +87,17 @@ defmodule Helyx.Session.ModelContextTest do
       assert start(core, dir, model_context: bad) == {:error, :invalid_model_context}
     end
 
-    assert File.ls!(dir) == []
+    assert File.ls!(dir) -- ["core.lock"] == []
     assert Helyx.Sessions.list_live(core) == []
   end
 
   test "a Core with no ModelContext takes only nil", %{tmp_dir: dir} do
-    core = start_core([Helyx.Test.Provider])
-    {:ok, session} = start(core, dir, model_context: nil)
+    d = Path.join(dir, "bare")
+    core = start_core([Helyx.Test.Provider], sessions_dir: d)
+    {:ok, session} = start(core, d, model_context: nil)
     assert system(session) == "no system"
 
-    assert start(core, dir, model_context: Helyx.Test.ModelContext) ==
+    assert start(core, d, model_context: Helyx.Test.ModelContext) ==
              {:error, :invalid_model_context}
   end
 
@@ -106,7 +109,7 @@ defmodule Helyx.Session.ModelContextTest do
     assert system(session) == "prepared"
     :ok = Helyx.Sessions.stop(session)
 
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir, id: session.id)
+    {:ok, resumed, _} = Session.resume(core, sessions_dir: dir, id: session.id)
     assert system(resumed) == "built for #{dir}"
   end
 end

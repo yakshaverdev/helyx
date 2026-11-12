@@ -74,13 +74,48 @@ defmodule Helyx.Transport.WebSocket.Authorize do
       {:ok, params} ->
         # The params of the authority are params of the op that the
         # transport checked; one that is not ends the worker: `failed`.
-        {:ok, call} = Ops.check(core, op, params)
-        result = within(conn, out, id, op, fn -> core_call(op, params, call, authority, auth) end)
-        reply(out, id, op, params, result, authority, auth)
+        {:ok, call} = Ops.check(core, op, params, loader(core, op, params, authority, auth))
+
+        # A text op loads a session that a stop unloaded before its deadline
+        # (docs/features/idle-unload.md).
+        case load(core, op, params, authority, auth) do
+          :ok -> loaded(conn, out, id, op, params, call, authority, auth)
+          error -> answer(out, id, op, error)
+        end
 
       other ->
         answer(out, id, op, other)
     end
+  end
+
+  # The authority loads the session through its own resume when it exports
+  # `load/4`, so the place of the user and the starter hold under a Hub; else
+  # the Core resume (`Ops.load/3`). The sender uses the same load when the
+  # session stops while the text is in flight (`Helyx.Send`).
+  defp load(core, op, params, {mod, arg}, auth) do
+    if function_exported?(mod, :load, 4),
+      do: call(fn -> mod.load(arg, auth, op, params) end),
+      else: Ops.load(core, op, params)
+  end
+
+  # The load as the sender of a text op calls it, with the session that the
+  # send addresses, in the shape of the wire. The one shape of both loaders:
+  # a function of one session (`Helyx.Send`).
+  defp loader(core, op, params, authority, auth) do
+    fn session ->
+      case load(core, op, params, authority, auth) do
+        :ok -> {:ok, session}
+        {:error, code, text} -> {:error, code, text}
+        {:error, code} -> Ops.error(op, code)
+        {:close, 4403} -> Outbound.error("failed")
+      end
+    end
+  end
+
+  # The Core call of an op whose load succeeded, within the deadline of the op.
+  defp loaded(conn, out, id, op, params, call, authority, auth) do
+    result = within(conn, out, id, op, fn -> core_call(op, params, call, authority, auth) end)
+    reply(out, id, op, params, result, authority, auth)
   end
 
   # The deadline of the op ends with its Core call: `result` has its own
