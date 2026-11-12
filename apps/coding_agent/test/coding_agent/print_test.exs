@@ -281,6 +281,23 @@ defmodule CodingAgent.PrintTest do
       assert_received {:halt, 0}
     end
 
+    test "a resume of a session whose folder is gone leaves no live session",
+         %{tmp_dir: dir, sessions: sessions} do
+      server = server(sessions)
+      work = Path.join(dir, "gone")
+      File.mkdir_p!(work)
+
+      assert {0, _, "helyx: session " <> line} =
+               io("", fn -> print_run(server, prompt: "one", cwd: work, model: "fake/echo") end)
+
+      id = String.trim_trailing(line, "\n")
+      File.rm_rf!(work)
+
+      assert {1, "", stderr} = io("", fn -> print_run(server, prompt: "two", resume: id) end)
+      assert stderr =~ "gone"
+      assert Helyx.Sessions.list_live(server.core) == []
+    end
+
     # A session that was live before the run belongs to the other client.
     test "a print run joins a session that another client has open, and leaves it live",
          %{tmp_dir: dir, sessions: sessions} do
