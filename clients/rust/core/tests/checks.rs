@@ -121,7 +121,13 @@ fn a_cost_of_signed_zero_is_zero() {
 
 #[test]
 fn refused_names_another_protocol() {
-    for (server_protocol, valid) in [(10, true), (11, true), (12, false), (13, true)] {
+    let protocol = helyx_client_core::handshake::PROTOCOL;
+    for (server_protocol, valid) in [
+        (protocol - 2, true),
+        (protocol - 1, true),
+        (protocol, false),
+        (protocol + 1, true),
+    ] {
         let mut handshake = Handshake::new(None);
         handshake.step(&j(&challenge(32))).unwrap();
         let refused =

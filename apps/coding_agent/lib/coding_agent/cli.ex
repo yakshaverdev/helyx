@@ -8,7 +8,7 @@ defmodule CodingAgent.CLI do
   helyx --session id [-p prompt]
   helyx --list [--all] [directory]
   helyx serve [--host ip] [--port n] [--public host:port] [--model provider/model]
-  helyx pair --runner name
+  helyx pair (--runner name | --client name)
   helyx --version | --help
   """
 
@@ -60,6 +60,9 @@ defmodule CodingAgent.CLI do
     runner:
       {:string, "--runner name",
        "with pair, the name of the runner, 1 to 64 bytes of a-z, 0-9, and _"},
+    client:
+      {:string, "--client name",
+       "with pair, the name of a client app, 1 to 64 bytes of a-z, 0-9, and _"},
     version: {:boolean, "--version", "print the version"},
     help: {:boolean, "--help", "print this help (-h)"}
   ]
@@ -98,7 +101,7 @@ defmodule CodingAgent.CLI do
 
   # A switch that needs another switch, or a command, which this path never
   # has (`serve` and `pair` run before the check).
-  @needs [all: :list, host: :serve, port: :serve, public: :serve, runner: :pair]
+  @needs [all: :list, host: :serve, port: :serve, public: :serve, runner: :pair, client: :pair]
 
   @doc """
   Runs the agent with the command line `argv` until the user quits, and

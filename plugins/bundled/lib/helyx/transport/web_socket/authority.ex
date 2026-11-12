@@ -71,6 +71,15 @@ defmodule Helyx.Transport.WebSocket.Authority do
   @callback release(arg(), auth(), op :: String.t(), params :: map()) :: :ok
 
   @doc """
+  The credential of a paired peer of the public listener, after the pairing
+  checked the key of its row. `kind` is `"client"` today; a client acts as
+  the default owner of the Hub. `:error` closes with `4401`; `{:error,
+  :busy}` closes with `4503`.
+  """
+  @callback paired(arg(), kind :: String.t(), name :: String.t(), connection :: pid()) ::
+              {:ok, auth()} | :error | {:error, :busy}
+
+  @doc """
   A request of the webhook path of the transport, `POST /hooks/<id>`
   (`docs/features/hub.md`, decision 17). The transport read the body within
   its bound and checked nothing else: `id` is the path segment, `headers`
@@ -84,5 +93,5 @@ defmodule Helyx.Transport.WebSocket.Authority do
             }) ::
               {:ok, status :: 200..599, body :: String.t()}
 
-  @optional_callbacks webhook: 3
+  @optional_callbacks webhook: 3, paired: 4
 end

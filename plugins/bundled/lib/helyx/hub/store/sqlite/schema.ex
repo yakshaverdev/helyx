@@ -3,8 +3,8 @@ defmodule Helyx.Hub.Store.SQLite.Schema do
   # The schema of the SQLite store, `user_version` 3 (`docs/features/hub.md`,
   # "Store schema"). A file of version 1 gets the tables and the column of
   # the event subscriptions (decision 17); a file of version 2 gets the
-  # peers table of the public listener (protocol 12); a file of another
-  # version is refused.
+  # peers table of the public listener (protocol 12, both kinds since
+  # protocol 13); a file of another version is refused.
 
   # The event subscriptions of decision 17, in a new file and in a file of
   # version 1.
@@ -24,8 +24,9 @@ defmodule Helyx.Hub.Store.SQLite.Schema do
   CREATE INDEX subscriptions_session ON subscriptions (session_id);
   """
 
-  # The peers of the public listener (protocol 12, `docs/features/
-  # remote-hands.md`, "Peers"), in a new file and in a file of version 2.
+  # The peers of the public listener (protocol 12, both kinds since
+  # protocol 13, `docs/features/remote-hands.md`, "Peers"), in a new file and
+  # in a file of version 2.
   @peers """
   CREATE TABLE peers (
     name TEXT NOT NULL,

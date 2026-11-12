@@ -303,7 +303,7 @@ defmodule Helyx.Hub.Server do
     end
   end
 
-  # The peers of the public listener (protocol 12): one read or write.
+  # The peers of the public listener (protocol 12; both kinds, protocol 13): one read or write.
   defp handle(:peers, _deadline, %{store: mod, db: db}), do: mod.peers(db)
 
   defp handle({:put_peer, peer, max}, deadline, %{store: mod, db: db}),

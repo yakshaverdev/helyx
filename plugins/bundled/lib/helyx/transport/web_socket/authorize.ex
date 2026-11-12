@@ -37,6 +37,29 @@ defmodule Helyx.Transport.WebSocket.Authorize do
   # so a field over 64 bytes is neither.
   defp field(_value), do: {:close, 4401}
 
+  # The credential of a paired peer, which the pairing of the public
+  # listener checked. The authority decides who it is. With no authority, or
+  # one that knows no paired peer, the peer is refused: a connection with no
+  # credential would act as the operator.
+  @doc false
+  @spec paired({module(), term()} | nil, String.t(), String.t()) ::
+          {:ok, term()} | {:close, 4401 | 4503}
+  def paired(nil, _kind, _name), do: {:close, 4401}
+
+  def paired({mod, arg}, kind, name) do
+    if Code.ensure_loaded?(mod) and function_exported?(mod, :paired, 4) do
+      case mod.paired(arg, kind, name, self()) do
+        {:ok, auth} -> {:ok, auth}
+        :error -> {:close, 4401}
+        {:error, :busy} -> {:close, 4503}
+      end
+    else
+      {:close, 4401}
+    end
+  catch
+    :exit, _reason -> {:close, 4503}
+  end
+
   # The proof of the server token: the base64 HMAC-SHA256 of the nonce with
   # the key, the SHA-256 of the token. A server with no token takes any
   # proof.

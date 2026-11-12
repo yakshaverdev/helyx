@@ -51,6 +51,13 @@ defmodule Helyx.Hub.Access do
     end
   end
 
+  # The credential of a paired client of the public listener: it acts as the
+  # default owner, the user that the server token gives (decision 3;
+  # `docs/features/remote-hands.md`, "The handshake of a paired peer").
+  @impl true
+  def paired(arg, _kind, _name, _connection),
+    do: {:ok, %{user: arg.default_owner, token: nil}}
+
   # The key of a token, or of the server token, which the closure of the
   # option gives and the caller checks: a closure that gives no text proves
   # nothing.

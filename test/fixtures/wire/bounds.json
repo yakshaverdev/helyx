@@ -1,5 +1,5 @@
 {
-  "protocol": 12,
+  "protocol": 13,
   "frame_bytes": 1048576,
   "part_bytes": 786000,
   "integer_chars": 1024,

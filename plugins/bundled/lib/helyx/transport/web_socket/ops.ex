@@ -293,9 +293,18 @@ defmodule Helyx.Transport.WebSocket.Ops do
 
   defp cast(_core, _type, _value), do: :bad_params
 
-  # The checked values as a keyword list for an option list.
+  # The checked values as a keyword list for an option list. The keys are the
+  # fixed set of the specs, so each names its atom directly: no atom is looked
+  # up at runtime.
   defp keyword(values),
-    do: Enum.map(values, fn {key, value} -> {String.to_existing_atom(key), value} end)
+    do: Enum.map(values, fn {key, value} -> {keyword_key(key), value} end)
+
+  defp keyword_key("cwd"), do: :cwd
+  defp keyword_key("model"), do: :model
+  defp keyword_key("after"), do: :after
+  defp keyword_key("limit"), do: :limit
+  defp keyword_key("tail"), do: :tail
+  defp keyword_key("answers"), do: :answers
 
   defp origin(%{"origin" => origin}) when origin != nil, do: [origin: origin]
   defp origin(_values), do: []
