@@ -1,20 +1,22 @@
-//! The stub server of the tests of the network thread, on the loopback.
+//! The stub server of the tests of this layer, on the loopback. The tests of
+//! the network crate and its bindings drive the same stub.
 
 // Each test binary uses a part of the helpers.
 #![allow(dead_code)]
 
+use crate::Server;
 use helyx_client_core::handshake::proof;
-use helyx_desktop::settings::Server;
 use std::net::{TcpListener, TcpStream};
 use std::thread::JoinHandle;
 use tungstenite::{Message, WebSocket, accept};
 
 const NONCE: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
-/// The reply of the server to `sessions.live`, the first request of a
-/// connection: one session, `s1`.
+/// The reply of the server to `sessions.live` on a server with no Hub: one
+/// session, `s1`. The tests give it the id of the request that they answer.
 pub const LIVE: &str = r#"{"type":"res","id":"0","ok":true,"result":{"sessions":[{"id":"s1","instance_id":"i1","cwd":"/r","model":"fake/echo","status":"idle"}]}}"#;
 
+/// The next text frame of the client: a ping or a pong is passed over.
 pub fn next_text(ws: &mut WebSocket<TcpStream>) -> String {
     loop {
         match ws.read().unwrap() {
@@ -24,6 +26,7 @@ pub fn next_text(ws: &mut WebSocket<TcpStream>) -> String {
     }
 }
 
+/// The `challenge` of the handshake, with the 32 bytes of `proof`.
 pub fn challenge(ws: &mut WebSocket<TcpStream>) {
     ws.send(Message::text(format!(
         r#"{{"type":"challenge","nonce":"{NONCE}"}}"#
@@ -65,4 +68,11 @@ pub fn one(serve: impl FnOnce(WebSocket<TcpStream>) + Send + 'static) -> (Server
         serve(ws);
     });
     (local(port), stub)
+}
+
+/// The source of a test that gives `server` at each turn of the network
+/// thread: the fixed server of a host with no data folder.
+pub fn fixed(server: &Server) -> impl Fn() -> Result<Server, String> + Send + Sync + 'static {
+    let server = server.clone();
+    move || Ok(server.clone())
 }

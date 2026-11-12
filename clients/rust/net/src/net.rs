@@ -1,6 +1,7 @@
-//! The network thread of the app: one WebSocket to the server at a time,
-//! driven by `helyx_client_core::client::Client`. The window reads `Shared`
-//! and sends `Command`s; the thread calls `notify` after each change.
+//! The network thread: one WebSocket to the server at a time, driven by
+//! `helyx_client_core::client::Client`. A host reads `Shared` and sends
+//! `Command`s; the thread calls `notify` after each change (`docs/features/
+//! client-kit.md`, "The network layer").
 //!
 //! Every wait of a connection after its TCP connect is a deadline of its
 //! socket, which a watchdog thread holds (`socket::Watchdog`). An operation
@@ -8,51 +9,86 @@
 //! its state: pending, ok, the error of the server, or unknown when the
 //! connection ended before its reply (ADR 0006 §4). A numbered send (of the
 //! composer, or the answer of an ask) also gets one outcome in `outcomes`:
-//! `Pending`, `Ok`, or `Failed` with a reason, so the window empties its
+//! `Pending`, `Ok`, or `Failed` with a reason, so the host empties its
 //! composer on `ok` and shows an ask again when its answer failed.
 
-use crate::composer::{SendId, SendOutcome};
-use crate::input::BUSY;
-use crate::settings::Server;
+use crate::send::{SendId, SendOutcome};
 use crate::socket::{Tap, WAITS, Waits, Watchdog};
-use helyx_client_core::client::{Client, Follow, Hold, Next, Output, Refusal, Wait};
+use helyx_client_core::client::{Client, Follow, Hold, Next, Output, Refusal, UNAUTHORIZED, Wait};
 use helyx_client_core::frame::{LiveSession, Reply, SavedSession};
 use helyx_client_core::json::object;
 use helyx_client_core::operation::{MAX_LIMIT, Operation, Saved};
 use helyx_client_core::parts::FRAME_BYTES;
 use helyx_client_core::vocabulary::head;
 use std::io::ErrorKind;
-use std::net::{SocketAddr, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::sync::Mutex;
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::time::Instant;
 use tungstenite::error::ProtocolError;
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Error, Message, WebSocket};
 
-/// The request lines that the window keeps: the pending ones stay, so a
+/// The server that a connection reaches: the address, the port, and the
+/// token of its handshake. `Debug` leaves out the token.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Server {
+    pub address: IpAddr,
+    pub port: u16,
+    pub token: String,
+}
+
+impl std::fmt::Debug for Server {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Server({})", self.url())
+    }
+}
+
+impl Server {
+    /// The URL of the WebSocket, as `CodingAgent.Serve.url/2` writes it.
+    pub fn url(&self) -> String {
+        match self.address {
+            IpAddr::V4(ip) => format!("ws://{ip}:{}", self.port),
+            IpAddr::V6(ip) => format!("ws://[{ip}]:{}", self.port),
+        }
+    }
+}
+
+/// A source of the server that the network thread connects to. The thread
+/// asks it before each connection, so a server that restarted at another
+/// port and with another token is found again; the host reads its data folder
+/// again, or gives its fixed server. An error is the line of a failed open,
+/// which the thread shows and retries (`docs/features/client-kit.md`, "The
+/// network layer").
+pub type Source = dyn Fn() -> Result<Server, String> + Send + Sync;
+
+/// The request lines that the host keeps: the pending ones stay, so a
 /// request in flight is never dropped from the list.
 pub const MAX_LINES: usize = 12;
-/// The bytes of a saved prompt that the window keeps for its list: the rest
+/// The line of a refusal that says that the 16 request places of the
+/// connection are taken.
+pub const BUSY: &str = "16 requests are in flight";
+/// The bytes of a saved prompt that the host keeps for its list: the rest
 /// of a prompt of up to 65,536 bytes is not drawn.
 pub const MAX_PROMPT_BYTES: usize = 200;
 /// The bytes of the text of a message that its request line names.
 const MAX_LABEL_BYTES: usize = 40;
 /// The line of a request that the client refused before it went.
 const NOT_SENT: &str = "not sent";
-/// The outcomes that the window has not read yet: at most two for each send
+/// The outcomes that the host has not read yet: at most two for each send
 /// that the input holds (one composer send and the hidden answers), and the
-/// window reads them all at each redraw. A host that never reads stops the
+/// host reads them all at each change. A host that never reads stops the
 /// queue at this bound.
 const MAX_OUTCOMES: usize = 64;
 
-/// What the window asks.
+/// What the host asks.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     /// Follow this session, and stop following the one before.
     Follow(String),
-    /// Send an operation of the window: a prompt, a steer, a follow-up, an
+    /// Send an operation of the host: a prompt, a steer, a follow-up, an
     /// abort, the answer of an ask, a start, or a resume. `send` is the
-    /// number of the send that the window waits for the outcome of, when it
+    /// number of the send that the host waits for the outcome of, when it
     /// is one: a send of the composer or the answer of an ask.
     Operation {
         send: Option<SendId>,
@@ -61,9 +97,27 @@ pub enum Command {
     /// A page of the saved sessions; `after` is the `next` of the page
     /// before, or none for the first page.
     Saved { after: Option<String> },
+    /// Ask the live sessions of the server now, as the welcome of a
+    /// connection with no records feed does. With a feed the list comes from
+    /// the feed, and this command sends nothing.
+    Live,
+    /// The host is active again: a socket that a suspend left dead is
+    /// dropped, and the next connection starts on the path of a lost
+    /// connection (`became_active`).
+    BecameActive,
 }
 
-/// The state of one request in the window.
+/// Tells the network thread that the host is active again, as the iOS rule of
+/// `docs/features/client-kit.md`, "The rule of the active app", has it: a
+/// suspended app can lose its sockets with no close, so the layer drops the
+/// one that it holds and connects again on the path of a lost connection. The
+/// socket drops at the next step of the thread, within the poll of its socket,
+/// and the next connection waits the pause of the reconnect.
+pub fn became_active(commands: &Sender<Command>) {
+    let _ = commands.send(Command::BecameActive);
+}
+
+/// The state of one request in the host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequestState {
     /// Sent, and the server has not answered.
@@ -91,7 +145,7 @@ impl RequestState {
     }
 }
 
-/// One request of the window, as its status line shows it.
+/// One request of the host, as its status line shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RequestLine {
     pub id: String,
@@ -99,25 +153,33 @@ pub struct RequestLine {
     /// The op and a short text, for a person.
     pub label: String,
     pub state: RequestState,
-    /// The number of the send that this request is, when the window waits
+    /// The number of the send that this request is, when the host waits
     /// for its outcome.
     pub send: Option<SendId>,
 }
 
 impl RequestLine {
-    /// The line that the window draws.
+    /// The line that the host draws.
     pub fn text(&self) -> String {
         format!("{} · {}", self.label, self.state.text())
     }
 }
 
-/// What the window shows.
+/// What the host shows.
 #[derive(Debug)]
 pub struct Shared {
     pub client: Client,
-    /// The live sessions of the server, from `sessions.live` at each welcome.
+    /// The live sessions of the server, from `sessions.live`: the list of a
+    /// connection with no records feed, and empty on a server with a Hub.
     pub live: Vec<LiveSession>,
-    /// The session that the window follows.
+    /// Whether the connection has the records feed: a server with a Hub
+    /// answers `records.subscribe`, and the window takes its list from
+    /// `client.records()`. False on a server with no Hub, whose list is
+    /// `live`. A `records_end` and a new connection keep it true, with the
+    /// rows of the last reply, until the next reply replaces them; an error
+    /// reply that is not transient makes it false.
+    pub records: bool,
+    /// The session that the host follows.
     pub followed: Option<String>,
     /// One line of the state of the connection.
     pub line: String,
@@ -125,12 +187,12 @@ pub struct Shared {
     pub saved: Vec<SavedSession>,
     /// The `next` of the last page of saved sessions, when more exist.
     pub saved_next: Option<String>,
-    /// The requests of the window, oldest first.
+    /// The requests of the host, oldest first.
     pub requests: Vec<RequestLine>,
     /// The outcome of each numbered send that the client took, answered, or
-    /// lost: the window drains it and settles its composer or its ask.
+    /// lost: the host drains it and settles its composer or its ask.
     pub outcomes: Vec<(SendId, SendOutcome)>,
-    /// The window asked for the saved sessions on this run.
+    /// The host asked for the saved sessions on this run.
     saved_asked: bool,
     /// The page of saved sessions on its way: the id of its request, and
     /// whether it appends. One at a time, so two pages cannot replace and
@@ -139,10 +201,11 @@ pub struct Shared {
 }
 
 impl Shared {
-    pub fn new(token: String) -> Shared {
+    pub fn new() -> Shared {
         Shared {
-            client: Client::new(Some(token)),
+            client: Client::new(),
             live: vec![],
+            records: false,
             followed: None,
             line: "connecting".into(),
             saved: vec![],
@@ -154,7 +217,7 @@ impl Shared {
         }
     }
 
-    /// Gives the outcome of a numbered send to the window, within the bound.
+    /// Gives the outcome of a numbered send to the host, within the bound.
     fn outcome(&mut self, send: SendId, outcome: SendOutcome) {
         self.outcomes.push((send, outcome));
         if self.outcomes.len() > MAX_OUTCOMES {
@@ -263,6 +326,12 @@ impl Shared {
     }
 }
 
+impl Default for Shared {
+    fn default() -> Shared {
+        Shared::new()
+    }
+}
+
 /// The text of a refusal of the client, for a person: what did not go and
 /// why.
 fn refusal_text(refusal: &Refusal) -> String {
@@ -275,36 +344,59 @@ fn refusal_text(refusal: &Refusal) -> String {
     }
 }
 
-/// Runs connections until one ends with `Next::Stop`, or the window is gone
-/// at the end of one, and gives its line.
+/// Runs connections until one ends with `Next::Stop`, or the host is gone
+/// at the end of one, and gives its line. `source` gives the server of each
+/// connection; when it fails, the line is its error and the thread waits the
+/// pause and asks again, with no end while the host lives, also before the
+/// first welcome (`docs/features/client-kit.md`, "The network layer").
 pub fn run(
-    server: &Server,
+    source: &Source,
     shared: &Mutex<Shared>,
     commands: &Receiver<Command>,
     notify: &dyn Fn(),
 ) -> String {
-    run_with(server, shared, commands, notify, WAITS)
+    run_with(source, shared, commands, notify, WAITS)
 }
 
 /// `run` with other waits, for tests.
 pub fn run_with(
-    server: &Server,
+    source: &Source,
     shared: &Mutex<Shared>,
     commands: &Receiver<Command>,
     notify: &dyn Fn(),
     waits: Waits,
 ) -> String {
     loop {
-        let (next, line) = connection(server, shared, commands, notify, waits);
+        let (next, line) = match source() {
+            Ok(server) => connection(&server, shared, commands, notify, waits),
+            // A server that is down has no file, or a stale one: the error of
+            // the read is the line, and the thread waits the pause and asks
+            // again. Only the host ends it, also before the first welcome; a
+            // source that gives a server keeps the rules of a failed first
+            // connect.
+            Err(line) => (Next::Reconnect, line),
+        };
         shared.lock().unwrap().line = line.clone();
         notify();
-        let gone = window_gone(shared, commands);
-        // A command that the window sent between connections shows its line.
+        let gone = host_gone(shared, commands);
+        // A command that the host sent between connections shows its line.
         notify();
         if next == Next::Stop || gone {
             return line;
         }
-        std::thread::sleep(waits.pause);
+        // The pause before the next connection is a wait on the commands, so a
+        // host that goes during it ends the loop with no new connection. A
+        // command that comes is kept for the next connection, as one that
+        // comes between connections is.
+        match commands.recv_timeout(waits.pause) {
+            Ok(Command::BecameActive) => {}
+            Ok(command) => {
+                drop(apply(&mut shared.lock().unwrap(), command));
+                notify();
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return line,
+        }
     }
 }
 
@@ -325,8 +417,19 @@ fn connection(
             return (next, line);
         }
     };
-    shared.lock().unwrap().client.connect();
+    shared
+        .lock()
+        .unwrap()
+        .client
+        .connect(Some(server.token.clone()));
     let mut welcomed = false;
+    // The records feed of this connection: whether a subscription is
+    // wanted, the id of the one in flight, and when the pause after a feed
+    // end or a transient error allows the next. One request is in flight at
+    // most.
+    let mut records_wanted = false;
+    let mut records_request: Option<String> = None;
+    let mut records_at: Option<Instant> = None;
     // The end of the connection after an error: a break when the server
     // sent a binary frame, whatever error ended it, else a lost connection.
     let ended = |ws: &mut Socket, welcomed: bool| {
@@ -345,11 +448,33 @@ fn connection(
         (next, line)
     };
     loop {
+        // The subscribe that waits for a free place, or for the pause after
+        // the end of the feed.
+        if records_wanted && records_request.is_none() {
+            let due = records_at.is_none_or(|at| Instant::now() >= at);
+            if due && let Some((id, frames)) = records_subscribe(&mut shared.lock().unwrap()) {
+                records_at = None;
+                records_request = Some(id);
+                records_wanted = false;
+                if send(&mut ws, &watchdog, waits, frames).is_err() {
+                    return ended(&mut ws, welcomed);
+                }
+            }
+        }
         // After a failed write, the commands wait for the next connection.
         while !ws.get_ref().write_failed() {
             let Ok(command) = commands.try_recv() else {
                 break;
             };
+            // A socket that a suspend of the host left dead ends as a lost
+            // connection does, once the server answered the handshake: a
+            // wake-up before it names no dead socket, so it is dropped.
+            if command == Command::BecameActive {
+                if welcomed {
+                    return ended(&mut ws, welcomed);
+                }
+                continue;
+            }
             let frames = apply(&mut shared.lock().unwrap(), command);
             if send(&mut ws, &watchdog, waits, frames).is_err() {
                 return ended(&mut ws, welcomed);
@@ -364,11 +489,12 @@ fn connection(
             // After a binary frame, a close ends the connection as a break.
             Ok(Message::Close(_)) if ws.get_ref().binary() => return broken(shared, &mut ws),
             Ok(Message::Close(frame)) => {
-                let next = close(shared, frame.map(|f| f.code.into()));
-                let line = if next == Next::Reconnect {
-                    "reconnecting"
-                } else {
-                    "the connection ended"
+                let code = frame.map(|f| u16::from(f.code));
+                let next = close(shared, code);
+                let line = match (code, next) {
+                    (Some(UNAUTHORIZED), _) => "the server refused the token",
+                    (_, Next::Reconnect) => "reconnecting",
+                    (_, Next::Stop) => "the connection ended",
                 };
                 return (next, line.into());
             }
@@ -408,14 +534,16 @@ fn connection(
                     welcomed = true;
                     heard(&watchdog, welcomed, waits);
                     guard.line = "connected".into();
-                    let live = guard.client.request("sessions.live", object([]));
-                    frames.extend(record(
-                        &mut guard,
-                        "sessions.live",
-                        "sessions.live".into(),
-                        None,
-                        live,
-                    ));
+                    // The records feed first: a server with a Hub answers
+                    // it, and then no `sessions.live` goes on this
+                    // connection. A server with no Hub answers `unknown_op`,
+                    // and the live list follows at that reply.
+                    records_wanted = true;
+                    if let Some((id, subscribe)) = records_subscribe(&mut guard) {
+                        records_request = Some(id);
+                        records_wanted = false;
+                        frames.extend(subscribe);
+                    }
                     if !guard.saved_asked {
                         guard.saved_asked = true;
                         frames.extend(saved(&mut guard, None));
@@ -436,6 +564,33 @@ fn connection(
                     guard.line = format!("{op} of {session}: {code}");
                 }
                 Output::Reply { id, result } => {
+                    if records_request.as_deref() == Some(id.as_str()) {
+                        // The reply of the records subscription: its list is
+                        // the host's, and it has no request line.
+                        records_request = None;
+                        match &result {
+                            Err((code, _)) if code == "unknown_op" => {
+                                // The server has no Hub: the rest of this
+                                // connection keeps the path of `sessions.live`.
+                                guard.records = false;
+                                frames.extend(live(&mut guard));
+                            }
+                            // The Hub is full or does not answer now (after
+                            // its restart, for example): ask again after the
+                            // pause, and keep the list as it is.
+                            Err((code, _)) if code == "busy" || code == "timeout" => {
+                                records_wanted = true;
+                                records_at = Some(Instant::now() + waits.pause);
+                            }
+                            Err((code, text)) => {
+                                guard.records = false;
+                                guard.line = format!("records.subscribe: {code}: {text}");
+                            }
+                            // An ok reply comes as `RecordsChanged`.
+                            Ok(_) => {}
+                        }
+                        continue;
+                    }
                     guard.answered(&id, &result);
                     // The reply ends the page on its way, ok or not: the mode
                     // belongs to this request, not to the latest one.
@@ -460,13 +615,30 @@ fn connection(
                             }
                             guard.saved_next = next;
                         }
-                        // A start or a resume: the window follows the session
+                        // A start or a resume: the host follows the session
                         // that the server made or attached.
                         Ok(Reply::Session(session)) => {
                             frames.extend(follow(&mut guard, &session));
                         }
                         _ => {}
                     }
+                }
+                // The feed's reply or one of its frames: the list in the
+                // client changed, and the host reads it there. The reply
+                // takes no line, as the request is not the host's.
+                Output::RecordsChanged => {
+                    guard.records = true;
+                    records_request = None;
+                    records_wanted = false;
+                }
+                Output::RecordsEnded => {
+                    // The Hub behind the feed ended, and the connection
+                    // lives: subscribe again after the pause of a reconnect,
+                    // with no end of the connection. The connection keeps its
+                    // feed, so `records` stays true.
+                    records_request = None;
+                    records_wanted = true;
+                    records_at = Some(Instant::now() + waits.pause);
                 }
                 _ => {}
             }
@@ -492,6 +664,15 @@ fn heard(watchdog: &Watchdog, welcomed: bool, waits: Waits) {
 fn open(server: &Server, waits: Waits) -> Result<(Socket, Watchdog), String> {
     let address = SocketAddr::new(server.address, server.port);
     let stream = TcpStream::connect_timeout(&address, waits.connect).map_err(|e| e.to_string())?;
+    // The OS can buffer a batch of several MiB whole, and then no write waits
+    // on the peer; a test that its batch outlasts its deadline caps the
+    // buffer here.
+    #[cfg(feature = "stub")]
+    if let Some(size) = waits.send_buffer {
+        socket2::SockRef::from(&stream)
+            .set_send_buffer_size(size)
+            .map_err(|e| e.to_string())?;
+    }
     stream
         .set_read_timeout(Some(waits.poll))
         .map_err(|e| e.to_string())?;
@@ -533,7 +714,7 @@ pub fn follow_line(session: &str, follow: &Follow) -> Option<String> {
             Some(format!("{session} {places}"))
         }
         Follow::Waiting(Wait::Places { unwanted }) => Some(format!(
-            "{session} {places}, held by {} that the window does not follow",
+            "{session} {places}, held by {} that the host does not follow",
             unwanted.join(", ")
         )),
         Follow::Waiting(Wait::Requests) => Some(format!(
@@ -544,12 +725,15 @@ pub fn follow_line(session: &str, follow: &Follow) -> Option<String> {
     }
 }
 
-/// Between connections: takes the commands of the window, whose frames go
-/// at the next welcome, and gives whether the window is gone, its sender of
+/// Between connections: takes the commands of the host, whose frames go
+/// at the next welcome, and gives whether the host is gone, its sender of
 /// commands dropped.
-fn window_gone(shared: &Mutex<Shared>, commands: &Receiver<Command>) -> bool {
+fn host_gone(shared: &Mutex<Shared>, commands: &Receiver<Command>) -> bool {
     loop {
         match commands.try_recv() {
+            // Between connections there is no socket to drop: the wake-up
+            // costs nothing, and the thread connects at the pause.
+            Ok(Command::BecameActive) => {}
             // No connection takes a frame: the intent goes at the welcome,
             // and an operation is refused with `NotReady` on its line, so
             // nothing that the user asked for is sent without an answer to
@@ -561,16 +745,44 @@ fn window_gone(shared: &Mutex<Shared>, commands: &Receiver<Command>) -> bool {
     }
 }
 
-/// One command of the window: its frames.
+/// One command of the host: its frames.
 fn apply(shared: &mut Shared, command: Command) -> Vec<String> {
     match command {
         Command::Follow(session) => follow(shared, &session),
         Command::Operation { send, operation } => perform(shared, send, operation),
         Command::Saved { after } => saved(shared, after),
+        Command::Live => live(shared),
+        // Both callers handle it: a connection ends, and a thread between
+        // connections has no socket to drop.
+        Command::BecameActive => vec![],
     }
 }
 
-/// Sends an operation of the window and records its line, and the outcome of
+/// The live sessions of the server, asked for now: its frames and the line of
+/// its request. A connection with a records feed does not send it.
+fn live(shared: &mut Shared) -> Vec<String> {
+    if shared.records {
+        return vec![];
+    }
+    let requested = shared.client.request("sessions.live", object([]));
+    record(
+        shared,
+        "sessions.live",
+        "sessions.live".into(),
+        None,
+        requested,
+    )
+}
+
+/// The records subscription of the user, with no line of the host: the host
+/// did not ask for it, as it does not ask for the live list of a welcome.
+/// Gives the id of the request and its frames, or none while the connection
+/// has no free place, which the next step of the thread tries again.
+fn records_subscribe(shared: &mut Shared) -> Option<(String, Vec<String>)> {
+    shared.client.perform(Operation::records_subscribe()).ok()
+}
+
+/// Sends an operation of the host and records its line, and the outcome of
 /// the send of the composer that it is.
 fn perform(shared: &mut Shared, send: Option<SendId>, operation: Operation) -> Vec<String> {
     let op = operation.name();
@@ -719,7 +931,7 @@ mod tests {
         MAX_LABEL_BYTES, MAX_PROMPT_BYTES, RequestState, Shared, first_line, label, perform,
         refusal_text,
     };
-    use crate::composer::SendOutcome;
+    use crate::send::SendOutcome;
     use helyx_client_core::client::Refusal;
     use helyx_client_core::operation::Operation;
 
@@ -730,7 +942,7 @@ mod tests {
     #[test]
     fn a_refused_send_is_a_line_and_keeps_its_text() {
         // No connection: `Client::perform` refuses with `NotReady`.
-        let mut shared = Shared::new("t".into());
+        let mut shared = Shared::new();
         let frames = perform(
             &mut shared,
             Some(7),
@@ -760,7 +972,7 @@ mod tests {
 
     #[test]
     fn the_request_lines_keep_twelve_and_never_drop_a_pending_one() {
-        let mut shared = Shared::new("t".into());
+        let mut shared = Shared::new();
         // Thirteen answered lines: the oldest leaves.
         for n in 0..13 {
             let id = n.to_string();
@@ -815,7 +1027,7 @@ mod tests {
     #[test]
     fn the_outcome_of_each_send() {
         use helyx_client_core::frame::Reply;
-        let mut shared = Shared::new("t".into());
+        let mut shared = Shared::new();
         // The client took it: pending.
         shared.sent("0".into(), "answer", "answer".into(), Some(4));
         assert_eq!(shared.outcomes, [(4, SendOutcome::Pending)]);
@@ -856,7 +1068,7 @@ mod tests {
 
     #[test]
     fn the_outcomes_are_bounded() {
-        let mut shared = Shared::new("t".into());
+        let mut shared = Shared::new();
         for n in 0..(super::MAX_OUTCOMES as u64 + 10) {
             shared.sent(n.to_string(), "answer", "answer".into(), Some(n));
         }

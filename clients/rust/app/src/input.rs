@@ -1,9 +1,9 @@
 //! The input of the window (`docs/features/client-kit.md`, slice 4): the
-//! composer, the folder of a new session, and the ask that takes the keys
-//! while it is open. One key handler of the window gives each press here, so
-//! the window needs no per-field focus: a click sets the field, and every key
-//! goes to it. An ask takes every key while it is open, and the composer
-//! keeps its text, as in the TUI.
+//! composer, the folder of a new session, the model ref of the followed
+//! session, and the ask that takes the keys while it is open. One key handler
+//! of the window gives each press here, so the window needs no per-field
+//! focus: a click sets the field, and every key goes to it. An ask takes every
+//! key while it is open, and the composer keeps its text, as in the TUI.
 //!
 //! A send of the composer, and the answer of an ask, are numbered. The input
 //! marks the send pending at the key press, before any network thread step,
@@ -19,7 +19,7 @@ use crate::ask::{Key as AskKey, Outcome, Panel};
 use crate::composer::{Composer, Send, SendId, SendOutcome, Text, clean_paste};
 use helyx_client_core::json::Json;
 use helyx_client_core::message::Ask;
-use helyx_client_core::operation::{MAX_CWD_BYTES, Operation};
+use helyx_client_core::operation::{Invalid, MAX_CWD_BYTES, MAX_MODEL_BYTES, Operation};
 
 /// The most asks whose answers this window holds hidden at once. A mark
 /// leaves when its ask ends or its answer fails. At the bound, a failed mark
@@ -27,10 +27,15 @@ use helyx_client_core::operation::{MAX_CWD_BYTES, Operation};
 /// so a new answer is refused while every mark is pending.
 pub const MAX_HIDDEN_ANSWERS: usize = 16;
 /// The line of a refusal while the client holds its 16 requests in flight.
-/// The network thread gives the same text for `Refusal::Busy`.
-pub const BUSY: &str = "16 requests are in flight";
+/// The network layer gives the same text for `Refusal::Busy`.
+pub use helyx_client_net::BUSY;
 /// The line of a send that the stopped network thread cannot take.
 pub const CONNECTION_STOPPED: &str = "the connection has stopped";
+/// The line of a text over its bound: the composer and the compact control
+/// give it as one.
+const TEXT_TOO_LARGE: &str = "not sent: over 4 MiB";
+/// The line of a control that needs a followed session.
+const NO_SESSION: &str = "no session: pick one";
 
 /// The field that the keys act on.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -38,6 +43,8 @@ pub enum Focus {
     #[default]
     Composer,
     Cwd,
+    /// The model ref of the followed session.
+    Model,
 }
 
 /// One key press, as the window gives it to the input. `text` is the
@@ -90,6 +97,8 @@ pub struct Input {
     pub composer: Composer,
     /// The folder of a new session: a path of at most `MAX_CWD_BYTES`.
     pub cwd: Text,
+    /// The model ref of the followed session: at most `MAX_MODEL_BYTES`.
+    pub model: Text,
     pub focus: Focus,
     /// The ask that takes the keys, the oldest open one that the window can
     /// read (`Panel::settle`).
@@ -117,6 +126,7 @@ impl Default for Input {
         Input {
             composer: Composer::new(),
             cwd: Text::bounded(MAX_CWD_BYTES),
+            model: Text::bounded(MAX_MODEL_BYTES),
             focus: Focus::Composer,
             ask: None,
             notice: None,
@@ -258,7 +268,7 @@ impl Input {
         };
         let Some(session) = session else {
             self.ask = Some(panel);
-            self.notice = Some("no session: pick one".into());
+            self.notice = Some(NO_SESSION.into());
             return Intent::None;
         };
         let ask_id = panel.ask_id.clone();
@@ -321,10 +331,13 @@ impl Input {
             Focus::Composer => {
                 self.composer.text.insert(&text);
             }
-            // A folder is one line: a new line or a tab of a paste drops.
+            // A folder and a model ref are one line: a new line or a tab of a
+            // paste drops.
             Focus::Cwd => {
-                let line: String = text.chars().filter(|c| !matches!(c, '\n' | '\t')).collect();
-                self.cwd.insert(&line);
+                self.cwd.insert(&one_line(&text));
+            }
+            Focus::Model => {
+                self.model.insert(&one_line(&text));
             }
         }
     }
@@ -339,6 +352,7 @@ impl Input {
         match self.focus {
             Focus::Composer => self.composer.text.text().to_owned(),
             Focus::Cwd => self.cwd.text().to_owned(),
+            Focus::Model => self.model.text().to_owned(),
         }
     }
 
@@ -370,6 +384,7 @@ impl Input {
         match self.focus {
             Focus::Composer => self.composer_press(press, session, running),
             Focus::Cwd => self.cwd_press(press),
+            Focus::Model => self.model_press(press, session),
         }
     }
 
@@ -439,10 +454,97 @@ impl Input {
         }
     }
 
+    fn model_press(&mut self, press: Press<'_>, session: Option<&str>) -> Intent {
+        if press.control {
+            return Intent::None;
+        }
+        if press.platform {
+            match press.key {
+                "left" => self.model.home(),
+                "right" => self.model.end(),
+                _ => {}
+            }
+            return Intent::None;
+        }
+        match press.key {
+            "enter" => self.set_model(session),
+            // Escape leaves the field; the composer takes the keys again.
+            "escape" => {
+                self.focus = Focus::Composer;
+                Intent::None
+            }
+            _ => {
+                edit(&mut self.model, press);
+                Intent::None
+            }
+        }
+    }
+
     /// The `start` of the folder field, when it has a folder.
     pub fn start(&self) -> Option<Operation> {
         (!self.cwd.is_empty())
             .then(|| Operation::start(self.cwd.text(), None).expect("a folder within its bound"))
+    }
+
+    /// The `set_model` of the ref in the field. The core checks the ref, so a
+    /// mistake shows before a round trip, as the composer shows a text over
+    /// its bound.
+    pub fn set_model(&mut self, session: Option<&str>) -> Intent {
+        let Some(session) = session else {
+            self.notice = Some(NO_SESSION.into());
+            return Intent::None;
+        };
+        match Operation::set_model(session, self.model.text()) {
+            Ok(operation) => {
+                self.notice = None;
+                Intent::Send {
+                    send: None,
+                    operation,
+                }
+            }
+            Err(invalid) => {
+                self.notice = Some(not_sent(invalid));
+                Intent::None
+            }
+        }
+    }
+
+    /// The `compact` of the composer text: a numbered send, so `ok` empties
+    /// the composer as a send does. An empty composer compacts with no
+    /// instructions. While a send of the composer waits, its text does not go
+    /// again as instructions.
+    pub fn compact(&mut self, session: Option<&str>) -> Intent {
+        let Some(session) = session else {
+            self.notice = Some(NO_SESSION.into());
+            return Intent::None;
+        };
+        if self.composer_send.is_some() {
+            return Intent::None;
+        }
+        match Operation::compact(session, self.composer.text.text()) {
+            Ok(operation) => {
+                let send = self.next_send;
+                self.next_send += 1;
+                self.composer_send = Some(send);
+                self.notice = None;
+                Intent::Send {
+                    send: Some(send),
+                    operation,
+                }
+            }
+            Err(invalid) => {
+                self.notice = Some(not_sent(invalid));
+                Intent::None
+            }
+        }
+    }
+
+    /// The number of a send that the window numbers itself, such as the stop
+    /// of a live row, whose outcome it reads to ask for a fresh live list.
+    pub fn send_number(&mut self) -> SendId {
+        let send = self.next_send;
+        self.next_send += 1;
+        send
     }
 
     fn ask_press(&mut self, press: Press<'_>, session: Option<&str>) -> Intent {
@@ -482,14 +584,29 @@ impl Input {
             }
             Send::Empty => Intent::None,
             Send::NoSession => {
-                self.notice = Some("no session: pick one".into());
+                self.notice = Some(NO_SESSION.into());
                 Intent::None
             }
             Send::TooLarge => {
-                self.notice = Some("not sent: over 4 MiB".into());
+                self.notice = Some(TEXT_TOO_LARGE.into());
                 Intent::None
             }
         }
+    }
+}
+
+/// The one line of a paste into a field of one line: a new line or a tab
+/// drops.
+fn one_line(text: &str) -> String {
+    text.chars().filter(|c| !matches!(c, '\n' | '\t')).collect()
+}
+
+/// The line of an operation that the core refused before it went, in the
+/// form of the composer's line.
+fn not_sent(invalid: Invalid) -> String {
+    match invalid {
+        Invalid::TextTooLarge => TEXT_TOO_LARGE.to_owned(),
+        invalid => format!("not sent: {}", invalid.text()),
     }
 }
 
@@ -522,7 +639,10 @@ fn edit(text: &mut Text, press: Press<'_>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{BUSY, CONNECTION_STOPPED, Focus, Input, Intent, MAX_HIDDEN_ANSWERS, Press};
+    use super::{
+        BUSY, CONNECTION_STOPPED, Focus, Input, Intent, MAX_HIDDEN_ANSWERS, NO_SESSION, Press,
+        TEXT_TOO_LARGE,
+    };
     use crate::composer::SendOutcome;
     use helyx_client_core::json::decode;
     use helyx_client_core::message::Ask;
@@ -1108,6 +1228,57 @@ mod tests {
         assert!(input.settle_refused(None, Err::<(), &str>("closed")));
         assert_eq!(input.notice.as_deref(), Some(CONNECTION_STOPPED));
         assert!(!input.settle_refused(None, Ok::<(), &str>(())));
+    }
+
+    #[test]
+    fn the_model_field_sends_the_ref_and_keeps_a_ref_that_is_not_one() {
+        let mut input = Input::new();
+        input.focus = Focus::Model;
+        input.press(typed("openai/gpt-5.1"), Some("s1"), false);
+        assert_eq!(
+            input.press(enter(), Some("s1"), false),
+            Intent::Send {
+                send: None,
+                operation: Operation::set_model("s1", "openai/gpt-5.1").unwrap(),
+            }
+        );
+        assert_eq!(input.notice, None);
+        // A ref that the core refuses keeps the field, and nothing goes.
+        input.model.set("nope");
+        assert_eq!(input.press(enter(), Some("s1"), false), Intent::None);
+        assert_eq!(
+            input.notice.as_deref(),
+            Some("not sent: not a model ref: use provider/model")
+        );
+        assert_eq!(input.model.text(), "nope");
+        // Escape leaves the field to the composer.
+        assert_eq!(
+            input.press(press("escape", None), Some("s1"), false),
+            Intent::None
+        );
+        assert_eq!(input.focus, Focus::Composer);
+    }
+
+    #[test]
+    fn compact_sends_the_composer_text_and_ok_empties_it() {
+        let mut input = Input::new();
+        input.press(typed("summarize"), Some("s1"), false);
+        let (send, operation) = send_of(input.compact(Some("s1")));
+        assert_eq!(operation, Operation::compact("s1", "summarize").unwrap());
+        // `ok` empties the composer, as a send does.
+        input.settle_outcomes(&[(send, SendOutcome::Ok)]);
+        assert_eq!(input.composer.text.text(), "");
+        // An empty composer compacts with no instructions.
+        let (send, operation) = send_of(input.compact(Some("s1")));
+        assert_eq!(operation, Operation::compact("s1", "").unwrap());
+        input.settle_outcomes(&[(send, SendOutcome::Failed("busy: x".into()))]);
+        // A text over the bound is not sent and stays.
+        input.composer.text.insert(&"a".repeat(MAX_TEXT_BYTES + 1));
+        assert_eq!(input.compact(Some("s1")), Intent::None);
+        assert_eq!(input.notice.as_deref(), Some(TEXT_TOO_LARGE));
+        // No session: nothing goes.
+        assert_eq!(input.compact(None), Intent::None);
+        assert_eq!(input.notice.as_deref(), Some(NO_SESSION));
     }
 
     #[test]

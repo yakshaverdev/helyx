@@ -1,12 +1,12 @@
 //! The models of the UI block vocabulary (`docs/features/ui-blocks.md`, "The
 //! vocabulary"), read from a block that `ui_block` checked: each kind that the
-//! document defines, `form` and `approval`, and the fallback text for any
-//! other kind, or for a known kind whose fields the client cannot read
+//! document defines, `form`, `approval`, and `diff`, and the fallback text for
+//! any other kind, or for a known kind whose fields the client cannot read
 //! (ADR 0011 §2). A read never fails on a field of a kind: the envelope is
 //! the contract of the wire, the fields of a kind are not.
 
 use crate::check::Checked;
-use crate::json::Json;
+use crate::json::{Json, natural};
 use crate::message::Ask;
 use crate::ui_block::envelope;
 
@@ -20,6 +20,13 @@ pub const MAX_TITLE_BYTES: usize = 1_024;
 /// The bytes of the `tool` and of the `provider` of an approval that a client
 /// draws: the cut of the gate.
 pub const MAX_NAME_BYTES: usize = 256;
+/// The lines of all hunks of a `diff` that a client reads: a block is at most
+/// `ui_block::MAX_BYTES` bytes, so this bounds the rows that a view lays out,
+/// and a block that the server makes stays far under it.
+pub const MAX_DIFF_LINES: usize = 2_000;
+/// The lines of a `diff` that a view draws before the line of the rest: a
+/// count of the model, so every client shows the same.
+pub const SHOWN_DIFF_LINES: usize = 200;
 
 /// A UI block as a client draws it.
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +46,7 @@ pub struct UiBlock {
 pub enum View {
     Form(Form),
     Approval(Approval),
+    Diff(Diff),
     /// A kind that the client does not know, or a known kind whose fields it
     /// cannot read: it shows `text`.
     Text,
@@ -81,6 +89,67 @@ pub struct Approval {
     pub arguments: String,
 }
 
+/// `diff`: the change of an `edit` or a `write` result.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Diff {
+    /// The path of the changed file.
+    pub path: String,
+    /// The added lines of the whole change, not of the hunks alone.
+    pub added: u64,
+    /// The removed lines of the whole change, not of the hunks alone.
+    pub removed: u64,
+    pub hunks: Vec<Hunk>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hunk {
+    pub old_start: u64,
+    pub old_lines: u64,
+    pub new_start: u64,
+    pub new_lines: u64,
+    pub lines: Vec<DiffLine>,
+}
+
+/// One line of a hunk, its line numbers read from the start of its hunk.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiffLine {
+    pub kind: LineKind,
+    /// The line without its sign.
+    pub text: String,
+    /// The line number in the old text: absent for an added line.
+    pub old: Option<u64>,
+    /// The line number in the new text: absent for a removed line.
+    pub new: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineKind {
+    Context,
+    Removed,
+    Added,
+}
+
+impl Diff {
+    /// The lines that a view draws, with their hunks, and the count of the
+    /// lines that it leaves out: the first `SHOWN_DIFF_LINES` lines in the
+    /// order of the hunks, so a long diff shows its start and one line of the
+    /// rest.
+    pub fn shown(&self) -> (Vec<(&Hunk, &[DiffLine])>, usize) {
+        let mut room = SHOWN_DIFF_LINES;
+        let mut shown = Vec::new();
+        let mut left = 0;
+        for hunk in &self.hunks {
+            let take = hunk.lines.len().min(room);
+            if take > 0 {
+                shown.push((hunk, &hunk.lines[..take]));
+            }
+            room -= take;
+            left += hunk.lines.len() - take;
+        }
+        (shown, left)
+    }
+}
+
 impl UiBlock {
     /// The model of `value`. A value that fails the envelope is not a UI
     /// block: every block that the core holds passed it.
@@ -90,6 +159,7 @@ impl UiBlock {
         let view = match kind {
             "form" => form(value).map(View::Form),
             "approval" => approval(value).map(View::Approval),
+            "diff" => diff(value).map(View::Diff),
             _ => None,
         };
         Ok(UiBlock {
@@ -177,6 +247,93 @@ fn approval(value: &Json) -> Option<Approval> {
         provider,
         arguments: value.get("arguments")?.as_str()?.to_owned(),
     })
+}
+
+fn diff(value: &Json) -> Option<Diff> {
+    let hunks = value.get("hunks")?.as_array()?;
+    let mut room = MAX_DIFF_LINES;
+    let hunks = hunks
+        .iter()
+        .map(|hunk| read_hunk(hunk, &mut room))
+        .collect::<Option<_>>()?;
+    Some(Diff {
+        path: value.get("path")?.as_str()?.to_owned(),
+        added: count(value.get("added")?)?,
+        removed: count(value.get("removed")?)?,
+        hunks,
+    })
+}
+
+fn read_hunk(value: &Json, room: &mut usize) -> Option<Hunk> {
+    let old_start = count(value.get("old_start")?)?;
+    let old_lines = count(value.get("old_lines")?)?;
+    let new_start = count(value.get("new_start")?)?;
+    let new_lines = count(value.get("new_lines")?)?;
+    let lines = value.get("lines")?.as_array()?;
+    if lines.len() > *room {
+        return None;
+    }
+    *room -= lines.len();
+    let mut old = old_start;
+    let mut new = new_start;
+    let lines = lines
+        .iter()
+        .map(|line| read_line(line, &mut old, &mut new))
+        .collect::<Option<_>>()?;
+    Some(Hunk {
+        old_start,
+        old_lines,
+        new_start,
+        new_lines,
+        lines,
+    })
+}
+
+/// One line of a hunk: its sign, its text, and the line numbers that the
+/// signs before it give. A line that does not start with a sign is not a
+/// field of this kind.
+fn read_line(value: &Json, old: &mut u64, new: &mut u64) -> Option<DiffLine> {
+    let line = value.as_str()?;
+    let (kind, text) = match line.as_bytes().first()? {
+        b' ' => (LineKind::Context, &line[1..]),
+        b'-' => (LineKind::Removed, &line[1..]),
+        b'+' => (LineKind::Added, &line[1..]),
+        _ => return None,
+    };
+    let (old_number, new_number) = match kind {
+        LineKind::Context => {
+            let numbers = (Some(*old), Some(*new));
+            *old = old.saturating_add(1);
+            *new = new.saturating_add(1);
+            numbers
+        }
+        LineKind::Removed => {
+            let numbers = (Some(*old), None);
+            *old = old.saturating_add(1);
+            numbers
+        }
+        LineKind::Added => {
+            let numbers = (None, Some(*new));
+            *new = new.saturating_add(1);
+            numbers
+        }
+    };
+    Some(DiffLine {
+        kind,
+        text: text.to_owned(),
+        old: old_number,
+        new: new_number,
+    })
+}
+
+/// A count of a diff: a JSON integer from 0 that a `u64` holds. A larger one
+/// is not a line number that a file has, and `Json::as_u64` would keep it as
+/// `u64::MAX` instead of reading it.
+fn count(value: &Json) -> Option<u64> {
+    match value {
+        Json::Number(text) => natural(text)?.parse().ok(),
+        _ => None,
+    }
 }
 
 /// The string of `key`, of `min` to `max` bytes.

@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 helyx-client-core = { path = "../core" }
-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+helyx-client-net = { path = "../net" }
 
 # The window builds on macOS only: GPUI needs system packages on Linux
 # (docs/features/client-kit.md, slice 4). `runtime_shaders` compiles the
