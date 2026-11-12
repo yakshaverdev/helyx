@@ -53,6 +53,14 @@ impl Server {
     }
 }
 
+/// A source of the server that the network thread connects to. The thread
+/// asks it before each connection, so a server that restarted at another
+/// port and with another token is found again; the host reads its data folder
+/// again, or gives its fixed server. An error is the line of a failed open,
+/// which the thread shows and retries (`docs/features/client-kit.md`, "The
+/// network layer").
+pub type Source = dyn Fn() -> Result<Server, String> + Send + Sync;
+
 /// The request lines that the host keeps: the pending ones stay, so a
 /// request in flight is never dropped from the list.
 pub const MAX_LINES: usize = 12;
@@ -183,9 +191,9 @@ pub struct Shared {
 }
 
 impl Shared {
-    pub fn new(token: String) -> Shared {
+    pub fn new() -> Shared {
         Shared {
-            client: Client::new(Some(token)),
+            client: Client::new(),
             live: vec![],
             followed: None,
             line: "connecting".into(),
@@ -307,6 +315,12 @@ impl Shared {
     }
 }
 
+impl Default for Shared {
+    fn default() -> Shared {
+        Shared::new()
+    }
+}
+
 /// The text of a refusal of the client, for a person: what did not go and
 /// why.
 fn refusal_text(refusal: &Refusal) -> String {
@@ -320,26 +334,37 @@ fn refusal_text(refusal: &Refusal) -> String {
 }
 
 /// Runs connections until one ends with `Next::Stop`, or the host is gone
-/// at the end of one, and gives its line.
+/// at the end of one, and gives its line. `source` gives the server of each
+/// connection; when it fails, the line is its error and the thread waits the
+/// pause and asks again, with no end while the host lives, also before the
+/// first welcome (`docs/features/client-kit.md`, "The network layer").
 pub fn run(
-    server: &Server,
+    source: &Source,
     shared: &Mutex<Shared>,
     commands: &Receiver<Command>,
     notify: &dyn Fn(),
 ) -> String {
-    run_with(server, shared, commands, notify, WAITS)
+    run_with(source, shared, commands, notify, WAITS)
 }
 
 /// `run` with other waits, for tests.
 pub fn run_with(
-    server: &Server,
+    source: &Source,
     shared: &Mutex<Shared>,
     commands: &Receiver<Command>,
     notify: &dyn Fn(),
     waits: Waits,
 ) -> String {
     loop {
-        let (next, line) = connection(server, shared, commands, notify, waits);
+        let (next, line) = match source() {
+            Ok(server) => connection(&server, shared, commands, notify, waits),
+            // A server that is down has no file, or a stale one: the error of
+            // the read is the line, and the thread waits the pause and asks
+            // again. Only the host ends it, also before the first welcome; a
+            // source that gives a server keeps the rules of a failed first
+            // connect.
+            Err(line) => (Next::Reconnect, line),
+        };
         shared.lock().unwrap().line = line.clone();
         notify();
         let gone = host_gone(shared, commands);
@@ -381,7 +406,11 @@ fn connection(
             return (next, line);
         }
     };
-    shared.lock().unwrap().client.connect();
+    shared
+        .lock()
+        .unwrap()
+        .client
+        .connect(Some(server.token.clone()));
     let mut welcomed = false;
     // The end of the connection after an error: a break when the server
     // sent a binary frame, whatever error ended it, else a lost connection.
@@ -818,7 +847,7 @@ mod tests {
     #[test]
     fn a_refused_send_is_a_line_and_keeps_its_text() {
         // No connection: `Client::perform` refuses with `NotReady`.
-        let mut shared = Shared::new("t".into());
+        let mut shared = Shared::new();
         let frames = perform(
             &mut shared,
             Some(7),
@@ -848,7 +877,7 @@ mod tests {
 
     #[test]
     fn the_request_lines_keep_twelve_and_never_drop_a_pending_one() {
-        let mut shared = Shared::new("t".into());
+        let mut shared = Shared::new();
         // Thirteen answered lines: the oldest leaves.
         for n in 0..13 {
             let id = n.to_string();
@@ -903,7 +932,7 @@ mod tests {
     #[test]
     fn the_outcome_of_each_send() {
         use helyx_client_core::frame::Reply;
-        let mut shared = Shared::new("t".into());
+        let mut shared = Shared::new();
         // The client took it: pending.
         shared.sent("0".into(), "answer", "answer".into(), Some(4));
         assert_eq!(shared.outcomes, [(4, SendOutcome::Pending)]);
@@ -944,7 +973,7 @@ mod tests {
 
     #[test]
     fn the_outcomes_are_bounded() {
-        let mut shared = Shared::new("t".into());
+        let mut shared = Shared::new();
         for n in 0..(super::MAX_OUTCOMES as u64 + 10) {
             shared.sent(n.to_string(), "answer", "answer".into(), Some(n));
         }
