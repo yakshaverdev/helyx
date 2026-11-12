@@ -172,7 +172,7 @@ fn a_reconnect_after_a_slow_close_subscribes_with_after() {
     assert_eq!(
         resubscribe,
         [json!({"type": "req", "id": "0", "op": "subscribe",
-                "params": {"session": "s1", "after": {"instance_id": "i1", "seq": 5}}})]
+                "params": {"session": "s1", "after": {"instance_id": "i1", "seq": 5}, "answers": true}})]
     );
     // A replay that crosses 1,024 acks its last seq.
     let replay: Vec<Value> = (6..=1_030)
@@ -211,6 +211,13 @@ fn a_close_before_the_welcome_or_after_a_break_stops() {
     let refused = r#"{"type":"refused","code":"protocol","server_protocol":4}"#;
     assert_eq!(client.receive(refused).unwrap(), [Output::Refused(4)]);
     assert_eq!(client.closed(Some(4426)).next, Next::Stop);
+    // A refused token stops after a welcome too: the server of the data
+    // folder makes a new token at each start, and a reconnect would send
+    // the old one for ever.
+    let mut client = following(4);
+    assert_eq!(client.closed(None).next, Next::Reconnect);
+    client.connect();
+    assert_eq!(client.closed(Some(4401)).next, Next::Stop);
     // Before any welcome, a failed open stops.
     assert_eq!(Client::new(None).closed(None).next, Next::Stop);
 }
@@ -330,7 +337,7 @@ fn instance_changed_of_history_subscribes_again() {
     let outputs = client
         .receive(r#"{"type":"session_end","sub":"0","reason":"stopped"}"#)
         .unwrap();
-    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}});
+    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}, "answers": true});
     assert_eq!(sent(&outputs)[0]["params"], again);
     // The subscription has ended, and the wanted session is held: a page of
     // the instance of its state renews it, and the subscribe goes at once.
@@ -381,7 +388,10 @@ fn the_requests_in_flight_are_bounded() {
     let outputs = client
         .receive(r#"{"type":"res","id":"1","ok":true,"result":{}}"#)
         .unwrap();
-    assert_eq!(sent(&outputs)[0]["params"], json!({"session": "s2"}));
+    assert_eq!(
+        sent(&outputs)[0]["params"],
+        json!({"session": "s2", "answers": true})
+    );
     assert_eq!(client.request("abort", json_params()), Err(Refusal::Busy));
     // A reply of no request in flight is a break.
     assert!(
@@ -677,7 +687,7 @@ fn a_renewal_waits_for_a_free_place() {
     let outputs = client
         .receive(r#"{"type":"res","id":"2","ok":true,"result":{}}"#)
         .unwrap();
-    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}});
+    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}, "answers": true});
     assert_eq!(sent(&outputs)[0]["params"], again);
 }
 
@@ -696,7 +706,10 @@ fn a_huge_instance_id_subscribes_with_no_after() {
     }
     assert_eq!(client.closed(None).next, Next::Reconnect);
     let frames = sent(&welcomed(&mut client));
-    assert_eq!(frames[0]["params"], json!({"session": "s1"}));
+    assert_eq!(
+        frames[0]["params"],
+        json!({"session": "s1", "answers": true})
+    );
 }
 
 #[test]
@@ -782,7 +795,7 @@ fn a_subscribe_waiting_for_its_old_subscription() {
     let unsubscribe = id_of(&client.unsubscribe("s1"));
     assert_eq!(client.subscribe("s1"), Ok(vec![]));
     let outputs = client.receive(&res(&unsubscribe, json!({}))).unwrap();
-    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}});
+    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}, "answers": true});
     assert_eq!(sent(&outputs)[0]["params"], again);
 
     let mut client = following(4);
@@ -907,7 +920,10 @@ fn a_subscribe_waits_for_a_place_among_the_live_subscriptions() {
     let unsubscribe = id_of(&client.unsubscribe("s05"));
     assert_eq!(client.subscribe("a"), Ok(vec![]));
     let outputs = client.receive(&res(&unsubscribe, json!({}))).unwrap();
-    assert_eq!(sent(&outputs)[0]["params"], json!({"session": "a"}));
+    assert_eq!(
+        sent(&outputs)[0]["params"],
+        json!({"session": "a", "answers": true})
+    );
 }
 
 /// A statement again at the cap is taken; a 17th session is not.
@@ -959,7 +975,7 @@ fn a_late_refusal_holds_no_follow_stated_after_it() {
     assert_eq!(client.follow("s1"), Some(Follow::Waiting(Wait::Ending)));
     let outputs = client.receive(&res_error(&unsubscribe, "busy")).unwrap();
     assert!(!outputs.iter().any(|o| matches!(o, Output::Failed { .. })));
-    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}});
+    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}, "answers": true});
     assert_eq!(sent(&outputs)[0]["params"], again);
     assert_eq!(client.follow("s1"), Some(Follow::Subscribing));
     // The same `busy` with the sub still live: the follow stated after it
@@ -1050,7 +1066,10 @@ fn follow_tells_why_a_followed_session_has_no_subscription() {
     let unsubscribe = id_of(&client.unsubscribe("s05"));
     let outputs = client.receive(&res(&unsubscribe, json!({}))).unwrap();
     let subscribe = sent(&outputs).remove(0);
-    assert_eq!(subscribe["params"], json!({"session": "a"}));
+    assert_eq!(
+        subscribe["params"],
+        json!({"session": "a", "answers": true})
+    );
     // A refused subscribe holds; 16 requests in flight make a wait.
     client
         .receive(&res_error(&subscribe["id"], "session_not_found"))
@@ -1078,7 +1097,10 @@ fn a_late_answer_to_a_forgotten_session_holds_no_new_follow() {
     }
     let outputs = client.receive(&res_error(&unsubscribe, "busy")).unwrap();
     assert!(!outputs.iter().any(|o| matches!(o, Output::Failed { .. })));
-    assert_eq!(sent(&outputs)[0]["params"], json!({"session": "s1"}));
+    assert_eq!(
+        sent(&outputs)[0]["params"],
+        json!({"session": "s1", "answers": true})
+    );
     assert_eq!(client.follow("s1"), Some(Follow::Subscribing));
 }
 
@@ -1147,7 +1169,10 @@ fn a_late_refused_subscribe_holds_no_later_follow() {
     assert_eq!(client.subscribe("s1"), Ok(vec![]));
     let outputs = client.receive(&res_error(&first, "busy")).unwrap();
     assert!(!outputs.iter().any(|o| matches!(o, Output::Failed { .. })));
-    assert_eq!(sent(&outputs)[0]["params"], json!({"session": "s1"}));
+    assert_eq!(
+        sent(&outputs)[0]["params"],
+        json!({"session": "s1", "answers": true})
+    );
 }
 
 /// A sub id of the server over the request size, which no `unsubscribe` can
@@ -1177,7 +1202,7 @@ fn a_sub_id_over_the_request_size_holds_with_no_frame() {
 #[test]
 fn a_page_of_an_older_instance_keeps_the_replaced_one() {
     let older = || decode(r#"{"session":"s1","instance_id":"i0","before":"m1"}"#).unwrap();
-    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}});
+    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}, "answers": true});
     // The replies, then the end.
     let mut client = following(4);
     let (current, _) = client.request("history", history_params()).unwrap();

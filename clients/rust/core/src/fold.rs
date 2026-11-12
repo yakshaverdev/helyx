@@ -47,8 +47,11 @@ impl State {
     /// The params of a `subscribe` for `session`: with `after` when the state
     /// holds a snapshot, so the server can replay the events after it.
     pub fn subscribe_params(&self, session: &str) -> Json {
+        // `answers`: a host of this core answers the asks of the session
+        // (`docs/features/wire-protocol.md`, `subscribe`). Without it the
+        // server opens no ask for this client.
         match &self.instance_id {
-            None => obj([("session", session.into())]),
+            None => obj([("session", session.into()), ("answers", Json::Bool(true))]),
             Some(instance_id) => obj([
                 ("session", session.into()),
                 (
@@ -58,6 +61,7 @@ impl State {
                         ("seq", (&self.seq).into()),
                     ]),
                 ),
+                ("answers", Json::Bool(true)),
             ]),
         }
     }

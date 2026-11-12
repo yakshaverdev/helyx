@@ -22,6 +22,9 @@ use std::time::Duration;
 pub use crate::connection::{MAX_IN_FLIGHT, Refusal};
 pub use crate::follow::{Follow, Hold, Wait};
 
+/// The close code of a token that the server refused.
+pub const UNAUTHORIZED: u16 = 4401;
+
 /// What the client tells the host.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Output {
@@ -141,12 +144,14 @@ impl Client {
     /// The socket ended, with its close code or none for a lost connection,
     /// or the host could not open one (a failed connect or upgrade). Once a
     /// connection of the client took the handshake, any end reconnects,
-    /// `4408` (the slow end) and a failed open too, but a break and a
-    /// refusal; before it, every end stops, as the first connect of the TUI
-    /// does (`docs/features/tui-attach.md`, decision 10). The host's
+    /// `4408` (the slow end) and a failed open too, but a break, a refusal,
+    /// and `4401`: the server refused the token, and the next connection
+    /// would send the same one. Before it, every end stops, as the first
+    /// connect of the TUI does (`docs/features/tui-attach.md`, decision 10).
+    /// The host's
     /// requests that were in flight lose their replies: they come back in
     /// `unknown`, and none of them goes again (ADR 0006 §4).
-    pub fn closed(&mut self, _code: Option<u16>) -> Closed {
+    pub fn closed(&mut self, code: Option<u16>) -> Closed {
         let connection = self.connection.take();
         let ended = connection
             .as_ref()
@@ -156,7 +161,7 @@ impl Client {
                 .map(|(id, request)| (id.clone(), request.op))
                 .collect()
         });
-        let next = match self.welcomed && !ended {
+        let next = match self.welcomed && !ended && code != Some(UNAUTHORIZED) {
             true => Next::Reconnect,
             false => Next::Stop,
         };

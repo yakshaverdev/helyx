@@ -14,7 +14,7 @@
 
 use crate::send::{SendId, SendOutcome};
 use crate::socket::{Tap, WAITS, Waits, Watchdog};
-use helyx_client_core::client::{Client, Follow, Hold, Next, Output, Refusal, Wait};
+use helyx_client_core::client::{Client, Follow, Hold, Next, Output, Refusal, UNAUTHORIZED, Wait};
 use helyx_client_core::frame::{LiveSession, Reply, SavedSession};
 use helyx_client_core::json::object;
 use helyx_client_core::operation::{MAX_LIMIT, Operation, Saved};
@@ -429,11 +429,12 @@ fn connection(
             // After a binary frame, a close ends the connection as a break.
             Ok(Message::Close(_)) if ws.get_ref().binary() => return broken(shared, &mut ws),
             Ok(Message::Close(frame)) => {
-                let next = close(shared, frame.map(|f| f.code.into()));
-                let line = if next == Next::Reconnect {
-                    "reconnecting"
-                } else {
-                    "the connection ended"
+                let code = frame.map(|f| u16::from(f.code));
+                let next = close(shared, code);
+                let line = match (code, next) {
+                    (Some(UNAUTHORIZED), _) => "the server refused the token",
+                    (_, Next::Reconnect) => "reconnecting",
+                    (_, Next::Stop) => "the connection ended",
                 };
                 return (next, line.into());
             }

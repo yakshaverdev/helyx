@@ -82,7 +82,7 @@ fn a_follow_survives_a_slow_close() {
     let subscribe = request(&mut ws, "subscribe");
     assert_eq!(
         subscribe.get("params"),
-        Some(&decode(r#"{"session":"s1"}"#).unwrap())
+        Some(&decode(r#"{"session":"s1","answers":true}"#).unwrap())
     );
     ws.send(Message::text(format!(
         r#"{{"type":"res","id":"{}","ok":true,"result":{{"sub":"0","snapshot":{}}}}}"#,
@@ -105,7 +105,7 @@ fn a_follow_survives_a_slow_close() {
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     welcome(&mut ws, token);
     let texts = [next_text(&mut ws), next_text(&mut ws)];
-    let after = r#""params":{"session":"s1","after":{"instance_id":"i1","seq":5}}"#;
+    let after = r#""params":{"session":"s1","after":{"instance_id":"i1","seq":5},"answers":true}"#;
     assert!(texts.iter().any(|t| t.contains(after)), "{texts:?}");
     assert!(
         texts.iter().any(|t| t.contains(r#""op":"sessions.live""#)),
@@ -429,7 +429,7 @@ fn a_failed_open_after_a_welcome_reconnects() {
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     welcome(&mut ws, "tok-q4");
     let texts = [next_text(&mut ws), next_text(&mut ws)];
-    let after = r#""params":{"session":"s1","after":{"instance_id":"i1","seq":4}}"#;
+    let after = r#""params":{"session":"s1","after":{"instance_id":"i1","seq":4},"answers":true}"#;
     assert!(texts.iter().any(|t| t.contains(after)), "{texts:?}");
 
     // The window is gone: the thread ends at the end of the connection.
@@ -800,7 +800,7 @@ fn a_start_follows_the_session_that_it_made() {
     let subscribe = request(&mut ws, "subscribe");
     assert_eq!(
         subscribe.get("params"),
-        Some(&decode(r#"{"session":"s2"}"#).unwrap())
+        Some(&decode(r#"{"session":"s2","answers":true}"#).unwrap())
     );
     ok(
         &mut ws,
