@@ -160,7 +160,7 @@ defmodule Helyx.Session.Server.FeedTest do
     assert pid == Session.pid(child)
 
     :ok = Sessions.stop(child)
-    assert {:ok, resumed} = Sessions.resume(core, id: child.id)
+    assert {:ok, resumed, :started} = Sessions.resume(core, id: child.id)
     assert_receive {:helyx_feed, pid, %Live{id: ^id, parent: ^link}}
     assert pid == Session.pid(resumed)
   end

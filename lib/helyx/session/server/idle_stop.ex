@@ -23,12 +23,12 @@ defmodule Helyx.Session.Server.IdleStop do
   def max_ms, do: @max_ms
 
   # Cancels the timer of an earlier arm and arms one when the facts hold. A
-  # nil `idle_stop_ms` or a failed fact holds no timer.
+  # nil `deadline_ms.idle_stop` or a failed fact holds no timer.
   @spec arm(State.t()) :: State.t()
   def arm(%State{idle_stop: ref} = state) do
     if ref, do: :erlang.cancel_timer(ref)
 
-    case state.idle_stop_ms do
+    case state.deadline_ms.idle_stop do
       nil ->
         %{state | idle_stop: nil}
 

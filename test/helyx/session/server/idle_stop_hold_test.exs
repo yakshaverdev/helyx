@@ -80,7 +80,7 @@ defmodule Helyx.Session.Server.IdleStopHoldTest do
     :ok = Session.prompt(session, "hello")
     Process.sleep(idle_ms() + load_ms())
 
-    assert %{idle_stop_ms: nil, idle_stop: nil} = state(session)
+    assert %{deadline_ms: %{idle_stop: nil}, idle_stop: nil} = state(session)
     assert is_pid(Session.pid(session))
   end
 

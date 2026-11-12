@@ -83,7 +83,7 @@ defmodule Helyx.Session do
         provider: provider,
         cwd: cwd,
         parent: parent,
-        idle_stop_ms: Helyx.Core.config(core, :idle_stop_ms)
+        deadline_ms: State.deadline_ms(core)
       }
 
       init = %{provider_opts: provider_opts, max_output_tokens: limit}
@@ -129,7 +129,7 @@ defmodule Helyx.Session do
         model: nil,
         provider: nil,
         cwd: cwd,
-        idle_stop_ms: Helyx.Core.config(core, :idle_stop_ms)
+        deadline_ms: State.deadline_ms(core)
       }
 
       state = %{state | init: %{state.init | provider_opts: provider_opts}}
@@ -297,16 +297,18 @@ defmodule Helyx.Session do
         {:ok, origin} <- Input.origin(opts),
         # The plugin gets a checked text; its return gets the check again.
         :ok <- Input.text(text),
-        {:ok, text} <- user_text(session, origin, text),
+        {:ok, text} <- user_text(session, origin, text, &Call.call/3),
         do: send_text(session, {op, text, origin}, text)
       )
 
   # The ModelContext plugin replaces the text of a user message before the
   # checks; product code keeps its own text (`Helyx.ModelContext.user_text/2`).
-  defp user_text(_session, %{kind: :product}, text), do: {:ok, text}
+  # `call` is the call of the caller's contract: a session that does not run
+  # answers as its text call does.
+  defp user_text(_session, %{kind: :product}, text, _call), do: {:ok, text}
 
-  defp user_text(session, %{kind: :user}, text) do
-    with {:ok, module, cwd} <- call(session, :user_text_context) do
+  defp user_text(session, %{kind: :user}, text, call) do
+    with {:ok, module, cwd} <- call.(session, :user_text_context, @call_timeout_ms) do
       if module != nil and Code.ensure_loaded?(module) and
            function_exported?(module, :user_text, 2) do
         {:ok, module.user_text(text, core: session.core, session_id: session.id, cwd: cwd)}
@@ -331,6 +333,10 @@ defmodule Helyx.Session do
   def send_text(%__MODULE__{} = session, op, text, opts)
       when op in [:prompt, :steer, :follow_up] and is_binary(text) and is_list(opts) do
     with {:ok, origin} <- Input.origin(opts),
+         :ok <- Input.text(text),
+         # The context call takes no text, so a session that stopped at it
+         # took nothing (`Call.send/3`).
+         {:ok, text} <- user_text(session, origin, text, &Call.send/3),
          :ok <- Input.text(text) do
       Call.send(session, {op, text, origin}, @call_timeout_ms)
     end
