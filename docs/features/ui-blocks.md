@@ -74,9 +74,18 @@ A result block: `edit` and `write` send it with their result (`docs/features/dif
 - `cut: true` when the emitter left out lines or cut a line. The emitter also cuts at `Helyx.Diff.budget_bytes/0` bytes of lines, counted once although each line is in `text` and in `hunks`, so a block stays near 50 KB and under the 65,536-byte bound of `Helyx.UIBlock.check/1` in most cases. The session cuts a block that is still over the bound to `{kind, text, cut: true}`, and a client then shows the text.
 - Fallback: a client that cannot render `diff` shows `text`.
 
+### `todo`
+
+The plan of the current task. The `todo` tool sends the block with its result, not as the request of an ask (`docs/features/todo-tool.md`).
+
+- Fields: `items`, a list of 1 to `Helyx.Tool.Todo.max_items/0` items, each with `text` of 1 to `Helyx.Tool.Todo.max_item_bytes/0` bytes and no new line, and `status` (`pending`, `in_progress`, or `done`), with at most one item `in_progress`.
+- `text`: one line for each item, `[x] <text>` for done, `[>] <text>` for in progress, `[ ] <text>` for pending, then a line `<done>/<total> done`.
+- Fallback: a client that cannot render a `todo` shows `text`, which reads as the checklist.
+- No answer: the block rides on a result, so no client sends anything back.
+
 ### Later kinds
 
-The candidates after `form`, `approval`, and `diff` are `choice`, `table`, `progress`, and `link`. Each gets its entry here with the ticket that builds it.
+The candidates after `form`, `approval`, `diff`, and `todo` are `choice`, `table`, `progress`, and `link`. Each gets its entry here with the ticket that builds it.
 
 ### Rendering in the TUI
 
