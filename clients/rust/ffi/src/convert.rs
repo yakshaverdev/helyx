@@ -6,6 +6,7 @@ use crate::types as ffi;
 use helyx_client_core::fold::State;
 use helyx_client_core::frame::{LiveSession, SavedSession};
 use helyx_client_core::message::{Ask, Block, Message, Role};
+use helyx_client_core::records;
 use helyx_client_core::transcript::{Row, rows};
 use helyx_client_core::ui_block::Shown;
 use helyx_client_net::{RequestLine, Shared};
@@ -27,6 +28,11 @@ pub fn snapshot(shared: &mut Shared) -> ffi::Snapshot {
         follow_line,
         followed,
         live: shared.live.iter().map(live).collect(),
+        records: (shared.client.records().rows().iter())
+            .map(record)
+            .collect(),
+        records_more: shared.client.records().more(),
+        records_feed: shared.records,
         saved: shared.saved.iter().map(saved).collect(),
         saved_next: shared.saved_next.clone(),
         requests: shared.requests.iter().map(request_line).collect(),
@@ -83,6 +89,24 @@ pub fn saved(saved: &SavedSession) -> ffi::SavedSession {
         model: saved.model.clone(),
         mtime: saved.mtime,
         prompt: saved.prompt.clone(),
+    }
+}
+
+fn record(record: &records::Record) -> ffi::Record {
+    ffi::Record {
+        session: record.session.clone(),
+        title: record.title.clone(),
+        prompt: record.prompt.clone(),
+        cwd: record.cwd.clone(),
+        model: record.model.clone(),
+        status: match record.status {
+            records::Status::Idle => ffi::Status::Idle,
+            records::Status::Running => ffi::Status::Running,
+            records::Status::Waiting => ffi::Status::Waiting,
+            records::Status::Stopped => ffi::Status::Stopped,
+        },
+        parent: record.parent.as_ref().map(|parent| parent.session.clone()),
+        active_at: record.active_at,
     }
 }
 

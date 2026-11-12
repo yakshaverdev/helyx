@@ -1,11 +1,14 @@
 //! The surface of the bindings, proven without Swift: the object of the
 //! bindings against the stub server of the network layer, with a listener
-//! implemented in Rust. It connects, lists the live sessions, sends a prompt
-//! and takes its reply and the failed outcome of a refused one, and ends the
-//! connection at its drop, also when the listener releases it.
+//! implemented in Rust. It connects, lists the live sessions and the records
+//! of the feed, sends a prompt and takes its reply and the failed outcome of a
+//! refused one, and ends the connection at its drop, also when the listener
+//! releases it.
 
 use helyx_client_core::json::{Json, decode};
-use helyx_client_ffi::{Connection, NetError, NetListener, RequestState, SendOutcome, Snapshot};
+use helyx_client_ffi::{
+    Connection, NetError, NetListener, RequestState, SendOutcome, Snapshot, Status,
+};
 use helyx_client_net::stub;
 use std::net::TcpStream;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -53,6 +56,24 @@ fn ok(ws: &mut WebSocket<TcpStream>, id: &str, result: &str) {
     .unwrap();
 }
 
+fn error(ws: &mut WebSocket<TcpStream>, id: &str, code: &str) {
+    ws.send(Message::text(format!(
+        r#"{{"type":"res","id":"{id}","ok":false,"error":{{"code":"{code}","text":"x"}}}}"#
+    )))
+    .unwrap();
+}
+
+/// One `record` of the records feed, as the server sends it.
+fn record(session: &str, title: &str, status: &str, parent: Option<&str>) -> String {
+    let parent = match parent {
+        None => "null".to_owned(),
+        Some(id) => format!(r#"{{"session":"{id}","kind":"child"}}"#),
+    };
+    format!(
+        r#"{{"session":"{session}","owner":{{"id":"u1","name":"ada"}},"project":null,"title":"{title}","labels":[],"visibility":"private","archived":false,"created_at":1,"updated_at":1,"cwd":"/r/{session}","model":"fake/echo","prompt":"the prompt","active_at":1,"parent":{parent},"status":"{status}"}}"#
+    )
+}
+
 /// The reply of the server to `sessions.live`: one session, `s1`.
 fn live(id: &str) -> String {
     format!(
@@ -74,20 +95,27 @@ fn the_surface_connects_lists_and_takes_a_result() {
     });
     let (server, stub) = stub::one(|mut ws| {
         stub::welcome(&mut ws, "tok-q4");
-        // The two requests of the welcome: the live sessions, then the first
-        // page of the saved ones.
-        let asked = request(&mut ws);
+        // The requests of the welcome: the records subscription, refused on
+        // a server with no Hub, then the first page of the saved sessions,
+        // and the live sessions that the refusal allows.
+        let records = request(&mut ws);
         assert_eq!(
-            asked.get("op").and_then(Json::as_str),
-            Some("sessions.live")
+            records.get("op").and_then(Json::as_str),
+            Some("records.subscribe")
         );
-        ws.send(Message::text(live(&id_of(&asked)))).unwrap();
+        error(&mut ws, &id_of(&records), "unknown_op");
         let saved = request(&mut ws);
         assert_eq!(
             saved.get("op").and_then(Json::as_str),
             Some("sessions.saved")
         );
         ok(&mut ws, &id_of(&saved), r#"{"items":[],"next":null}"#);
+        let asked = request(&mut ws);
+        assert_eq!(
+            asked.get("op").and_then(Json::as_str),
+            Some("sessions.live")
+        );
+        ws.send(Message::text(live(&id_of(&asked)))).unwrap();
         // The live list that the host asks for again.
         let asked = request(&mut ws);
         assert_eq!(
@@ -113,10 +141,14 @@ fn the_surface_connects_lists_and_takes_a_result() {
         listener.clone(),
     )
     .unwrap();
-    // Connect and list the live sessions: the reply of the welcome.
+    // Connect and list the live sessions: the reply of the welcome. The
+    // server has no Hub, so its list is the live one.
     let first = until(&snapshots, |snapshot| !snapshot.live.is_empty());
     assert_eq!(first.live[0].id, "s1");
     assert_eq!(first.line, "connected");
+    assert!(!first.records_feed);
+    assert!(first.records.is_empty());
+    assert!(!first.records_more);
     // The method of the live list, and its result.
     connection.live_sessions().unwrap();
     until(&snapshots, |snapshot| {
@@ -144,6 +176,61 @@ fn the_surface_connects_lists_and_takes_a_result() {
         .unwrap_err();
     assert_eq!(refused.to_string(), "not a model ref: use provider/model");
     // The drop ends the network thread, and the stub sees the end.
+    drop(connection);
+    stub.join().unwrap();
+}
+
+#[test]
+fn the_snapshot_carries_the_records_feed() {
+    let (changes, snapshots) = channel();
+    let listener = Arc::new(Collect {
+        changes: Mutex::new(changes),
+    });
+    let (server, stub) = stub::one(|mut ws| {
+        stub::welcome(&mut ws, "tok-q4");
+        let records = request(&mut ws);
+        assert_eq!(
+            records.get("op").and_then(Json::as_str),
+            Some("records.subscribe")
+        );
+        let waiting = record("s1", "fix the build", "waiting", Some("p0"));
+        let idle = record("s2", "", "idle", None);
+        ok(
+            &mut ws,
+            &id_of(&records),
+            &format!(r#"{{"records":[{waiting}],"more":true}}"#),
+        );
+        // A change: the idle session joins the list after the waiting one.
+        ws.send(Message::text(format!(
+            r#"{{"type":"record","change":{{"kind":"new","record":{idle}}}}}"#
+        )))
+        .unwrap();
+        // The drop of the object ends the connection: the socket goes. The
+        // saved page of the welcome is still on its way, so read until the
+        // socket ends.
+        while ws.read().is_ok() {}
+    });
+    let connection = Connection::new(
+        server.address.to_string(),
+        server.port,
+        server.token.clone(),
+        listener.clone(),
+    )
+    .unwrap();
+    let snapshot = until(&snapshots, |snapshot| snapshot.records.len() == 2);
+    assert!(snapshot.records_feed);
+    assert!(snapshot.records_more);
+    assert_eq!(snapshot.records[0].session, "s1");
+    assert_eq!(snapshot.records[0].title, "fix the build");
+    assert_eq!(snapshot.records[0].prompt, "the prompt");
+    assert_eq!(snapshot.records[0].cwd, "/r/s1");
+    assert_eq!(snapshot.records[0].model, "fake/echo");
+    assert_eq!(snapshot.records[0].status, Status::Waiting);
+    assert_eq!(snapshot.records[0].parent, Some("p0".into()));
+    assert_eq!(snapshot.records[0].active_at, 1);
+    assert_eq!(snapshot.records[1].session, "s2");
+    assert_eq!(snapshot.records[1].status, Status::Idle);
+    assert_eq!(snapshot.records[1].parent, None);
     drop(connection);
     stub.join().unwrap();
 }
@@ -211,10 +298,19 @@ fn a_refused_operation_reports_a_failed_outcome_with_its_number() {
     });
     let (server, stub) = stub::one(|mut ws| {
         stub::welcome(&mut ws, "tok-q4");
-        let asked = request(&mut ws);
-        ws.send(Message::text(live(&id_of(&asked)))).unwrap();
+        // The requests of the welcome: the records subscription, refused on
+        // a server with no Hub, then the first page of the saved sessions,
+        // and the live sessions that the refusal allows.
+        let records = request(&mut ws);
+        assert_eq!(
+            records.get("op").and_then(Json::as_str),
+            Some("records.subscribe")
+        );
+        error(&mut ws, &id_of(&records), "unknown_op");
         let saved = request(&mut ws);
         ok(&mut ws, &id_of(&saved), r#"{"items":[],"next":null}"#);
+        let asked = request(&mut ws);
+        ws.send(Message::text(live(&id_of(&asked)))).unwrap();
         // The live list after the refused operation carries its outcome.
         let asked = request(&mut ws);
         ws.send(Message::text(live(&id_of(&asked)))).unwrap();
