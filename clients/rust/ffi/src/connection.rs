@@ -138,19 +138,22 @@ impl Connection {
     }
 
     /// Stops `session`: a running turn aborts first, and the session ends.
-    pub fn stop(&self, session: String) -> Result<(), NetError> {
+    /// Gives the number of the send, whose outcome comes in the snapshot.
+    pub fn stop(&self, session: String) -> Result<u64, NetError> {
         self.perform(Ok(Operation::stop(&session)))
     }
 
     /// Switches `session` to `model` for its next turn. The core checks the
-    /// ref before it goes.
-    pub fn set_model(&self, session: String, model: String) -> Result<(), NetError> {
+    /// ref before it goes. Gives the number of the send, whose outcome comes
+    /// in the snapshot.
+    pub fn set_model(&self, session: String, model: String) -> Result<u64, NetError> {
         self.perform(Operation::set_model(&session, &model))
     }
 
     /// Compacts `session` with `text` as the instructions, or with none when
-    /// the text is empty.
-    pub fn compact(&self, session: String, text: String) -> Result<(), NetError> {
+    /// the text is empty. Gives the number of the send, whose outcome comes
+    /// in the snapshot.
+    pub fn compact(&self, session: String, text: String) -> Result<u64, NetError> {
         self.perform(Operation::compact(&session, &text))
     }
 
