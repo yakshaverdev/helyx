@@ -17,9 +17,6 @@ defmodule Helyx.Hub.RecordsFeedTest do
   @moduletag :tmp_dir
 
   @server_token "the server token"
-  # A wait that must not see a frame: the margin is for load. A frame that
-  # comes later only makes the check weaker, never fails it.
-  @quiet_ms 500
 
   defp serve(%{tmp_dir: dir} = context, opts \\ [], before \\ fn _context -> :ok end) do
     core = :"core_#{System.unique_integer([:positive])}"
@@ -395,8 +392,8 @@ defmodule Helyx.Hub.RecordsFeedTest do
     end
 
     poll(context.hub)
-    quiet(owner, "the default owner")
-    quiet(bob, "bob")
+    assert_marker(owner)
+    assert_marker(bob)
   end
 
   test "a record delete names the id only to the feed of its owner", context do
@@ -414,8 +411,8 @@ defmodule Helyx.Hub.RecordsFeedTest do
 
     %{"ok" => true} = req(ann, "hub.records.delete", %{"session" => id})
     poll(context.hub)
-    quiet(owner, "the default owner")
-    quiet(bob, "bob")
+    assert_marker(owner)
+    assert_marker(bob)
   end
 
   test "a get that writes a row tells the feed", context do
@@ -540,8 +537,7 @@ defmodule Helyx.Hub.RecordsFeedTest do
     assert {[], false} = subscribe(owner)
   end
 
-  @tag :slow
-  test "a seed that fails keeps the asks and the count, and the next poll reads again",
+  test "a failed read keeps the asks and the count, and the next poll reads again",
        context do
     context = serve(context)
     owner = open(context.port)
@@ -571,23 +567,104 @@ defmodule Helyx.Hub.RecordsFeedTest do
     Events.wait_until(fn -> Helyx.Sessions.dropped(counter) > 0 end)
     :ok = :sys.resume(hub)
 
-    # The session of the ask does not answer the snapshot, so the read fails.
+    # The session of the ask does not answer the read; the Hub kills the read
+    # at its bound (here, at once), keeps the count, and the next poll reads.
     session_pid = Session.pid(session)
     :ok = :sys.suspend(session_pid)
     send(hub, :wake_poll)
-    state = :sys.get_state(hub, 15_000)
+    read = :sys.get_state(hub).live_read
+    assert read != nil
+    send(hub, {:live_read_timeout, read.ref})
 
+    state = :sys.get_state(hub)
     assert state.feed_dropped == 0
     assert Map.has_key?(state.asks, session.id)
 
     :ok = :sys.resume(session_pid)
     send(hub, :wake_poll)
-    state = :sys.get_state(hub, 15_000)
 
-    assert state.feed_dropped > 0
+    Events.wait_until(fn -> :sys.get_state(hub).feed_dropped > 0 end)
 
     {records, _more} = subscribe(open(context.port))
     assert %{"status" => "waiting"} = Enum.find(records, &(&1["session"] == session.id))
+  end
+
+  test "a records_end that races an unsubscribe answers the unsubscribe", context do
+    context = serve(context)
+    owner = open(context.port)
+    {[], false} = subscribe(owner)
+
+    records_pid =
+      :sys.get_state(context.hub).records |> Map.values() |> hd() |> Map.fetch!(:pid)
+
+    {:links, [conn]} = Process.info(records_pid, :links)
+
+    on_exit(fn ->
+      try do
+        :erlang.resume_process(records_pid)
+      catch
+        _, _ -> :ok
+      end
+    end)
+
+    # The record process holds the unsubscribe in its mailbox: the connection
+    # took the req and the writer owes its id.
+    :erlang.suspend_process(records_pid)
+    Client.send_request(owner, "u", "records.unsubscribe", %{})
+
+    Events.wait_until(fn ->
+      {:messages, messages} = Process.info(records_pid, :messages)
+      {:unsubscribe, "u"} in messages
+    end)
+
+    send(conn, {:records_ended, records_pid})
+    Client.send_request(owner, "m", "sessions.live", %{})
+
+    assert %{"type" => "res", "id" => "u", "ok" => true} = Client.res(owner, "u")
+    assert %{"type" => "res", "id" => "m"} = Client.res(owner, "m")
+  end
+
+  test "the start read does not block the Hub", context do
+    context =
+      serve(context, [], fn context ->
+        {:ok, session} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
+        session_pid = Session.pid(session)
+        :erlang.suspend_process(session_pid)
+        send(self(), {:session, session.id, session_pid})
+      end)
+
+    assert_received {:session, _id, session_pid}
+
+    on_exit(fn ->
+      try do
+        :erlang.resume_process(session_pid)
+      catch
+        _, _ -> :ok
+      end
+    end)
+
+    # The Hub took the start read, which waits for the suspended session; a
+    # Hub call answers from the Hub process meanwhile.
+    assert {:ok, _users} = Hub.users(context.hub)
+  end
+
+  test "a pending read at the start is read at the next poll", context do
+    context =
+      serve(context, [], fn context ->
+        {:ok, session} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
+        send(self(), {:session, session.id})
+      end)
+
+    assert_received {:session, id}
+    Events.wait_until(fn -> Live.running?(:sys.get_state(context.hub), id) end)
+
+    # A failed read at the start leaves the session out and the read pending.
+    :sys.replace_state(context.hub, fn state ->
+      %{state | live: %{}, starters: %{}, seed_pending: true}
+    end)
+
+    poll(context.hub)
+    Events.wait_until(fn -> Live.running?(:sys.get_state(context.hub), id) end)
   end
 
   # A server whose Hub has a registered name, so its authority finds the new
@@ -614,13 +691,11 @@ defmodule Helyx.Hub.RecordsFeedTest do
     Map.merge(context, %{port: WebSocket.port(transport)})
   end
 
-  # No frame in a margin: the frames are those of the feed alone, so any bytes
-  # are a change that another user must not see.
-  defp quiet(socket, name) do
-    case :gen_tcp.recv(socket, 0, @quiet_ms) do
-      {:error, :timeout} -> :ok
-      other -> flunk("#{name}: an unexpected frame: #{inspect(other)}")
-    end
+  # The next frame of the connection is the reply of a marker request: a
+  # frame of another user's record before it fails the test.
+  defp assert_marker(socket) do
+    Client.send_request(socket, "marker", "sessions.live", %{})
+    assert {:frame, %{"type" => "res", "id" => "marker"}} = Client.recv(socket)
   end
 
   defp next_full(socket) do

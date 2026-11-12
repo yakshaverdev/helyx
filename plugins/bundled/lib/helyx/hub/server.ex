@@ -9,6 +9,7 @@ defmodule Helyx.Hub.Server do
   alias Helyx.Hub.{
     Connections,
     Live,
+    LiveRead,
     RecordFeed,
     Records,
     Rules,
@@ -18,9 +19,6 @@ defmodule Helyx.Hub.Server do
     Webhook
   }
 
-  # The read of the live sessions of the Core at the start and at each repair
-  # (decision 14).
-  @seed_ms 5_000
   # The deadline of the write of a row of the feed: a write that waits for
   # nobody, and one past this rolls back. The repair path writes the row
   # later (decision 8).
@@ -52,8 +50,13 @@ defmodule Helyx.Hub.Server do
               feed_dropped: 0
             })
 
-          {:ok, state |> Live.init() |> Connections.init() |> Wake.init() |> RecordFeed.init(),
-           {:continue, :live}}
+          {:ok,
+           state
+           |> Live.init()
+           |> Connections.init()
+           |> Wake.init()
+           |> RecordFeed.init()
+           |> LiveRead.init(), {:continue, :live}}
 
         {:error, _} = error ->
           config.store.close(store)
@@ -81,91 +84,37 @@ defmodule Helyx.Hub.Server do
     end
   end
 
-  # Every live session of the Core enters the live set once, and its row; past
-  # the deadline, or on a failed read, the old live set and the old ask sets
-  # stay and the next poll reads again (decision 14; live-records.md). A seed
-  # keeps the set of a session whose snapshot read failed.
+  # Every live session of the Core enters the live set once, and its row, from
+  # a read in a Task outside the Hub (`Helyx.Hub.LiveRead`; decision 14,
+  # live-records.md). A read that fails or passes its bound leaves
+  # `seed_pending`, and the next poll reads again: the start and the repair are
+  # one mechanism.
   @impl true
   def handle_continue(:live, state) do
-    state =
-      case read_live(state) do
-        {:ok, sessions, seeds} ->
-          state |> RecordFeed.seed(seeds) |> seen_all(sessions) |> RecordFeed.prune()
-
-        :error ->
-          state
-      end
-
-    # The first poll of the wake-ups comes at the start (decision 12).
+    # The first poll of the wake-ups comes at the start (decision 12), and it
+    # starts the first read.
     {:noreply, poll(state)}
-  end
-
-  # `{:ok, sessions, seeds}` from the live sessions of the Core, in a Task
-  # under the wake supervisor with the bound of the seed, or `:error`, which
-  # keeps what Hub holds and lets the next poll read again. A Core bounds
-  # neither the number of its sessions nor the time that one takes to answer.
-  defp read_live(%{core: core, wake: %{sup: sup}}) do
-    task = Task.Supervisor.async_nolink(sup, fn -> live_sessions(core) end)
-
-    case Task.yield(task, @seed_ms) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {sessions, seeds}} -> {:ok, sessions, seeds}
-      _exit_or_nil -> :error
-    end
   end
 
   defp seen_all(state, sessions),
     do: Enum.reduce(sessions, state, fn {live, pid}, state -> seen(state, live, pid) end)
 
-  # Each live session and the read of its open asks, from its snapshot. The
-  # session drops the subscriber when the Task ends.
-  defp live_sessions(core) do
-    pairs =
-      for live <- Helyx.Sessions.list_live(core),
-          pid = Helyx.Session.pid(%Helyx.Session{id: live.id, core: core}),
-          is_pid(pid),
-          do: {live, pid}
+  # The periodic step of Hub: the read of the live sessions, the repair of a
+  # records subscriber, then the poll of the wake-ups. It needs no timer of its
+  # own, because the poll already runs each 1,000 ms (decision 12).
+  defp poll(state), do: state |> LiveRead.maybe_read() |> RecordFeed.repaired() |> Wake.poll()
 
-    seeds = Enum.map(pairs, fn {live, _pid} -> {live.id, open_asks(core, live.id)} end)
-    {pairs, seeds}
+  # A read that took: its sessions enter the live set and tell the feed, and a
+  # snapshot that failed keeps its old set for the next poll.
+  defp read_applied(state, {:ok, sessions, seeds}) do
+    state
+    |> RecordFeed.seed(seeds)
+    |> seen_all(sessions)
+    |> RecordFeed.prune()
+    |> RecordFeed.repaired()
   end
 
-  defp open_asks(core, id) do
-    case Helyx.Session.subscribe(%Helyx.Session{id: id, core: core}, tail: 1) do
-      {:ok, %Helyx.Session.Snapshot{asks: asks}, _ref} -> {:ok, Enum.map(asks, & &1.ask_id)}
-      _error -> :error
-    end
-  catch
-    :exit, _reason -> :error
-  end
-
-  # The periodic step of Hub: the repair of a dropped notice of the feed, the
-  # repair of a records subscriber, then the poll of the wake-ups. It needs no
-  # timer of its own, because the poll already runs each 1,000 ms
-  # (decision 12).
-  defp poll(state), do: state |> repaired() |> RecordFeed.repaired() |> Wake.poll()
-
-  # A notice that the feed dropped left its session out of the live set, and
-  # with no row, and may have left an open-ask set behind. A count above the
-  # one that Hub last read reads the live sessions again, as the start does
-  # (decision 14; live-records.md). A read that fails keeps the count, so the
-  # next poll reads again. The count is read before the sessions, so a drop
-  # during the read keeps the count low and the next poll reads them again.
-  defp repaired(state) do
-    dropped = Helyx.Sessions.dropped(state.feed)
-
-    if dropped > state.feed_dropped do
-      case read_live(state) do
-        {:ok, sessions, seeds} ->
-          state = state |> RecordFeed.seed(seeds) |> seen_all(sessions) |> RecordFeed.prune()
-          %{state | feed_dropped: dropped}
-
-        :error ->
-          state
-      end
-    else
-      state
-    end
-  end
+  defp read_applied(state, :error), do: state
 
   # The Live of the feed, and the row that it writes: the write waits for
   # nobody (decision 8). The live entry takes the status, which the record
@@ -509,6 +458,7 @@ defmodule Helyx.Hub.Server do
   end
 
   def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
+    state = LiveRead.failed(state, ref)
     id = Live.watched(state, ref)
     state = state |> Live.down(ref, pid) |> Connections.down(ref) |> Wake.ended(ref)
 
@@ -532,9 +482,22 @@ defmodule Helyx.Hub.Server do
 
   def handle_info(:wake_poll, state), do: {:noreply, poll(state)}
   def handle_info({:wake_kill, ref}, state), do: {:noreply, Wake.expired(state, ref)}
-  # The reply of a delivery Task.
-  def handle_info({ref, _result}, state) when is_reference(ref),
-    do: {:noreply, Wake.ended(state, ref)}
+
+  # The result of a read of the live sessions, or the reply of a delivery
+  # Task. A read that the Hub killed leaves no result; its `:DOWN` is above.
+  def handle_info({ref, result}, state) when is_reference(ref) do
+    case LiveRead.take(state, ref) do
+      nil ->
+        {:noreply, Wake.ended(state, ref)}
+
+      {read, state} ->
+        {outcome, state} = LiveRead.outcome(state, read, result)
+        {:noreply, read_applied(state, outcome)}
+    end
+  end
+
+  def handle_info({:live_read_timeout, ref}, state),
+    do: {:noreply, LiveRead.timeout(state, ref)}
 
   # Another message changes nothing (the exit of the parent of the Hub, which
   # traps exits, stops it before this clause): a crash would lose the live

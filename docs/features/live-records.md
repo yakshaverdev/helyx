@@ -102,18 +102,24 @@ The status is derived, never stored. A session with at least one open ask has
 the `:ask` and `:ask_end` events of the session feed. Hub names those two
 types in its `Helyx.Sessions.watch/2` call. The `Helyx.Sessions.Live` notice
 carries no ask, so the set is seeded from the session snapshot
-(`Helyx.Session.subscribe/2` with `tail: 1`, then the Task ends and the
+(`Helyx.Session.subscribe/2` with `tail: 1`, then the task ends and the
 session drops the subscriber):
 
-- at the start of Hub, and at each repair of a dropped feed notice, one Task
-  reads the live sessions and their snapshots, under the seed bound of
-  `Helyx.Hub.Server` (5,000 ms);
+- the read of the live sessions runs in one Task outside the Hub process, so
+  a session that does not answer blocks the Task, never the Hub. The Hub
+  starts it at its start and at a poll that finds a pending read or a new
+  drop of the feed, and takes its result as a message. At most one read runs;
+- the Task reads `Helyx.Sessions.list_live/1` under the seed bound, then one
+  snapshot of each live session under the same bound, each session in a Task
+  of its own. A snapshot that does not answer is `:error` for that session:
+  the seed keeps its old set, and the read stays pending, so the next poll
+  reads again;
+- a read that fails or passes its bound keeps the live set, the ask sets, and
+  the feed count, and stays pending; the next poll reads again. So the start
+  path and the repair path are one mechanism;
 - the snapshot is the baseline, and the `:ask` and `:ask_end` notices that
   wait in the mailbox of the Hub process are applied after the seed: adding or
-  removing an ask id is idempotent, so the set is right without an epoch;
-- a snapshot read that fails keeps the old set of its session; at a repair, a
-  read of the live sessions that fails or passes the bound keeps the old live
-  set and the old sets, and the next poll reads again.
+  removing an ask id is idempotent, so the set is right without an epoch.
 
 With no records subscription, Hub writes no record view and sends no frame.
 It keeps the open-ask set from the feed: one map update for each `:ask` and
@@ -148,9 +154,19 @@ It keeps the open-ask set from the feed: one map update for each `:ask` and
   and its first change is **silent**: no client is told. The `result` of the
   start knows the owner; it sends the record to that owner, and, if the row
   was the default owner's, the removal to the default owner's subscribers
-  only. A removal never names the id to a user who could not have held the
-  record: a record delete and a wake-up that loses its file tell the
-  subscribers of the owner that the row had.
+  only. A silent row is in **no** list: the live frames and every full list
+  (the first reply, a refresh, the poll) ask the same visibility rule, so the
+  default owner never sees the id of another user's start. A removal never
+  names the id to a user who could not have held the record: a record delete
+  and a wake-up that loses its file tell the subscribers of the owner that the
+  row had.
+- `Helyx.Hub.LiveRead` (new, internal) reads the live sessions in a Task
+  outside the Hub (`maybe_read/1`) and the Hub takes the result as a message,
+  so a session that does not answer blocks the Task, never the Hub. `seed_pending`
+  is the one mechanism of the start and the repair: a read that fails or is
+  killed leaves it set, and the next poll starts a read. A per-session
+  snapshot that does not answer is `:error`, which keeps that session's set
+  and leaves the read pending.
 - `Helyx.Hub.Store` gains `owned/3` (the rows of an owner, newest
   `active_at` first, at most a limit) and `rows/2` (the rows of a list of
   session ids). `Helyx.Hub.Store.SQLite` implements them.
@@ -208,7 +224,8 @@ It keeps the open-ask set from the feed: one map update for each `:ask` and
 | the full list after a drop, and the first list after a `records_end` | one frame of at most `max_reply/0` records, sent at the next poll, `Helyx.Hub.Wake.poll_ms/0` (1,000 ms) after the client drains | the next poll tries again | Hub |
 | records subscriptions of a Hub | `Helyx.Hub.RecordFeed.max_subscribers/0`, read from `record_subscribers` of `bounds.json`: the 64 connections of the transport, one subscription each | `busy` at the subscribe | Hub |
 | open asks of a session | one for each call that waits; Core bounds the calls of a turn (the concurrency of its tools) | n/a | Core |
-| the seed of the open-ask sets | one Task of `Helyx.Hub.Server`'s `@seed_ms` (5,000 ms) that reads `Helyx.Sessions.list_live/1` and one snapshot of each live session; at a repair past it the old sets and the old live set stay, and the next poll reads again, and a snapshot read that fails keeps that session's set | the repair at the next poll reads them again | Hub |
+| the read of the live sessions | one Task at a time, outside the Hub: `Helyx.Hub.LiveRead`'s `@seed_ms` for `Helyx.Sessions.list_live/1` and `@seed_ms` for its snapshots, `@read_ms` in all, and the Hub kills it at `@read_ms` + `@kill_margin_ms` | the Hub never waits for it; a killed or failed read stays pending, and the next poll reads again | Hub |
+| the snapshot of one session | its own Task for `@seed_ms`; one that does not answer is `:error` in the seed | the set of that session stays, and the read stays pending, so the next poll reads again | Hub |
 | the rows in a seed snapshot | `tail: 1`, so one message; the asks are the snapshot's | n/a | Core |
 | the reply of `records.subscribe` | the 6,000 ms of every other operation: one Hub call of 5,000 ms | `timeout` | the transport, Hub |
 | records in the fold of the client | `records`'s `MAX_ROWS`: the first page plus the changes, and when a change passes it the fold drops the oldest stopped record, then the oldest record that does not wait | the fold stays at `MAX_ROWS` rows | the client core |
@@ -228,8 +245,9 @@ the Hub for its changes.
 | a records subscription of a connection | `records.subscribe` in the connection | the connection, as a linked writer; a process of the transport | `records.unsubscribe`, `records_end`, or the end of the connection | the connection monitor of the writer; the connection ends | the connection kills its writers |
 | a records subscriber of Hub | the Hub call of `records/3` | the Hub process, with a monitor of the records process | the `:DOWN` of the process | the `:DOWN` | n/a |
 | the monitor of the Hub by a records process | `Process.monitor/1` in the records process | the records process | the `records_end` that the `:DOWN` sends; the process ends | the process ends | the connection kills it |
-| the open-ask sets and the silent marks | the `:ask` and `:ask_end` notices, the seed Task, and a `Live` of a start in flight | the Hub process | the `:DOWN` of the session removes its set; the stop of Hub frees them | gone with Hub; the next start seeds the sets | n/a |
-| the snapshot subscription of a seed | the seed Task | the Task | the Task ends, and the session drops the subscriber at its `:DOWN` | the Task dies, and the session drops the subscriber | the Task is killed at `@seed_ms` |
+| the open-ask sets and the silent marks | the `:ask` and `:ask_end` notices, the read Task, and a `Live` of a start in flight | the Hub process | the `:DOWN` of the session removes its set; the stop of Hub frees them | gone with Hub; the next start seeds the sets | n/a |
+| the read Task of the live sessions | `Helyx.Hub.LiveRead.maybe_read/1` | the wake supervisor of Hub, with a timer | its result message; the Hub kills it at `@read_ms` + `@kill_margin_ms` | its snapshot Tasks die with it, and the next poll reads again | the stop of Hub, and the kill of its timer |
+| the snapshot subscription of a read | the read Task, one for each live session | the snapshot Task | the Task ends, and the session drops the subscriber at its `:DOWN` | the Task dies, and the session drops the subscriber | the read Task is killed, and its Tasks die with it |
 
 ## Replaced mechanism
 

@@ -275,15 +275,12 @@ defmodule Helyx.Transport.WebSocket.Connection do
   def handle_info({:acked, pid}, state), do: {:ok, next_ack(state, pid)}
 
   # The records process sent `records_end` (its Hub ended): the connection
-  # holds no records subscription from here, so a subscribe that follows the
-  # frame finds a free place.
+  # holds no records subscription from here, and every request that the writer
+  # still owes gets its answer, so a subscribe that follows the frame finds a
+  # free place and an unsubscribe that was in flight gets its `res` (O2).
   def handle_info({:records_ended, pid}, state) do
-    {:ok,
-     %{
-       state
-       | writers: Map.delete(state.writers, pid),
-         waiting: :queue.delete(pid, state.waiting)
-     }}
+    {texts, state} = records_closed(state, pid)
+    {:push, texts, state}
   end
 
   def handle_info({:slot, pid}, state) do
@@ -464,5 +461,23 @@ defmodule Helyx.Transport.WebSocket.Connection do
       _other ->
         nil
     end)
+  end
+
+  # The one way a records writer goes: free its place and its slot, and answer
+  # every id that it owes. The feed is gone, which is the answer of an
+  # unsubscribe that waits; a records writer never owes its subscribe, because
+  # the monitor comes after that reply.
+  defp records_closed(state, pid) do
+    writer = Map.get(state.writers, pid)
+    state = release(state, pid)
+
+    state = %{
+      state
+      | writers: Map.delete(state.writers, pid),
+        waiting: :queue.delete(pid, state.waiting)
+    }
+
+    ids = if writer, do: owed(writer), else: []
+    {Enum.flat_map(ids, &texts(Outbound.res(&1, {:ok, %{}}))), state}
   end
 end

@@ -51,14 +51,23 @@ defmodule Helyx.Hub.RecordFeed do
   # record of the user that the page cuts, so a live record is never left out.
   # `more` is true when the user owns more than the page. The reply holds at
   # most `max_reply/0` records.
+  #
+  # A row is visible to the user when the store names the user as its owner and
+  # no start of another user is in flight for it (`silent`). The live frames and
+  # every full list ask the same rule here, so a silent row is in no list.
   def list(state, user) do
     %{store: mod, db: db} = state
 
-    with {:ok, newest} <- mod.owned(db, user, page() + 1),
+    # The silent rows are skipped, so read that many more of the page.
+    taken = page() + 1 + MapSet.size(state.silent)
+
+    with {:ok, newest} <- mod.owned(db, user, taken),
          {:ok, live} <- mod.rows(db, Live.ids(state)) do
+      newest = Enum.reject(newest, &silent?(state, &1))
+
       live_rows =
         live
-        |> Enum.filter(&(&1.owner == user))
+        |> Enum.filter(&(&1.owner == user and not silent?(state, &1)))
         |> Enum.uniq_by(& &1.session_id)
 
       live_ids = MapSet.new(live_rows, & &1.session_id)
@@ -82,6 +91,8 @@ defmodule Helyx.Hub.RecordFeed do
       end
     end
   end
+
+  defp silent?(state, row), do: MapSet.member?(state.silent, row.session_id)
 
   # Waiting first, then `active_at` newest first, then the session id.
   defp order(rows, state) do

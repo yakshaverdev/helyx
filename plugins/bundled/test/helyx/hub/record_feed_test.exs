@@ -206,6 +206,34 @@ defmodule Helyx.Hub.RecordFeedTest do
     def record(_db, _session_id), do: {:error, :failed}
   end
 
+  test "a silent row is in no list, and every full list skips it", context do
+    context = serve(context)
+    state = :sys.get_state(context.hub)
+    {:ok, session} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
+    wait_row(state, session.id)
+    Events.wait_until(fn -> Helyx.Hub.Live.running?(:sys.get_state(context.hub), session.id) end)
+
+    state = :sys.get_state(context.hub)
+
+    slow = subscriber()
+    {:ok, state} = RecordFeed.subscribe(state, state.default_owner_id, slow)
+
+    state = RecordFeed.silent(state, session.id)
+
+    assert {:ok, rows, _more} = RecordFeed.list(state, state.default_owner_id)
+    refute Enum.any?(rows, &(&1["session"] == session.id))
+
+    state = RecordFeed.refresh(state, state.default_owner_id)
+    assert_receive {:full, refreshed, _more}
+    refute Enum.any?(refreshed, &(&1["session"] == session.id))
+
+    state = RecordFeed.failed(state)
+    _state = RecordFeed.repaired(state)
+    assert_receive {:full, resent, _more}
+    refute Enum.any?(resent, &(&1["session"] == session.id))
+    send(slow, :stop)
+  end
+
   defp wait_row(state, id) do
     Events.wait_until(fn -> match?({:ok, _row}, state.store.record(state.db, id)) end)
   end
