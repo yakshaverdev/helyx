@@ -23,7 +23,11 @@ defmodule Helyx.Transport.WebSocket.PairingClientTest do
     hub =
       start_supervised!(
         Supervisor.child_spec(
-          {Hub, core: core, default_owner: "owner", server_token: fn -> @token end},
+          {Hub,
+           core: core,
+           default_owner: "owner",
+           server_token: fn -> @token end,
+           path: Path.join(context.tmp_dir, "hub.db")},
           id: :hub
         )
       )
@@ -171,7 +175,6 @@ defmodule Helyx.Transport.WebSocket.PairingClientTest do
     end
 
     test "a second connection with the key alone gets welcome", context do
-      {_link, _expires} = link(context, "client", "phone")
       {socket, {:frame, %{"type" => "welcome"}}, keys} = open_as_new(context, "phone")
       :ssl.close(socket)
 
@@ -253,7 +256,123 @@ defmodule Helyx.Transport.WebSocket.PairingClientTest do
       :ssl.close(second)
     end
 
-    test "a Hub that does not answer closes the paired hello with 4503", context do
+    test "a pairing of the same name replaces the key, and the old key no longer connects",
+         %{tls: tls} = context do
+      {first, {:frame, %{"type" => "welcome"}}, old_keys} = open_as_new(context, "phone")
+
+      {second, {:frame, %{"type" => "welcome"}}, new_keys} = open_as_new(context, "phone")
+      assert {:close, 4401} = TlsClient.until_close(first)
+      :ssl.close(second)
+
+      {_old, reply} =
+        TlsClient.open(context.port, tls.pin, fn nonce ->
+          signature_hello(nonce, tls.pin, old_keys, "client", "phone")
+        end)
+
+      assert {:close, 4401} = reply
+
+      {third, reply} =
+        TlsClient.open(context.port, tls.pin, fn nonce ->
+          signature_hello(nonce, tls.pin, new_keys, "client", "phone")
+        end)
+
+      assert {:frame, %{"type" => "welcome"}} = reply
+      :ssl.close(third)
+    end
+
+    test "a client hello with neither a pair nor a signature closes with 4401",
+         %{tls: tls} = context do
+      # The second hello carries the proof of the server token and no
+      # handshake: the public listener still refuses it.
+      for proof? <- [false, true] do
+        {:ok, socket} = TlsClient.upgrade(context.port, tls.pin)
+        nonce = TlsClient.challenge(socket)
+
+        hello = %{
+          "type" => "hello",
+          "protocol" => WebSocket.protocol(),
+          "role" => "client",
+          "client" => "phone"
+        }
+
+        hello =
+          if proof?, do: Map.put(hello, "proof", WireClient.proof(nonce, @token)), else: hello
+
+        TlsClient.send_frame(socket, hello)
+        assert {:close, 4401} = TlsClient.until_close(socket)
+      end
+    end
+
+    test "a client link needs an authority that knows a paired peer", context do
+      public = [ip: {127, 0, 0, 1}, port: 0, address: "127.0.0.1:0"]
+
+      transport =
+        start_supervised!(
+          {WebSocket,
+           [
+             core: context.core,
+             port: 0,
+             token: @token,
+             public: public,
+             tls: context.tls,
+             pairing: context.hub
+           ]},
+          id: :no_authority_transport
+        )
+
+      socket = WireClient.open(WebSocket.port(transport), @token)
+
+      assert %{"ok" => false, "error" => %{"code" => "bad_params"}} =
+               WireClient.request(socket, "1", "pair.create", %{
+                 "kind" => "client",
+                 "name" => "phone"
+               })
+
+      assert %{"ok" => true, "result" => %{"link" => _link}} =
+               WireClient.request(socket, "2", "pair.create", %{
+                 "kind" => "hands",
+                 "name" => "mac"
+               })
+
+      :gen_tcp.close(socket)
+    end
+
+    test "a paired hello whose authority is busy closes with 4503", context do
+      keys = key_pair()
+      {public_key, _private_key} = keys
+
+      assert :ok =
+               Hub.put_peer(
+                 context.hub,
+                 %{kind: "client", name: "phone", public_key: public_key, created_at: 0},
+                 Hub.max_peers()
+               )
+
+      public = [ip: {127, 0, 0, 1}, port: 0, address: "127.0.0.1:0"]
+
+      transport =
+        start_supervised!(
+          {WebSocket,
+           [
+             core: context.core,
+             port: 0,
+             authority: {Helyx.Test.BusyAuthority, nil},
+             public: public,
+             tls: context.tls,
+             pairing: context.hub
+           ]},
+          id: :busy_authority_transport
+        )
+
+      {_socket, reply} =
+        TlsClient.open(WebSocket.public_port(transport), context.tls.pin, fn nonce ->
+          signature_hello(nonce, context.tls.pin, keys, "client", "phone")
+        end)
+
+      assert {:close, 4503} = reply
+    end
+
+    test "a Hub that does not answer closes the pairing hello with 4503", context do
       {:ok, pairing} =
         Pairing.start_link(
           hub: :no_such_hub,
@@ -331,6 +450,120 @@ defmodule Helyx.Transport.WebSocket.PairingClientTest do
       end
 
       :ssl.close(socket)
+    end
+
+    test "hands.register on a paired client is unknown_op", context do
+      {socket, {:frame, %{"type" => "welcome"}}, _keys} = open_as_new(context, "phone")
+
+      assert %{"ok" => false, "error" => %{"code" => "unknown_op"}} =
+               TlsClient.request(socket, "1", "hands.register", %{
+                 "runner" => "phone",
+                 "folder" => "/tmp/project"
+               })
+
+      :ssl.close(socket)
+    end
+
+    test "a revoke closes a connection with a subscription open, and no frame follows",
+         context do
+      {socket, {:frame, %{"type" => "welcome"}}, _keys} = open_as_new(context, "phone")
+
+      assert %{"result" => %{"session" => id}} =
+               TlsClient.request(socket, "1", "start", %{
+                 "cwd" => context.tmp_dir,
+                 "model" => "fake/echo"
+               })
+
+      assert %{"ok" => true} =
+               TlsClient.request(socket, "2", "subscribe", %{"session" => id})
+
+      operator = WireClient.open(context.loop, @token)
+
+      assert %{"ok" => true, "result" => %{}} =
+               WireClient.request(operator, "3", "pair.revoke", %{
+                 "kind" => "client",
+                 "name" => "phone"
+               })
+
+      :gen_tcp.close(operator)
+      assert {:close, 4401} = TlsClient.until_close(socket)
+      assert {:error, _reason} = TlsClient.recv(socket)
+    end
+
+    test "a change of access to private closes a paired client too", context do
+      ann = ann(context)
+      ann_conn = open_token(context, ann.token)
+
+      assert %{"result" => %{"session" => id}} =
+               WireClient.request(ann_conn, "1", "start", %{
+                 "cwd" => context.tmp_dir,
+                 "model" => "fake/echo"
+               })
+
+      assert %{"ok" => true} =
+               WireClient.request(ann_conn, "2", "hub.records.update", %{
+                 "session" => id,
+                 "visibility" => "hub"
+               })
+
+      server = WireClient.open(context.loop, @token)
+
+      assert %{"ok" => true} =
+               WireClient.request(server, "3", "subscribe", %{"session" => id})
+
+      {socket, {:frame, %{"type" => "welcome"}}, _keys} = open_as_new(context, "phone")
+
+      assert %{"ok" => true} =
+               TlsClient.request(socket, "4", "subscribe", %{"session" => id})
+
+      assert %{"ok" => true} =
+               WireClient.request(ann_conn, "5", "hub.records.update", %{
+                 "session" => id,
+                 "visibility" => "private"
+               })
+
+      # The next turn of the private session reaches no closed connection.
+      assert %{"ok" => true} =
+               WireClient.request(ann_conn, "6", "prompt", %{"session" => id, "text" => "next"})
+
+      assert {:close, 4403} = TlsClient.until_close(socket)
+      assert {:close, 4403} = WireClient.until_close(server)
+
+      # No frame of the next turn of the private session reaches the client.
+      assert {:error, _reason} = TlsClient.recv(socket)
+      :gen_tcp.close(ann_conn)
+    end
+
+    test "a record delete that takes read access closes a paired client too", context do
+      ann = ann(context)
+      ann_conn = open_token(context, ann.token)
+
+      assert %{"result" => %{"session" => id}} =
+               WireClient.request(ann_conn, "1", "start", %{
+                 "cwd" => context.tmp_dir,
+                 "model" => "fake/echo"
+               })
+
+      assert %{"ok" => true} =
+               WireClient.request(ann_conn, "2", "hub.records.update", %{
+                 "session" => id,
+                 "visibility" => "hub"
+               })
+
+      {socket, {:frame, %{"type" => "welcome"}}, _keys} = open_as_new(context, "phone")
+
+      assert %{"ok" => true} =
+               TlsClient.request(socket, "3", "subscribe", %{"session" => id})
+
+      # A stopped session with no file has no derived record: the delete
+      # takes read access from every user but its owner.
+      assert %{"ok" => true} = WireClient.request(ann_conn, "4", "stop", %{"session" => id})
+
+      assert %{"ok" => true} =
+               WireClient.request(ann_conn, "5", "hub.records.delete", %{"session" => id})
+
+      assert {:close, 4403} = TlsClient.until_close(socket)
+      :gen_tcp.close(ann_conn)
     end
 
     test "a revoke closes the connection at once and the key no longer connects", context do
@@ -422,4 +655,25 @@ defmodule Helyx.Transport.WebSocket.PairingClientTest do
       clock: clock
     )
   end
+
+  # A user of the Hub and a token of that user.
+  defp ann(context) do
+    {:ok, user} = Hub.add_user(context.hub, "ann")
+    {:ok, token} = Hub.create_token(context.hub, user.id, "laptop")
+    %{id: user.id, token: token}
+  end
+
+  # A connection of the loopback listener that proved the token of a user.
+  defp open_token(context, token) do
+    {:ok, socket} = WireClient.upgrade(context.loop)
+
+    hello =
+      Map.put(WireClient.hello(WireClient.challenge(socket), token), "token", token_id(token))
+
+    WireClient.send_frame(socket, hello)
+    {:frame, %{"type" => "welcome"}} = WireClient.recv(socket)
+    socket
+  end
+
+  defp token_id(token), do: hd(String.split(token, "."))
 end

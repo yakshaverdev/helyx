@@ -2,10 +2,11 @@ defmodule Helyx.Hub.Connections do
   @moduledoc false
   # The connections of each user of a Hub (`docs/features/hub.md`, decision
   # 13), in the state of the Hub process: monitor ref => `%{pid, user,
-  # token}`, one entry for each `hello` whose token the Hub found, until the
-  # `:DOWN` of its connection: at most the 64 connections of each transport,
-  # and those whose `:DOWN` is still in the mailbox. A change of access
-  # closes the connections that it concerns with 4403, through the transport
+  # token}`, one entry for each `hello` whose token the Hub found and for
+  # each paired client of the public listener, until the `:DOWN` of its
+  # connection: at most the 64 connections of each transport, and those whose
+  # `:DOWN` is still in the mailbox. A change of access closes the
+  # connections that it concerns with 4403, through the transport
   # (`Helyx.Transport.WebSocket.close/2`): the close comes after the frames
   # that the connection took before it.
 

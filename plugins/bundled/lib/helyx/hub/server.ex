@@ -151,6 +151,14 @@ defmodule Helyx.Hub.Server do
     end
   end
 
+  # A paired client of the public listener joins the connections of decision
+  # 13 as the default owner, so a change of access closes it as it closes a
+  # connection with the server token.
+  defp serve({:paired, connection}, _caller, _deadline, state) do
+    auth = %{user: state.default_owner_id, token: nil}
+    {{:ok, auth}, Connections.add(state, connection, auth.user, auth.token)}
+  end
+
   defp serve({:revoke_token, token_id} = request, _caller, deadline, state),
     do: revoked(handle(request, deadline, state), token_id, state)
 

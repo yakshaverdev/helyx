@@ -122,7 +122,7 @@ A `hello` with `role` `hands` and `runner`, or `role` `client` and `client`, and
 
 **A Hub that does not answer.** A Hub that is busy or gives no answer to a pairing closes the connection with `4503`, as the authority of the loopback listener does; the peer connects again later. A missing or wrong row is permanent and closes with `4401`. The caller waits `Helyx.Transport.WebSocket.Pairing.call_ms/0` for this process, which is `Helyx.Hub.call_ms/0` plus a margin, so the `4503` answer arrives before the caller's own wait ends.
 
-**A caller that dies.** The pairing checks that the caller of a `hello` is alive after the Hub write and before it consumes the link. A caller that died during the write leaves the link pending, and the peer tries again. A connection that dies after the registration is cleaned up by the monitor of `Helyx.Transport.WebSocket.Pairing.register/3`.
+**A caller that dies.** The pairing checks that the caller of a `hello` is alive after the Hub write and before it consumes the link. A caller that died during the write leaves the link pending, and the peer tries again. A connection that dies after the registration is cleaned up by the monitor that `Helyx.Transport.WebSocket.Pairing` sets at the registration inside its `hello` call.
 
 ### Revoke
 
@@ -130,7 +130,7 @@ A `hello` with `role` `hands` and `runner`, or `role` `client` and `client`, and
 
 ### With no Hub
 
-Pairing does not exist without a Hub in the Core: `--public` fails the start with one line, and the transport with a public listener and no pairing gives `{:error, :pairing_required}`.
+Pairing does not exist without a Hub in the Core: `--public` fails the start with one line, and the transport with a public listener and no pairing gives `{:error, :pairing_required}`. A transport with a pairing process and no authority, or with an authority that has no `paired/4`, refuses `pair.create` with the kind `client` with `bad_params`: the paired handshake has no credential to ask for, so a link of that kind would never work. The kind `hands` is not affected.
 
 ### The runner state
 

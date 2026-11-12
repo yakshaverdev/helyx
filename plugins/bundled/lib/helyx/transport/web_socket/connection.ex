@@ -232,6 +232,9 @@ defmodule Helyx.Transport.WebSocket.Connection do
       not PairOps.allowed?(state) ->
         {:push, texts(Outbound.res(id, Ops.error(op, "forbidden"))), state}
 
+      not PairOps.client?(op, params, state) ->
+        error(id, "bad_params", state)
+
       true ->
         pair_request(id, op, params, state.pairing, state)
     end
