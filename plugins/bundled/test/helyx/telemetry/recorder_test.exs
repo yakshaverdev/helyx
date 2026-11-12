@@ -140,6 +140,23 @@ defmodule Helyx.Telemetry.RecorderTest do
     assert [_ | _] = lines(older)
   end
 
+  @tag capture_log: true
+  test "a rotation that fails ends the recording at the cap", %{tmp_dir: dir} do
+    name = start()
+    path = Path.join(dir, "telemetry.jsonl")
+    # A folder that is not empty at the name of the older file: the rename fails.
+    File.mkdir_p!(Path.join(path <> ".0", "kept"))
+    assert Recorder.open(name, path, @max_bytes) == :ok
+
+    bytes = Recorder.line(@event, %{duration: 1}, metadata()) |> IO.iodata_length()
+
+    for _ <- 1..(div(@max_bytes, bytes) * 3),
+        do: :telemetry.execute(@event, %{duration: 1}, metadata())
+
+    assert File.stat!(path).size <= @max_bytes
+    assert Recorder.path(name) == nil
+  end
+
   test "open refuses a folder, a relative path, and a cap out of range", %{tmp_dir: dir} do
     name = start()
     folder = Path.join(dir, "folder")

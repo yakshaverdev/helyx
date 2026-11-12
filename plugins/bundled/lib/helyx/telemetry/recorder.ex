@@ -207,14 +207,15 @@ defmodule Helyx.Telemetry.Recorder do
   end
 
   # One older file, as the log of the app keeps. The rename replaces an
-  # older `.0`; a rename that fails leaves the new file to grow past the cap
-  # rather than lose a line.
+  # older `.0`; a rename that fails ends the recording with the warning, so
+  # the file stays at the cap.
   defp rotate(%{file: file, path: path} = state) do
     _ = :file.close(file)
-    _ = File.rename(path, path <> ".0")
 
-    case File.open(path, [:append, :binary, :raw]) do
-      {:ok, file} -> %{state | file: file, size: 0}
+    with :ok <- File.rename(path, path <> ".0"),
+         {:ok, file} <- File.open(path, [:append, :binary, :raw]) do
+      %{state | file: file, size: 0}
+    else
       {:error, reason} -> drop(closed(state), path, reason)
     end
   end

@@ -88,7 +88,8 @@ The server writes in its own process. When closed, it drops the line. When
 `size + bytes` passes `max_bytes`, it closes the file, renames it to
 `<path>.0` (the rename replaces an older `.0`), opens a new file, and
 writes the line. A write error drops the line and logs one warning per
-open, with the reason.
+open, with the reason. A rename or an open that fails at a rotation ends
+the recording with the same warning, so the file never passes the cap.
 
 ### The coding agent
 
