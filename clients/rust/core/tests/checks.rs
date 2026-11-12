@@ -2,7 +2,7 @@
 
 use helyx_client_core::event::{EventData, parse_event};
 use helyx_client_core::frame::{self, ServerFrame};
-use helyx_client_core::handshake::{Handshake, Step};
+use helyx_client_core::handshake::{Credential, Handshake, Step};
 use helyx_client_core::message::{Block, Message};
 use serde_json::{Value, json};
 
@@ -18,7 +18,7 @@ fn challenge(bytes: usize) -> Value {
 #[test]
 fn a_nonce_has_exactly_32_bytes() {
     for (bytes, valid) in [(31, false), (32, true), (33, false), (0, false)] {
-        let step = Handshake::new(None).step(&j(&challenge(bytes)));
+        let step = Handshake::new(Credential::none()).step(&j(&challenge(bytes)));
         assert_eq!(matches!(step, Ok(Step::Send(_))), valid, "{bytes}");
     }
 }
@@ -128,7 +128,7 @@ fn refused_names_another_protocol() {
         (protocol, false),
         (protocol + 1, true),
     ] {
-        let mut handshake = Handshake::new(None);
+        let mut handshake = Handshake::new(Credential::none());
         handshake.step(&j(&challenge(32))).unwrap();
         let refused =
             json!({"type": "refused", "code": "protocol", "server_protocol": server_protocol});

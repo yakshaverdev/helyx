@@ -3,6 +3,7 @@
 //! `helyx_client_net` (`docs/features/client-kit.md`, "The network layer").
 
 pub mod ask;
+pub mod cli;
 pub mod composer;
 pub mod input;
 pub use helyx_client_net as net;

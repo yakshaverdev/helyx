@@ -11,7 +11,7 @@ use crate::connection::{Connection, Decoded, Link, Request, Stop};
 use crate::fold::{State, ack};
 use crate::follow::Session;
 use crate::frame::{self, Reply, ServerFrame, Subscribed};
-use crate::handshake::{Step, Token};
+use crate::handshake::{Credential, Step};
 use crate::json::{self, Json, Limits};
 use crate::operation::{self, Operation};
 use crate::reconcile::subscribe_fits;
@@ -86,7 +86,6 @@ pub struct Closed {
 
 #[derive(Debug)]
 pub struct Client {
-    token: Option<Token>,
     limits: Limits,
     pub(crate) sessions: HashMap<String, Session>,
     /// The statements of the host, for all sessions: each takes the next
@@ -99,15 +98,14 @@ pub struct Client {
 }
 
 impl Client {
-    /// A client that proves `token` at each handshake, or sends no proof.
-    pub fn new(token: Option<String>) -> Client {
-        Client::with_limits(token, json::WIRE)
+    /// A client with the decode bounds of the wire.
+    pub fn new() -> Client {
+        Client::with_limits(json::WIRE)
     }
 
     /// A client with other decode bounds, for tests.
-    pub fn with_limits(token: Option<String>, limits: Limits) -> Client {
+    pub fn with_limits(limits: Limits) -> Client {
         Client {
-            token: token.map(Token::new),
             limits,
             sessions: HashMap::new(),
             statements: 0,
@@ -136,9 +134,10 @@ impl Client {
         idle
     }
 
-    /// Starts a new connection: the host has opened the socket.
-    pub fn connect(&mut self) {
-        self.connection = Some(Connection::new(self.token.clone()));
+    /// Starts a new connection: the host has opened the socket and gives the
+    /// credential of this connection.
+    pub fn connect(&mut self, credential: Credential) {
+        self.connection = Some(Connection::new(credential));
     }
 
     /// The socket ended, with its close code or none for a lost connection,
@@ -501,4 +500,10 @@ fn ack_output(sub: &str, from: &Seq, to: &Seq) -> Vec<Output> {
         .map(|frame| Output::Send(frame.encode()))
         .into_iter()
         .collect()
+}
+
+impl Default for Client {
+    fn default() -> Client {
+        Client::new()
+    }
 }

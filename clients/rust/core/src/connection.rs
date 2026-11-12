@@ -5,7 +5,7 @@
 
 use crate::check::{Broken, Checked};
 use crate::follow::Hold;
-use crate::handshake::{Handshake, Token};
+use crate::handshake::{Credential, Handshake};
 use crate::json::{self, Json, Limits, object};
 use crate::parts::{self, FRAME_BYTES, Joiner, TooLarge};
 use std::collections::{HashMap, HashSet};
@@ -109,9 +109,9 @@ pub(crate) struct Connection {
 }
 
 impl Connection {
-    pub fn new(token: Option<Token>) -> Connection {
+    pub fn new(credential: Credential) -> Connection {
         Connection {
-            link: Link::Handshake(Handshake::new(token)),
+            link: Link::Handshake(Handshake::new(credential)),
             joiner: Joiner::default(),
             next_id: 0,
             requests: HashMap::new(),

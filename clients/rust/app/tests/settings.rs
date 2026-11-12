@@ -21,7 +21,7 @@ fn a_valid_file_gives_the_server_and_debug_hides_the_token() {
     std::fs::write(dir.join("server.json"), GOOD).unwrap();
     let server = read(&dir).unwrap();
     assert_eq!(server.url(), "ws://127.0.0.1:4000");
-    assert_eq!(server.token, "t");
+    assert_eq!(server.local_parts().unwrap().2, "t");
     assert!(!format!("{server:?}").contains("\"t\""));
     let v6 = r#"{"address":"::1","port":1,"token":"t"}"#;
     std::fs::write(dir.join("server.json"), v6).unwrap();

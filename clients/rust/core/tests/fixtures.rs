@@ -7,7 +7,7 @@
 use helyx_client_core::Broken;
 use helyx_client_core::fold::State;
 use helyx_client_core::frame::{self, OPS, Reply, ServerFrame};
-use helyx_client_core::handshake::{Handshake, Step};
+use helyx_client_core::handshake::{Credential, Handshake, Step};
 use helyx_client_core::json::{self, Json, object};
 use serde_json::json;
 mod common;
@@ -35,7 +35,7 @@ fn op(name: &str) -> &'static str {
 #[test]
 fn handshake() {
     for case in cases(&load("server_frames.json"), "handshake") {
-        let mut handshake = Handshake::new(None);
+        let mut handshake = Handshake::new(Credential::none());
         let mut outcome = Ok(None);
         for sent in at(case, "frames").as_array().unwrap() {
             outcome = handshake.step(&frame(sent)).map(Some);
@@ -55,9 +55,7 @@ fn handshake() {
 
 #[test]
 fn hello_carries_the_proof_of_the_token_and_not_the_token() {
-    let mut handshake = Handshake::new(Some(helyx_client_core::handshake::Token::new(
-        "secret".to_owned(),
-    )));
+    let mut handshake = Handshake::new(Credential::token("secret"));
     let challenge =
         json!({"type": "challenge", "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="});
     let Ok(Step::Send(hello)) = handshake.step(&j(&challenge)) else {
@@ -76,7 +74,7 @@ fn hello_carries_the_proof_of_the_token_and_not_the_token() {
 
 #[test]
 fn hello_with_no_token_has_no_proof() {
-    let mut handshake = Handshake::new(None);
+    let mut handshake = Handshake::new(Credential::none());
     let challenge =
         json!({"type": "challenge", "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="});
     let Ok(Step::Send(hello)) = handshake.step(&j(&challenge)) else {

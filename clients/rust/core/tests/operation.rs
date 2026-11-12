@@ -8,6 +8,7 @@ mod common;
 
 use helyx_client_core::client::{Client, Next, Output, Refusal};
 use helyx_client_core::frame::Reply;
+use helyx_client_core::handshake::Credential;
 use helyx_client_core::json::{Json, decode};
 use helyx_client_core::operation::{
     FormAnswer, Invalid, MAX_ANSWER_BYTES, MAX_CWD_BYTES, MAX_LIMIT, MAX_TEXT_BYTES, Operation,
@@ -33,7 +34,7 @@ fn sent(outputs: &[Output]) -> Vec<Json> {
 
 /// A client past the handshake of a new connection.
 fn welcomed(client: &mut Client) -> Vec<Output> {
-    client.connect();
+    client.connect(Credential::none());
     let hello = client.receive(CHALLENGE).unwrap();
     assert_eq!(
         sent(&hello)[0].get("type").and_then(Json::as_str),
@@ -304,7 +305,7 @@ fn the_deadline_is_the_table_of_the_wire() {
 
 #[test]
 fn a_request_is_in_flight_until_its_reply_matches_it() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     let (id, frames) = client
         .perform(Operation::prompt("s1", "hi").unwrap())
@@ -336,7 +337,7 @@ fn a_request_is_in_flight_until_its_reply_matches_it() {
     );
     assert_eq!(client.outstanding(), [(start.as_str(), "start", None)]);
     // A reply of no request in flight is a break.
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     let reply = json!({"type": "res", "id": "0", "ok": true, "result": {}}).to_string();
     assert!(client.receive(&reply).is_err());
@@ -344,8 +345,8 @@ fn a_request_is_in_flight_until_its_reply_matches_it() {
 
 #[test]
 fn a_request_waits_for_the_welcome_and_is_not_queued() {
-    let mut client = Client::new(None);
-    client.connect();
+    let mut client = Client::new();
+    client.connect(Credential::none());
     client.receive(CHALLENGE).unwrap();
     assert_eq!(
         client.perform(Operation::abort("s1")),
@@ -353,7 +354,7 @@ fn a_request_waits_for_the_welcome_and_is_not_queued() {
     );
     assert!(client.outstanding().is_empty());
     // After a close, nothing of the old connection waits for the next one.
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     let (id, _) = client.perform(Operation::abort("s1")).unwrap();
     assert_eq!(client.closed(None).unknown, [(id, "abort")]);
@@ -365,7 +366,7 @@ fn a_request_waits_for_the_welcome_and_is_not_queued() {
 
 #[test]
 fn a_lost_reply_is_unknown_and_never_sent_again() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     let (prompt, _) = client
         .perform(Operation::prompt("s1", "hi").unwrap())
@@ -375,13 +376,13 @@ fn a_lost_reply_is_unknown_and_never_sent_again() {
     assert_eq!(closed.next, Next::Reconnect);
     assert_eq!(closed.unknown, [(prompt, "prompt"), (abort, "abort")]);
     // The next connection states no intent of its own: neither goes again.
-    client.connect();
+    client.connect(Credential::none());
     client.receive(CHALLENGE).unwrap();
     assert_eq!(client.receive(WELCOME).unwrap(), [Output::Welcome]);
     assert!(client.outstanding().is_empty());
     // A `start` and a `resume` have no session, and a lost reply of one is
     // unknown too.
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     let (start, _) = client
         .perform(Operation::start("/r", None).unwrap())
@@ -397,7 +398,7 @@ fn a_lost_reply_is_unknown_and_never_sent_again() {
 
 #[test]
 fn a_reconciling_request_is_not_a_lost_reply() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     // The subscribe waits for the welcome, so the intent outlives it.
     client.subscribe("s1").unwrap();
     welcomed(&mut client);
@@ -409,7 +410,7 @@ fn a_reconciling_request_is_not_a_lost_reply() {
     assert_eq!(closed.next, Next::Reconnect);
     // The next connection states the intent again.
     let outputs = {
-        client.connect();
+        client.connect(Credential::none());
         client.receive(CHALLENGE).unwrap();
         client.receive(WELCOME).unwrap()
     };
@@ -422,7 +423,7 @@ fn a_reconciling_request_is_not_a_lost_reply() {
 
 #[test]
 fn a_break_ends_the_connection_and_its_requests() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     let (id, _) = client.perform(Operation::abort("s1")).unwrap();
     // A frame that is not a server frame after the welcome.

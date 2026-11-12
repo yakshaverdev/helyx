@@ -13,45 +13,24 @@
 //! composer on `ok` and shows an ask again when its answer failed.
 
 use crate::send::{SendId, SendOutcome};
-use crate::socket::{Tap, WAITS, Waits, Watchdog};
+use crate::server::Server;
+use crate::socket::{Tap, Transport, WAITS, Waits, Watchdog};
+use crate::state::Store;
 use helyx_client_core::client::{Client, Follow, Hold, Next, Output, Refusal, UNAUTHORIZED, Wait};
 use helyx_client_core::frame::{LiveSession, Reply, SavedSession};
 use helyx_client_core::json::object;
+use helyx_client_core::key::Key;
+use helyx_client_core::link::Link;
 use helyx_client_core::operation::{MAX_LIMIT, Operation, Saved};
 use helyx_client_core::parts::FRAME_BYTES;
 use helyx_client_core::vocabulary::head;
 use std::io::ErrorKind;
-use std::net::{IpAddr, SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use tungstenite::error::ProtocolError;
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Error, Message, WebSocket};
-
-/// The server that a connection reaches: the address, the port, and the
-/// token of its handshake. `Debug` leaves out the token.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Server {
-    pub address: IpAddr,
-    pub port: u16,
-    pub token: String,
-}
-
-impl std::fmt::Debug for Server {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Server({})", self.url())
-    }
-}
-
-impl Server {
-    /// The URL of the WebSocket, as `CodingAgent.Serve.url/2` writes it.
-    pub fn url(&self) -> String {
-        match self.address {
-            IpAddr::V4(ip) => format!("ws://{ip}:{}", self.port),
-            IpAddr::V6(ip) => format!("ws://[{ip}]:{}", self.port),
-        }
-    }
-}
 
 /// The request lines that the host keeps: the pending ones stay, so a
 /// request in flight is never dropped from the list.
@@ -183,9 +162,9 @@ pub struct Shared {
 }
 
 impl Shared {
-    pub fn new(token: String) -> Shared {
+    pub fn new() -> Shared {
         Shared {
-            client: Client::new(Some(token)),
+            client: Client::new(),
             live: vec![],
             followed: None,
             line: "connecting".into(),
@@ -320,26 +299,63 @@ fn refusal_text(refusal: &Refusal) -> String {
 }
 
 /// Runs connections until one ends with `Next::Stop`, or the host is gone
-/// at the end of one, and gives its line.
+/// at the end of one, and gives its line. `store` saves the state of a
+/// pairing at its `welcome`; a server that is not a pairing ignores it.
 pub fn run(
     server: &Server,
+    store: Option<&dyn Store>,
     shared: &Mutex<Shared>,
     commands: &Receiver<Command>,
     notify: &dyn Fn(),
 ) -> String {
-    run_with(server, shared, commands, notify, WAITS)
+    run_with(server, store, shared, commands, notify, WAITS)
 }
 
-/// `run` with other waits, for tests.
-pub fn run_with(
-    server: &Server,
+/// Pairs with the server of `link`, saves its state at the `welcome`, and
+/// runs the same connection as a client of the paired server
+/// (`docs/features/client-kit.md`, "A remote server"). Gives the line that
+/// ends the thread.
+pub fn run_pair(
+    link: &Link,
+    store: &dyn Store,
+    shared: &Mutex<Shared>,
+    commands: &Receiver<Command>,
+    notify: &dyn Fn(),
+) -> String {
+    run_pair_with(link, store, shared, commands, notify, WAITS)
+}
+
+/// `run_pair` with other waits, for tests.
+pub fn run_pair_with(
+    link: &Link,
+    store: &dyn Store,
     shared: &Mutex<Shared>,
     commands: &Receiver<Command>,
     notify: &dyn Fn(),
     waits: Waits,
 ) -> String {
+    let server = Server::pairing(link, Key::generate());
+    run_with(&server, Some(store), shared, commands, notify, waits)
+}
+
+/// `run` with other waits, for tests.
+pub fn run_with(
+    server: &Server,
+    store: Option<&dyn Store>,
+    shared: &Mutex<Shared>,
+    commands: &Receiver<Command>,
+    notify: &dyn Fn(),
+    waits: Waits,
+) -> String {
+    // The first connection of a pairing carries the bootstrap token; a
+    // connection after the state is saved carries the key alone.
+    let mut pairing = server.is_pairing();
     loop {
-        let (next, line) = connection(server, shared, commands, notify, waits);
+        let (next, line, saved) =
+            connection(server, store, pairing, shared, commands, notify, waits);
+        if saved {
+            pairing = false;
+        }
         shared.lock().unwrap().line = line.clone();
         notify();
         let gone = host_gone(shared, commands);
@@ -364,25 +380,60 @@ pub fn run_with(
     }
 }
 
-type Socket = WebSocket<Tap>;
+type Socket = WebSocket<Tap<Transport>>;
 
+/// The kind of a connection, for the line of a refusal.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// A local server, which proves the server token.
+    Local,
+    /// The first connection of a pairing.
+    Pairing,
+    /// A paired client.
+    Paired,
+}
+
+impl Kind {
+    /// The line of a `4401`: the server refused the credential.
+    fn refused(self) -> &'static str {
+        match self {
+            Kind::Local => "the server refused the token",
+            Kind::Pairing => "the server refused the link",
+            Kind::Paired => "the server no longer accepts this app; pair it again",
+        }
+    }
+}
+
+/// One connection, and whether its `welcome` saved the state of a pairing.
 fn connection(
     server: &Server,
+    store: Option<&dyn Store>,
+    pairing: bool,
     shared: &Mutex<Shared>,
     commands: &Receiver<Command>,
     notify: &dyn Fn(),
     waits: Waits,
-) -> (Next, String) {
+) -> (Next, String, bool) {
+    let kind = match (server, pairing) {
+        (Server::Local { .. }, _) => Kind::Local,
+        (Server::Remote { .. }, true) => Kind::Pairing,
+        (Server::Remote { .. }, false) => Kind::Paired,
+    };
     let (mut ws, watchdog) = match open(server, waits) {
         Ok(opened) => opened,
         Err(text) => {
             let next = close(shared, None);
             let line = format!("could not connect to {}: {text}", server.url());
-            return (next, line);
+            return (next, line, false);
         }
     };
-    shared.lock().unwrap().client.connect();
+    shared
+        .lock()
+        .unwrap()
+        .client
+        .connect(server.credential(pairing));
     let mut welcomed = false;
+    let mut stored = false;
     // The end of the connection after an error: a break when the server
     // sent a binary frame, whatever error ended it, else a lost connection.
     let ended = |ws: &mut Socket, welcomed: bool| {
@@ -411,13 +462,15 @@ fn connection(
             // wake-up before it names no dead socket, so it is dropped.
             if command == Command::BecameActive {
                 if welcomed {
-                    return ended(&mut ws, welcomed);
+                    let (next, line) = ended(&mut ws, welcomed);
+                    return (next, line, stored);
                 }
                 continue;
             }
             let frames = apply(&mut shared.lock().unwrap(), command);
             if send(&mut ws, &watchdog, waits, frames).is_err() {
-                return ended(&mut ws, welcomed);
+                let (next, line) = ended(&mut ws, welcomed);
+                return (next, line, stored);
             }
         }
         // A binary frame at its first byte, or a write that failed: the tap
@@ -427,25 +480,30 @@ fn connection(
         let text = match ws.read() {
             Ok(Message::Text(text)) => text,
             // After a binary frame, a close ends the connection as a break.
-            Ok(Message::Close(_)) if ws.get_ref().binary() => return broken(shared, &mut ws),
+            Ok(Message::Close(_)) if ws.get_ref().binary() => {
+                let (next, line) = broken(shared, &mut ws);
+                return (next, line, stored);
+            }
             Ok(Message::Close(frame)) => {
                 let code = frame.map(|f| u16::from(f.code));
                 let next = close(shared, code);
                 let line = match (code, next) {
-                    (Some(UNAUTHORIZED), _) => "the server refused the token",
+                    (Some(UNAUTHORIZED), _) => kind.refused(),
                     (_, Next::Reconnect) => "reconnecting",
                     (_, Next::Stop) => "the connection ended",
                 };
-                return (next, line.into());
+                return (next, line.into(), stored);
             }
             // A reset with no close frame is a lost connection, not a break.
             Err(Error::Protocol(ProtocolError::ResetWithoutClosingHandshake)) => {
-                return ended(&mut ws, welcomed);
+                let (next, line) = ended(&mut ws, welcomed);
+                return (next, line, stored);
             }
             // A binary message: the tap stops it at its first frame first.
             Ok(Message::Binary(_))
             | Err(Error::Capacity(_) | Error::Protocol(_) | Error::Utf8(_)) => {
-                return broken(shared, &mut ws);
+                let (next, line) = broken(shared, &mut ws);
+                return (next, line, stored);
             }
             Ok(_) => {
                 heard(&watchdog, welcomed, waits);
@@ -458,13 +516,17 @@ fn connection(
                 let _ = ws.flush();
                 continue;
             }
-            Err(_) => return ended(&mut ws, welcomed),
+            Err(_) => {
+                let (next, line) = ended(&mut ws, welcomed);
+                return (next, line, stored);
+            }
         };
         heard(&watchdog, welcomed, waits);
         let mut guard = shared.lock().unwrap();
         let Ok(outputs) = guard.client.receive(text.as_str()) else {
             drop(guard);
-            return broken(shared, &mut ws);
+            let (next, line) = broken(shared, &mut ws);
+            return (next, line, stored);
         };
         let mut frames = vec![];
         for output in outputs {
@@ -473,6 +535,28 @@ fn connection(
                 Output::Welcome => {
                     welcomed = true;
                     heard(&watchdog, welcomed, waits);
+                    // The state goes before any other frame of the
+                    // connection, so the first use needs no second one. A
+                    // save that fails stops the thread: the link is used at
+                    // the server, and only a new link pairs again.
+                    if kind == Kind::Pairing && !stored {
+                        let state = server.state().expect("a pairing has a state").clone();
+                        let store = store.expect("a pairing saves its state");
+                        drop(guard);
+                        let result = store.save(&state, true);
+                        guard = shared.lock().unwrap();
+                        match result {
+                            Ok(()) => stored = true,
+                            Err(reason) => {
+                                drop(guard);
+                                let _ = ws.close(None);
+                                let line = format!(
+                                    "the link is used; make a new link and pair again: {reason}"
+                                );
+                                return (Next::Stop, line, false);
+                            }
+                        }
+                    }
                     guard.line = "connected".into();
                     frames.extend(live(&mut guard));
                     if !guard.saved_asked {
@@ -487,6 +571,7 @@ fn connection(
                     return (
                         next,
                         format!("the server speaks protocol {n}: update the app"),
+                        stored,
                     );
                 }
                 Output::Failed {
@@ -533,7 +618,8 @@ fn connection(
         drop(guard);
         notify();
         if send(&mut ws, &watchdog, waits, frames).is_err() {
-            return ended(&mut ws, welcomed);
+            let (next, line) = ended(&mut ws, welcomed);
+            return (next, line, stored);
         }
     }
 }
@@ -546,11 +632,12 @@ fn heard(watchdog: &Watchdog, welcomed: bool, waits: Waits) {
     }
 }
 
-/// The TCP connect within its wait, then the upgrade, under the watchdog
-/// whose read deadline is the wait for `welcome`.
+/// The TCP connect within its wait, then the TLS handshake of a remote server
+/// or the plain socket of a local one, then the upgrade. The watchdog's first
+/// read deadline is the wait for `welcome`, and it covers the TLS handshake,
+/// the upgrade, and the wait for `welcome` in all.
 fn open(server: &Server, waits: Waits) -> Result<(Socket, Watchdog), String> {
-    let address = SocketAddr::new(server.address, server.port);
-    let stream = TcpStream::connect_timeout(&address, waits.connect).map_err(|e| e.to_string())?;
+    let stream = tcp(server, waits)?;
     // The OS can buffer a batch of several MiB whole, and then no write waits
     // on the peer; a test that its batch outlasts its deadline caps the
     // buffer here.
@@ -566,15 +653,30 @@ fn open(server: &Server, waits: Waits) -> Result<(Socket, Watchdog), String> {
     stream
         .set_write_timeout(Some(waits.send))
         .map_err(|e| e.to_string())?;
+    let watched = stream.try_clone().map_err(|e| e.to_string())?;
     let watchdog =
-        Watchdog::start(&stream, waits.welcome, waits.poll).map_err(|e| e.to_string())?;
+        Watchdog::start(&watched, waits.welcome, waits.poll).map_err(|e| e.to_string())?;
+    let transport = match server {
+        Server::Local { .. } => Transport::Plain(stream),
+        Server::Remote { state, .. } => {
+            match crate::tls::handshake(stream, &state.host, &state.pin) {
+                Ok(tls) => Transport::Tls(Box::new(tls)),
+                Err(text) => {
+                    return Err(match watchdog.fired() {
+                        true => format!("the upgrade took over {} ms", waits.welcome.as_millis()),
+                        false => text,
+                    });
+                }
+            }
+        }
+    };
     let config = WebSocketConfig::default()
         .max_message_size(Some(FRAME_BYTES))
         .max_frame_size(Some(FRAME_BYTES));
     // A read of the upgrade that times out is retried until the watchdog
     // shuts the socket down.
     let mut handshake =
-        tungstenite::client::client_with_config(server.url(), Tap::new(stream), Some(config));
+        tungstenite::client::client_with_config(server.url(), Tap::new(transport), Some(config));
     loop {
         match handshake {
             Ok((ws, _)) => return Ok((ws, watchdog)),
@@ -586,6 +688,17 @@ fn open(server: &Server, waits: Waits) -> Result<(Socket, Watchdog), String> {
                 });
             }
         }
+    }
+}
+
+/// The TCP socket of `server` within its connect wait.
+fn tcp(server: &Server, waits: Waits) -> Result<TcpStream, String> {
+    match server {
+        Server::Local { address, port, .. } => {
+            TcpStream::connect_timeout(&SocketAddr::new(*address, *port), waits.connect)
+                .map_err(|e| e.to_string())
+        }
+        Server::Remote { state, .. } => crate::tls::connect(&state.host, state.port, waits.connect),
     }
 }
 
@@ -801,6 +914,12 @@ fn broken(shared: &Mutex<Shared>, ws: &mut Socket) -> (Next, String) {
     (Next::Stop, "the server broke the wire contract".into())
 }
 
+impl Default for Shared {
+    fn default() -> Shared {
+        Shared::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -818,7 +937,7 @@ mod tests {
     #[test]
     fn a_refused_send_is_a_line_and_keeps_its_text() {
         // No connection: `Client::perform` refuses with `NotReady`.
-        let mut shared = Shared::new("t".into());
+        let mut shared = Shared::new();
         let frames = perform(
             &mut shared,
             Some(7),
@@ -848,7 +967,7 @@ mod tests {
 
     #[test]
     fn the_request_lines_keep_twelve_and_never_drop_a_pending_one() {
-        let mut shared = Shared::new("t".into());
+        let mut shared = Shared::new();
         // Thirteen answered lines: the oldest leaves.
         for n in 0..13 {
             let id = n.to_string();
@@ -903,7 +1022,7 @@ mod tests {
     #[test]
     fn the_outcome_of_each_send() {
         use helyx_client_core::frame::Reply;
-        let mut shared = Shared::new("t".into());
+        let mut shared = Shared::new();
         // The client took it: pending.
         shared.sent("0".into(), "answer", "answer".into(), Some(4));
         assert_eq!(shared.outcomes, [(4, SendOutcome::Pending)]);
@@ -944,7 +1063,7 @@ mod tests {
 
     #[test]
     fn the_outcomes_are_bounded() {
-        let mut shared = Shared::new("t".into());
+        let mut shared = Shared::new();
         for n in 0..(super::MAX_OUTCOMES as u64 + 10) {
             shared.sent(n.to_string(), "answer", "answer".into(), Some(n));
         }

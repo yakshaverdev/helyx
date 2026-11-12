@@ -67,17 +67,40 @@ struct Desktop {
     focus: FocusHandle,
 }
 
-/// Opens the window and runs the network thread for `server`.
-pub fn run(server: Server) {
-    let shared = Arc::new(Mutex::new(Shared::new(server.token.clone())));
+/// Opens the window and runs the network thread for `server`. `store` saves
+/// the state of a pairing at its `welcome`.
+pub fn run(server: Server, store: Option<Arc<dyn net::Store>>) {
+    let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, receive) = channel();
     // One slot: a change that finds it full is in the next redraw anyway.
     let (changed, changes) = sync_channel::<()>(1);
     let thread_shared = shared.clone();
-    std::thread::spawn(move || {
-        net::run(&server, &thread_shared, &receive, &|| {
+    let notify = {
+        let changed = changed.clone();
+        move || {
             let _ = changed.try_send(());
-        })
+        }
+    };
+    let network = std::thread::spawn(move || match store {
+        Some(store) => net::run(
+            &server,
+            Some(store.as_ref()),
+            &thread_shared,
+            &receive,
+            &notify,
+        ),
+        None => net::run(&server, None, &thread_shared, &receive, &notify),
+    });
+    // A pairing that cannot save its state stops the app with its line: the
+    // link is used at the server, and only a new link pairs again.
+    std::thread::spawn(move || {
+        let Ok(line) = network.join() else {
+            return;
+        };
+        if line.starts_with("the link is used") {
+            eprintln!("helyx-desktop: {line}");
+            std::process::exit(1);
+        }
     });
     Application::new().run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1000.), px(700.)), cx);

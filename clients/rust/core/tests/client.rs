@@ -7,6 +7,7 @@ mod common;
 use common::{at, load, matches, observe};
 use helyx_client_core::Broken;
 use helyx_client_core::client::{Client, Follow, Hold, MAX_IN_FLIGHT, Next, Output, Refusal, Wait};
+use helyx_client_core::handshake::Credential;
 use helyx_client_core::json::{Json, Limits, WIRE, decode};
 use helyx_client_core::parts::{self, FRAME_BYTES, PART_BYTES, REQUEST_BYTES, TooLarge};
 use serde_json::{Value, json};
@@ -29,7 +30,7 @@ fn sent(outputs: &[Output]) -> Vec<Value> {
 
 /// A client past the handshake of a new connection, and what the welcome gave.
 fn welcomed(client: &mut Client) -> Vec<Output> {
-    client.connect();
+    client.connect(Credential::none());
     let hello = client.receive(CHALLENGE).unwrap();
     assert_eq!(sent(&hello), [json!({"type": "hello", "protocol": 13})]);
     let outputs = client.receive(WELCOME).unwrap();
@@ -73,7 +74,7 @@ fn the_folds_through_connections() {
     let fixture = load("folds.json");
     for case in at(&fixture, "cases").as_array().unwrap() {
         let name = at(case, "name").as_str().unwrap();
-        let mut client = Client::new(None);
+        let mut client = Client::new();
         // The frames that the client sent and the fixture has not named yet.
         let mut unsent = sent_frames(&welcomed(&mut client));
         let mut ids: HashMap<String, String> = HashMap::new();
@@ -142,7 +143,7 @@ fn notice(seq: u64) -> String {
 
 /// A client that follows `s1` at seq `seq` on sub "0".
 fn following(seq: u64) -> Client {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     client.subscribe("s1").unwrap();
     let res = json!({"type": "res", "id": "0", "ok": true,
@@ -190,8 +191,8 @@ fn a_reconnect_after_a_slow_close_subscribes_with_after() {
 
 #[test]
 fn a_close_before_the_welcome_or_after_a_break_stops() {
-    let mut client = Client::new(None);
-    client.connect();
+    let mut client = Client::new();
+    client.connect(Credential::none());
     client.receive(CHALLENGE).unwrap();
     assert_eq!(client.closed(None).next, Next::Stop);
 
@@ -205,8 +206,8 @@ fn a_close_before_the_welcome_or_after_a_break_stops() {
     );
     assert_eq!(client.closed(Some(1000)).next, Next::Stop);
 
-    let mut client = Client::new(None);
-    client.connect();
+    let mut client = Client::new();
+    client.connect(Credential::none());
     client.receive(CHALLENGE).unwrap();
     let refused = r#"{"type":"refused","code":"protocol","server_protocol":4}"#;
     assert_eq!(client.receive(refused).unwrap(), [Output::Refused(4)]);
@@ -216,10 +217,10 @@ fn a_close_before_the_welcome_or_after_a_break_stops() {
     // the old one for ever.
     let mut client = following(4);
     assert_eq!(client.closed(None).next, Next::Reconnect);
-    client.connect();
+    client.connect(Credential::none());
     assert_eq!(client.closed(Some(4401)).next, Next::Stop);
     // Before any welcome, a failed open stops.
-    assert_eq!(Client::new(None).closed(None).next, Next::Stop);
+    assert_eq!(Client::new().closed(None).next, Next::Stop);
 }
 
 /// O1: one `challenge`, then one `welcome` or `refused`, then no more
@@ -231,21 +232,21 @@ fn no_handshake_frame_follows_its_answer() {
     let mut client = following(4);
     assert_eq!(client.receive(WELCOME), Err(Broken("frame type")));
     // A refused handshake ends the connection.
-    let mut client = Client::new(None);
-    client.connect();
+    let mut client = Client::new();
+    client.connect(Credential::none());
     client.receive(CHALLENGE).unwrap();
     let refused = r#"{"type":"refused","code":"protocol","server_protocol":11}"#;
     assert_eq!(client.receive(refused).unwrap(), [Output::Refused(11)]);
     assert_eq!(client.receive(WELCOME), Err(Broken("no connection")));
     // A second challenge ends the handshake, and so does a nonce of the
     // wrong size.
-    let mut client = Client::new(None);
-    client.connect();
+    let mut client = Client::new();
+    client.connect(Credential::none());
     client.receive(CHALLENGE).unwrap();
     assert!(client.receive(CHALLENGE).is_err());
     assert_eq!(client.receive(WELCOME), Err(Broken("no connection")));
-    let mut client = Client::new(None);
-    client.connect();
+    let mut client = Client::new();
+    client.connect(Credential::none());
     assert!(
         client
             .receive(r#"{"type":"challenge","nonce":"AAAA"}"#)
@@ -264,10 +265,10 @@ fn after_a_welcome_a_failed_open_reconnects() {
     for _ in 0..2 {
         assert_eq!(client.closed(None).next, Next::Reconnect);
     }
-    client.connect();
+    client.connect(Credential::none());
     client.receive(CHALLENGE).unwrap();
     assert_eq!(client.closed(None).next, Next::Reconnect);
-    client.connect();
+    client.connect(Credential::none());
     client.receive(CHALLENGE).unwrap();
     let refused = r#"{"type":"refused","code":"protocol","server_protocol":11}"#;
     assert_eq!(client.receive(refused).unwrap(), [Output::Refused(11)]);
@@ -368,7 +369,7 @@ fn instance_changed_of_history_subscribes_again() {
 
 #[test]
 fn the_requests_in_flight_are_bounded() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     // Before a welcome, the subscribe waits for it.
     assert_eq!(client.subscribe("s1"), Ok(vec![]));
     assert_eq!(sent(&welcomed(&mut client))[0]["op"], json!("subscribe"));
@@ -485,7 +486,7 @@ fn the_joined_bytes_are_bounded() {
     };
     let piece = base64(&"a".repeat(600));
     for (second, joined_ok) in [(400, true), (401, false)] {
-        let mut client = Client::with_limits(None, small);
+        let mut client = Client::with_limits(small);
         welcomed(&mut client);
         let first = json!({"type": "part", "n": 0, "last": false, "data": piece}).to_string();
         let rest = base64(&"a".repeat(second));
@@ -538,7 +539,7 @@ fn a_request_goes_in_parts_over_one_frame() {
 
 #[test]
 fn at_most_16_sessions_are_followed_and_each_resubscribes() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     for n in 0..MAX_IN_FLIGHT {
         client.subscribe(&format!("s{n}")).unwrap();
@@ -743,8 +744,8 @@ fn the_frame_and_subscription_breaks() {
         client.request("abort", json_params()).unwrap();
     }
     // A request goes only after the welcome.
-    let mut client = Client::new(None);
-    client.connect();
+    let mut client = Client::new();
+    client.connect(Credential::none());
     client.receive(CHALLENGE).unwrap();
     assert_eq!(
         client.request("abort", json_params()),
@@ -756,15 +757,15 @@ fn the_frame_and_subscription_breaks() {
 /// A snapshot is the credit base: no ack, also at a multiple of 1,024.
 #[test]
 fn no_debug_form_holds_the_token() {
-    let mut client = Client::new(Some("tok-7f3a9".into()));
+    let mut client = Client::new();
     assert!(!format!("{client:?}").contains("tok-7f3a9"));
-    client.connect();
+    client.connect(Credential::token("tok-7f3a9"));
     assert!(!format!("{client:?}").contains("tok-7f3a9"));
 }
 
 #[test]
 fn a_snapshot_is_not_acked() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     let id = id_of(&client.subscribe("s1").unwrap());
     let outputs = client
@@ -823,7 +824,7 @@ fn a_subscribe_waiting_for_its_old_subscription() {
 /// session until the host states it again: no request loop.
 #[test]
 fn a_refused_subscribe_keeps_the_intent_and_waits_for_the_host() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     let id = id_of(&client.subscribe("s1").unwrap());
     let outputs = client.receive(&res_error(&id, "busy")).unwrap();
@@ -909,7 +910,7 @@ fn a_renewal_does_not_lift_a_refused_hold() {
 /// 16 live, an unsubscribed one among them, until a reply frees a place.
 #[test]
 fn a_subscribe_waits_for_a_place_among_the_live_subscriptions() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     for n in 0..MAX_IN_FLIGHT {
         let session = format!("s{n:02}");
@@ -929,7 +930,7 @@ fn a_subscribe_waits_for_a_place_among_the_live_subscriptions() {
 /// A statement again at the cap is taken; a 17th session is not.
 #[test]
 fn a_restatement_at_the_cap_is_taken() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     for n in 0..MAX_IN_FLIGHT {
         client.subscribe(&format!("s{n}")).unwrap();
@@ -955,7 +956,7 @@ fn a_reused_gone_sub_id_is_a_break() {
 /// A session id whose subscribe cannot fit a request is refused at once.
 #[test]
 fn a_session_id_over_the_request_size_is_refused() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     let huge = "s".repeat(REQUEST_BYTES);
     assert_eq!(client.subscribe(&huge), Err(Refusal::TooLarge));
@@ -1032,7 +1033,7 @@ fn a_sub_id_given_again_is_a_contract_break() {
 /// 16 that the host does not want (the judgement of 2026-11-07, item 2).
 #[test]
 fn follow_tells_why_a_followed_session_has_no_subscription() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     assert_eq!(client.follow("s00"), None);
     assert_eq!(client.subscribe("s00"), Ok(vec![]));
     assert_eq!(
@@ -1138,7 +1139,7 @@ fn a_subscription_after_a_renewal_is_live() {
 /// host does not follow any more is named while its subscribe is on the way.
 #[test]
 fn a_wait_for_a_place_names_the_unfollowed_subscribes_in_flight() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     for n in 0..MAX_IN_FLIGHT - 2 {
         let session = format!("s{n:02}");
@@ -1162,7 +1163,7 @@ fn a_wait_for_a_place_names_the_unfollowed_subscribes_in_flight() {
 /// the last statement goes.
 #[test]
 fn a_late_refused_subscribe_holds_no_later_follow() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     let first = id_of(&client.subscribe("s1").unwrap());
     assert_eq!(client.unsubscribe("s1"), Vec::<String>::new());
@@ -1180,7 +1181,7 @@ fn a_late_refused_subscribe_holds_no_later_follow() {
 /// statement of the host.
 #[test]
 fn a_sub_id_over_the_request_size_holds_with_no_frame() {
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
     let id = id_of(&client.subscribe("s1").unwrap());
     let sub = "s".repeat(REQUEST_BYTES);

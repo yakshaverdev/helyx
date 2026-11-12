@@ -13,5 +13,9 @@ helyx-client-net = { path = "../net" }
 # The window builds on macOS only: GPUI needs system packages on Linux
 # (docs/features/client-kit.md, slice 4). `runtime_shaders` compiles the
 # Metal shaders at run time, so the build needs no Metal toolchain.
+[dev-dependencies]
+# The link text of a test of the arguments: base64url, as the server writes it.
+base64 = "0.22"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui = { version = "=0.2.2", default-features = false, features = ["runtime_shaders", "font-kit"] }
