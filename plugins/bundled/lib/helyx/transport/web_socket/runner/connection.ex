@@ -124,33 +124,29 @@ defmodule Helyx.Transport.WebSocket.Runner.Connection do
     end
   end
 
-  defp recv_reply({:ok, conn, responses}, _old, ref, acc, deadline),
-    do: collect(conn, ref, responses, acc, deadline)
-
-  defp recv_reply({:error, conn, reason, responses}, _old, ref, acc, deadline) do
-    case collect(conn, ref, responses, acc, deadline) do
-      {:more, conn, _acc} ->
-        Mint.HTTP.close(conn)
-        {:error, error(reason)}
-
-      done ->
-        done
-    end
-  end
-
-  defp collect(conn, ref, responses, acc, deadline) do
-    acc = Enum.reduce(responses, acc, &response(&1, ref, &2))
-
-    case acc do
+  # The reply can come in several reads: one that does not end it reads again.
+  defp recv_reply({:ok, conn, responses}, _old, ref, acc, deadline) do
+    case Enum.reduce(responses, acc, &response(&1, ref, &2)) do
       {:done, status, headers, early} ->
         {:ok, conn, status, headers, early}
-
-      {:more, acc} ->
-        reply(conn, ref, deadline, acc)
 
       {:error, reason} ->
         Mint.HTTP.close(conn)
         {:error, reason}
+
+      acc ->
+        reply(conn, ref, deadline, acc)
+    end
+  end
+
+  defp recv_reply({:error, conn, reason, responses}, _old, ref, acc, _deadline) do
+    case Enum.reduce(responses, acc, &response(&1, ref, &2)) do
+      {:done, status, headers, early} ->
+        {:ok, conn, status, headers, early}
+
+      _other ->
+        Mint.HTTP.close(conn)
+        {:error, error(reason)}
     end
   end
 
