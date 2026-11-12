@@ -24,14 +24,15 @@ use helyx_client_core::vocabulary::{
     Approval, Form, MAX_ARGUMENTS_BYTES, MAX_NAME_BYTES, MAX_TITLE_BYTES, UiBlock, View, head,
 };
 use helyx_desktop::ask::{FormState, Kind, Outcome, Panel};
-use helyx_desktop::composer::SendId;
+use helyx_desktop::composer::{SendId, SendOutcome};
+use helyx_desktop::controls::confirm_stop;
 use helyx_desktop::input::{Focus, Input, Intent, Press};
 use helyx_desktop::net::{self, Command, RequestLine, RequestState, Shared};
 use helyx_desktop::settings::Server;
 use std::collections::HashMap;
 use std::sync::mpsc::{Sender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How often the window takes the changes of the network thread.
 const REDRAW: Duration = Duration::from_millis(50);
@@ -63,6 +64,16 @@ struct Desktop {
     commands: Sender<Command>,
     transcript: ListState,
     input: Input,
+    /// The live row whose **stop** was clicked once, and when: a second click
+    /// on the same row inside `STOP_CONFIRM` sends the stop. A click
+    /// elsewhere clears it.
+    armed: Option<(String, Instant)>,
+    /// The number of the `stop` of a live row whose outcome asks for a fresh
+    /// live list: a stopped session leaves the list, and the server sends no
+    /// live list of its own.
+    stop_send: Option<SendId>,
+    /// Whether a stop was answered `ok` and the live list is due again.
+    live_due: bool,
     /// The window holds the keys, so the root takes every press.
     focus: FocusHandle,
 }
@@ -106,6 +117,9 @@ pub fn run(server: Server) {
                     commands,
                     transcript: ListState::new(0, ListAlignment::Bottom, px(500.)),
                     input: Input::new(),
+                    armed: None,
+                    stop_send: None,
+                    live_due: false,
                     focus: focus.clone(),
                 }
             });
@@ -122,7 +136,19 @@ impl Desktop {
     fn changed(&mut self, cx: &mut Context<Self>) {
         self.settle();
         self.default_cwd();
+        self.refresh_live();
         cx.notify();
+    }
+
+    /// Asks the live sessions again after the server answered a `stop` with
+    /// `ok`: the stopped session already left the live list, and no push
+    /// carries the new one.
+    fn refresh_live(&mut self) {
+        if !self.live_due {
+            return;
+        }
+        self.live_due = false;
+        self.send_command(Command::Live);
     }
 
     /// The state of the network thread. A panic of the thread while it held
@@ -161,6 +187,21 @@ impl Desktop {
             .as_deref()
             .and_then(|session| shared.client.state(session))
             .map_or(&[], |state| &state.asks);
+        // A stop whose reply asks for a fresh live list; a pending report
+        // waits, and a failed one stops the wait.
+        if let Some(send) = self.stop_send
+            // One read can hold the pending report and the reply: the last counts.
+            && let Some((_, outcome)) = outcomes.iter().rev().find(|(id, _)| *id == send)
+        {
+            match outcome {
+                SendOutcome::Pending => {}
+                SendOutcome::Ok => {
+                    self.stop_send = None;
+                    self.live_due = true;
+                }
+                SendOutcome::Failed(_) => self.stop_send = None,
+            }
+        }
         self.input.settle_outcomes(&outcomes);
         self.input.sync(asks, session.as_deref());
     }
@@ -230,6 +271,22 @@ impl Desktop {
     /// Sends an operation that no send of the composer numbers.
     fn send(&mut self, operation: Operation) {
         self.send_operation(None, operation);
+    }
+
+    /// The `set_model` of the ref in the field, from a click: the same path as
+    /// Enter in the field.
+    fn model(&mut self, session: Option<&str>) {
+        if let Intent::Send { send, operation } = self.input.set_model(session) {
+            self.send_operation(send, operation);
+        }
+    }
+
+    /// The `compact` of the composer text, from a click: a numbered send, so
+    /// `ok` empties the composer as a send does.
+    fn compact(&mut self, session: Option<&str>) {
+        if let Intent::Send { send, operation } = self.input.compact(session) {
+            self.send_operation(send, operation);
+        }
     }
 
     /// Hands a command with no send number to the network thread, and tells
@@ -370,6 +427,7 @@ impl Render for Desktop {
         }
         let asked = self.input.ask.clone();
         div()
+            .id("window")
             .flex()
             .size_full()
             .bg(rgb(0x1e1e24))
@@ -378,6 +436,13 @@ impl Render for Desktop {
             .on_key_down(
                 cx.listener(|this, event: &KeyDownEvent, window, cx| this.key(event, window, cx)),
             )
+            // Any click that the stop control does not take clears its armed
+            // state.
+            .on_click(cx.listener(|this, _, _, cx| {
+                if this.armed.take().is_some() {
+                    cx.notify();
+                }
+            }))
             .child(self.sidebar(
                 &live,
                 &saved,
@@ -409,7 +474,15 @@ impl Render for Desktop {
                     .child(self.status(&requests))
                     .child(match &asked {
                         Some(panel) => self.ask_panel(panel, cx),
-                        None => self.composer(running, cx).into_any_element(),
+                        None => {
+                            // The model ref and the two controls of the
+                            // followed session sit above its composer.
+                            let mut column = div().flex().flex_col();
+                            if followed.is_some() {
+                                column = column.child(self.controls(cx));
+                            }
+                            column.child(self.composer(running, cx)).into_any_element()
+                        }
                     }),
             )
     }
@@ -427,11 +500,47 @@ impl Desktop {
         let live_rows = (live.iter()).map(|session| {
             let id = session.id.clone();
             let chosen = followed == Some(id.as_str());
+            let armed = self.armed.as_ref().is_some_and(|(row, _)| row == &id);
+            let row_id = SharedString::from(format!("live-{id}"));
+            let stop = {
+                let stop_row = id.clone();
+                div()
+                    .id(SharedString::from(format!("stop-{stop_row}")))
+                    .px_1()
+                    .rounded_md()
+                    .bg(rgb(0x5a3030))
+                    .cursor_pointer()
+                    .child(if armed { "stop?" } else { "stop" })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        // The stop control takes the click, so the row below
+                        // does not follow it and the root does not clear it.
+                        cx.stop_propagation();
+                        let now = Instant::now();
+                        match confirm_stop(this.armed.as_ref(), &stop_row, now) {
+                            true => {
+                                this.armed = None;
+                                let send = this.input.send_number();
+                                this.stop_send = Some(send);
+                                this.send_operation(Some(send), Operation::stop(&stop_row));
+                            }
+                            false => this.armed = Some((stop_row.clone(), now)),
+                        }
+                        cx.notify();
+                    }))
+            };
             div()
-                .id(SharedString::from(format!("live-{id}")))
+                .id(row_id)
                 .p_2()
+                .flex()
+                .gap_2()
+                .items_center()
                 .when(chosen, |d| d.bg(rgb(0x3a3a4a)))
-                .child(format!("{} · {}", session.cwd, session.model))
+                .child(
+                    div()
+                        .flex_1()
+                        .child(format!("{} · {}", session.cwd, session.model)),
+                )
+                .child(stop)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.send_command(Command::Follow(id.clone()));
                     cx.notify();
@@ -470,7 +579,7 @@ impl Desktop {
         let cwd = self.input.cwd.display();
         let cwd_color = match self.input.focus {
             Focus::Cwd => 0xffffff,
-            Focus::Composer => DIM,
+            _ => DIM,
         };
         div()
             .flex()
@@ -552,6 +661,76 @@ impl Desktop {
     }
 
     fn status(&self, requests: &[RequestLine]) -> gpui::Div {
+        use helyx_client_core::usage::{Level, context_percent, cost_text, level, tokens_text};
+
+        // The usage of the followed session, as its fold holds it.
+        let (usage, context, model) = {
+            let shared = self.shared();
+            match shared
+                .followed
+                .as_deref()
+                .and_then(|session| shared.client.state(session))
+            {
+                Some(state) => (
+                    state.usage.clone(),
+                    state.context.clone(),
+                    state.model.clone(),
+                ),
+                None => (Default::default(), None, String::new()),
+            }
+        };
+        let prompt = usage
+            .input
+            .saturating_add(usage.cache_read)
+            .saturating_add(usage.cache_write);
+        let mut parts: Vec<(String, u32)> = Vec::new();
+        if prompt.saturating_add(usage.output) > 0 {
+            parts.push((
+                format!(
+                    "in {} out {}",
+                    tokens_text(prompt),
+                    tokens_text(usage.output)
+                ),
+                DIM,
+            ));
+        }
+        if prompt > 0 {
+            let percent = u128::from(usage.cache_read) * 100 / u128::from(prompt);
+            parts.push((format!("cache {percent}%"), DIM));
+        }
+        if let Some(cost) = cost_text(&usage) {
+            parts.push((cost, DIM));
+        }
+        if let Some(context) = context.as_ref()
+            && let Some(percent) = context_percent(context, &model)
+        {
+            // The display caps the percent; the level follows the exact one.
+            let text = if percent > 999 {
+                ">999%".to_owned()
+            } else {
+                format!("{percent}%")
+            };
+            let color = match level(percent) {
+                Level::Normal => DIM,
+                Level::Warn => 0xffb000,
+                Level::Bad => FAILED,
+            };
+            parts.push((text, color));
+        }
+        let followed = (!parts.is_empty()).then(|| {
+            div()
+                .flex()
+                .gap_1()
+                .px_2()
+                .text_size(px(11.))
+                .text_color(rgb(DIM))
+                .children(
+                    parts
+                        .into_iter()
+                        .map(|(text, color)| div().text_color(rgb(color)).child(text)),
+                )
+        });
+
         let shown = &requests[requests.len().saturating_sub(SHOWN_REQUESTS)..];
         let older = requests.len() - shown.len();
         div()
@@ -571,6 +750,7 @@ impl Desktop {
                     .text_size(px(11.))
                     .child(line.text())
             }))
+            .when_some(followed, |d, row| d.child(row))
             .when_some(self.input.notice.as_ref(), |d, notice| {
                 d.child(
                     div()
@@ -642,6 +822,68 @@ impl Desktop {
             } else {
                 "Enter sends · Shift+Enter a new line · Cmd+V pastes"
             }))
+    }
+
+    /// The controls of the followed session above its composer: the model ref
+    /// of its next turn, a switch to it, and a compaction with the composer
+    /// text.
+    fn controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let model_color = match self.input.focus {
+            Focus::Model => 0xffffff,
+            _ => DIM,
+        };
+        div()
+            .flex()
+            .gap_2()
+            .items_center()
+            .px_2()
+            .py_1()
+            .border_t_1()
+            .border_color(rgb(0x3a3a3a))
+            .child(
+                div()
+                    .id("model-ref")
+                    .flex_1()
+                    .p_1()
+                    .bg(rgb(0x26262e))
+                    .text_color(rgb(model_color))
+                    .font_family("Menlo")
+                    .child(self.input.model.display())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.input.focus = Focus::Model;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .id("model")
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(rgb(0x2f4a2f))
+                    .cursor_pointer()
+                    .child("model")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let session = this.followed().0;
+                        this.model(session.as_deref());
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .id("compact")
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(rgb(0x2f4a2f))
+                    .cursor_pointer()
+                    .child("compact")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let session = this.followed().0;
+                        this.compact(session.as_deref());
+                        cx.notify();
+                    })),
+            )
     }
 
     /// The ask that takes the keys, in the place of the composer: a form with

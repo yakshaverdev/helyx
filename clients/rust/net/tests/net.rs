@@ -3,12 +3,13 @@
 //! close, the reconnect with `after`, the waits before the welcome, and the
 //! breaks of the wire contract.
 
-mod stub;
+use net::stub;
 
 use helyx_client_core::json::{Json, decode};
-use helyx_desktop::net::{self, Command, RequestState, Shared};
-use helyx_desktop::settings::Server;
-use helyx_desktop::socket::WAITS;
+use helyx_client_net as net;
+use net::Server;
+use net::socket::WAITS;
+use net::{Command, RequestState, Shared};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
@@ -376,7 +377,7 @@ fn a_failed_open_after_a_welcome_reconnects() {
     let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
     let (commands, receive) = channel();
     let (lines, notified) = channel();
-    let waits = helyx_desktop::socket::Waits {
+    let waits = net::socket::Waits {
         pause: Duration::from_millis(50),
         ..WAITS
     };
@@ -435,6 +436,60 @@ fn a_failed_open_after_a_welcome_reconnects() {
     drop(commands);
     drop(ws);
     assert_eq!(thread.join().unwrap(), "reconnecting");
+}
+
+/// The app comes back to the foreground: a socket that a suspend left dead,
+/// with the server holding it open and silent, is dropped and replaced on the
+/// path of a lost connection, without the 45,000 ms silence.
+#[test]
+fn an_active_app_replaces_a_dead_socket_without_the_silence() {
+    /// A margin for load: other worktrees run tests on this machine.
+    const LOAD_MARGIN: Duration = Duration::from_secs(3);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = stub::local(port);
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (commands, receive) = channel();
+    let (welcomed, at_welcome) = channel();
+    let (accepted, at_accept) = channel();
+    let (stop, stopped) = channel::<()>();
+    let stub = std::thread::spawn(move || {
+        // The first connection: the welcome, the two requests that it sends,
+        // and then silence. The stub holds the socket open, so the client
+        // cannot tell that the suspend killed it.
+        let mut ws = accept(listener.accept().unwrap().0).unwrap();
+        welcome(&mut ws, "tok-q4");
+        let _live = ws.read();
+        let _saved = ws.read();
+        welcomed.send(()).unwrap();
+        // Only the wake-up ends it: the server sends nothing.
+        assert!(ws.read().is_err());
+        // The second connection: the same server, on the path of a lost
+        // connection.
+        let mut ws = accept(listener.accept().unwrap().0).unwrap();
+        welcome(&mut ws, "tok-q4");
+        accepted.send(()).unwrap();
+        let _ = stopped.recv();
+    });
+    let thread_shared = shared.clone();
+    let thread = std::thread::spawn(move || net::run(&server, &thread_shared, &receive, &|| {}));
+    at_welcome.recv().unwrap();
+    let started = Instant::now();
+    net::became_active(&commands);
+    at_accept
+        .recv_timeout(WAITS.pause + LOAD_MARGIN)
+        .expect("the dead socket is replaced");
+    // The pause of the reconnect, far below the silence bound.
+    assert!(
+        started.elapsed() < WAITS.pause + LOAD_MARGIN,
+        "{:?}",
+        started.elapsed()
+    );
+    // The host is gone: the thread ends at the end of the connection.
+    drop(commands);
+    stop.send(()).unwrap();
+    stub.join().unwrap();
+    thread.join().unwrap();
 }
 
 /// The welcome of a stub connection, with the answers of the two requests of
@@ -525,8 +580,7 @@ fn a_prompt_goes_with_its_text_and_its_reply_is_ok() {
         shared
             .outcomes
             .iter()
-            .any(|(send, outcome)| *send == 3
-                && *outcome == helyx_desktop::composer::SendOutcome::Ok),
+            .any(|(send, outcome)| *send == 3 && *outcome == net::send::SendOutcome::Ok),
         "{:?}",
         shared.outcomes
     );
@@ -627,9 +681,7 @@ fn a_lost_reply_of_a_composer_send_fails_its_outcome() {
     drop(listener);
     until(&changes, &shared, |s| {
         (s.outcomes.iter()).any(|(send, outcome)| {
-            *send == 5
-                && *outcome
-                    == helyx_desktop::composer::SendOutcome::Failed("the reply was lost".into())
+            *send == 5 && *outcome == net::send::SendOutcome::Failed("the reply was lost".into())
         })
     });
     let _ = commands;
@@ -831,10 +883,7 @@ fn a_send_between_connections_is_not_sent_and_its_line_stays() {
     until(&changes, &shared, |s| {
         (s.outcomes.iter()).any(|(send, outcome)| {
             *send == 9
-                && *outcome
-                    == helyx_desktop::composer::SendOutcome::Failed(
-                        "the connection is not ready".into(),
-                    )
+                && *outcome == net::send::SendOutcome::Failed("the connection is not ready".into())
         })
     });
     {

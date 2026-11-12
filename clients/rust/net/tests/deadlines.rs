@@ -3,10 +3,11 @@
 //! deadline of a batch of sends, a send that fails after a binary frame and
 //! after a frame that the socket read, and the TCP connect.
 
-mod stub;
+use net::stub;
 
-use helyx_desktop::net::{self, Command, Shared};
-use helyx_desktop::socket::{WAITS, Waits};
+use helyx_client_net as net;
+use net::socket::{WAITS, Waits};
+use net::{Command, Shared};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, channel};
@@ -17,6 +18,12 @@ use tungstenite::WebSocket;
 /// A margin for load in a bound of elapsed time: other worktrees run tests
 /// on this machine.
 const LOAD_MARGIN: Duration = Duration::from_secs(3);
+
+/// The send buffer of the socket of the host: the OS can buffer a batch of
+/// several MiB whole, and then no write waits on its peer, so a test whose
+/// batch must outlast its deadline caps the buffer here. The batch is 3 MB,
+/// far over it.
+const SEND_BUFFER: usize = 16_384;
 
 /// Runs the network thread with `waits` against a stub that welcomes it and
 /// takes `sessions.live`, then runs `serve`, whose receiver gets a message
@@ -68,6 +75,7 @@ fn the_silence_holds_while_sends_stall() {
         send: Duration::from_secs(20),
         pause: Duration::ZERO,
         poll: Duration::from_millis(50),
+        send_buffer: Some(SEND_BUFFER),
         ..WAITS
     };
     // Frames of several MiB, which the socket cannot take.
@@ -94,6 +102,9 @@ fn a_batch_of_sends_has_a_deadline_of_its_own() {
             send: Duration::from_millis(500),
             pause: Duration::ZERO,
             poll: Duration::from_millis(50),
+            // The slow reader takes 3 MB in seconds, and the buffer keeps
+            // the whole batch from the socket, so no write returns at once.
+            send_buffer: Some(SEND_BUFFER),
             ..WAITS
         };
         let session = if slow {
@@ -183,6 +194,7 @@ fn a_failed_send_after_a_binary_frame_is_a_break() {
         send: Duration::from_millis(300),
         pause: Duration::ZERO,
         poll: Duration::from_millis(50),
+        send_buffer: Some(SEND_BUFFER),
         ..WAITS
     };
     let (stop, stopped) = channel::<()>();
@@ -221,6 +233,7 @@ fn a_failed_send_keeps_the_frames_read_before_it() {
         send: Duration::from_millis(300),
         pause: Duration::ZERO,
         poll: Duration::from_millis(50),
+        send_buffer: Some(SEND_BUFFER),
         ..WAITS
     };
     let (stop, stopped) = channel::<()>();
