@@ -27,8 +27,8 @@ use helyx_client_core::operation::{MAX_CWD_BYTES, Operation};
 /// so a new answer is refused while every mark is pending.
 pub const MAX_HIDDEN_ANSWERS: usize = 16;
 /// The line of a refusal while the client holds its 16 requests in flight.
-/// The network thread gives the same text for `Refusal::Busy`.
-pub const BUSY: &str = "16 requests are in flight";
+/// The network layer gives the same text for `Refusal::Busy`.
+pub use helyx_client_net::BUSY;
 /// The line of a send that the stopped network thread cannot take.
 pub const CONNECTION_STOPPED: &str = "the connection has stopped";
 
