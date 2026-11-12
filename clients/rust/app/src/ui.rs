@@ -13,6 +13,7 @@ use gpui::{
     KeyDownEvent, ListAlignment, ListState, SharedString, Window, WindowBounds, WindowOptions, div,
     list, prelude::*, px, rgb, size,
 };
+use helyx_client_core::attention::{Seen, attention};
 use helyx_client_core::fold::State;
 use helyx_client_core::frame::SavedSession;
 use helyx_client_core::json::Json;
@@ -28,6 +29,7 @@ use helyx_desktop::composer::{SendId, SendOutcome};
 use helyx_desktop::controls::confirm_stop;
 use helyx_desktop::input::{Focus, Input, Intent, Press};
 use helyx_desktop::net::{self, Command, RequestLine, RequestState, Shared};
+use helyx_desktop::notify;
 use helyx_desktop::settings::Server;
 use std::collections::HashMap;
 use std::sync::mpsc::{Sender, channel, sync_channel};
@@ -74,6 +76,10 @@ struct Desktop {
     stop_send: Option<SendId>,
     /// Whether a stop was answered `ok` and the live list is due again.
     live_due: bool,
+    /// The facts of the state of the followed session that the last frame
+    /// saw, from which a change posts a notification while the window is not
+    /// active. The state itself holds the transcript, so it is not kept.
+    seen: Option<Seen>,
     /// The window holds the keys, so the root takes every press.
     focus: FocusHandle,
 }
@@ -120,6 +126,7 @@ pub fn run(server: Server) {
                     armed: None,
                     stop_send: None,
                     live_due: false,
+                    seen: None,
                     focus: focus.clone(),
                 }
             });
@@ -395,10 +402,10 @@ fn text(message: &Message) -> String {
 }
 
 impl Render for Desktop {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.settle();
         self.default_cwd();
-        let (live, followed, line, running, saved, saved_next, requests) = {
+        let (live, followed, line, running, saved, saved_next, requests, seen, posted) = {
             let shared = self.shared();
             let state = shared
                 .followed
@@ -410,6 +417,15 @@ impl Render for Desktop {
                 .as_deref()
                 .and_then(|session| net::follow_line(session, &shared.client.follow(session)?))
                 .unwrap_or_else(|| shared.line.clone());
+            // The facts of the state and the attention of its change are read
+            // under the lock; the notification goes after it.
+            let seen = state.map(Seen::of);
+            let posted = match (self.seen.as_ref(), state) {
+                (Some(before), Some(after)) if !window.is_window_active() => {
+                    attention(before, after)
+                }
+                _ => None,
+            };
             (
                 shared.live.clone(),
                 shared.followed.clone(),
@@ -418,8 +434,14 @@ impl Render for Desktop {
                 shared.saved.clone(),
                 shared.saved_next.clone(),
                 shared.requests.clone(),
+                seen,
+                posted,
             )
         };
+        self.seen = seen;
+        if let Some(posted) = posted {
+            notify::post(&posted);
+        }
         // The count of the list and the rows that it draws are one snapshot.
         let shown = self.items();
         if shown.len() != self.transcript.item_count() {

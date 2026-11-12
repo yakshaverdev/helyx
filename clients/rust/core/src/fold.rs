@@ -21,6 +21,9 @@ pub const ACK_EVERY: u64 = 1_024;
 pub struct State {
     /// The instance of the last snapshot; `None` before the first one.
     pub instance_id: Option<String>,
+    /// True when the last frame was a snapshot or a replay, before live
+    /// events follow: the state is history, not news.
+    pub from_snapshot: bool,
     /// That of the last snapshot or of the last event applied after it.
     pub seq: Seq,
     pub model: String,
@@ -29,6 +32,10 @@ pub struct State {
     pub asks: Vec<Ask>,
     /// True from a snapshot with a turn or a `turn_start`, until a `turn_end`.
     pub running: bool,
+    /// The outcome of the last turn that ended after the snapshot, `None`
+    /// before one ends: the state keeps it so that a host can tell a turn
+    /// that ended well from one that failed or was aborted.
+    pub outcome: Option<TurnOutcome>,
     /// The transcript, oldest first: each user and assistant message at its
     /// end, each tool result after the assistant message of its call.
     pub messages: Vec<Message>,
@@ -82,11 +89,13 @@ impl State {
                 let snapshot = *snapshot;
                 *self = State {
                     instance_id: Some(snapshot.instance_id),
+                    from_snapshot: true,
                     seq: snapshot.seq,
                     model: snapshot.model,
                     queue: snapshot.queue,
                     asks: snapshot.asks,
                     running: snapshot.turn.is_some(),
+                    outcome: None,
                     messages: snapshot.messages,
                     more: snapshot.older > 0,
                     partial: snapshot.turn.and_then(|turn| turn.partial),
@@ -98,8 +107,12 @@ impl State {
                 Ok(())
             }
             Subscribed::Replay(_) if self.instance_id.is_none() => Err(Broken("replay")),
+            // A replay is history as a snapshot is: its events apply, and the
+            // state is no news until a live event follows.
             Subscribed::Replay(events) => {
-                events.into_iter().try_for_each(|event| self.apply(event))
+                events.into_iter().try_for_each(|event| self.apply(event))?;
+                self.from_snapshot = true;
+                Ok(())
             }
         }
     }
@@ -119,6 +132,8 @@ impl State {
             return Err(Broken("event seq"));
         }
         self.seq = event.seq;
+        // A live event follows the snapshot or the replay: its change is news.
+        self.from_snapshot = false;
         let Some(data) = event.data else {
             return Ok(());
         };
@@ -149,9 +164,10 @@ impl State {
                 self.running = false;
                 self.partial = None;
                 self.ui_blocks.clear();
-                if let TurnOutcome::Error(text) = outcome {
-                    self.notices.push(text);
+                if let TurnOutcome::Error(text) = &outcome {
+                    self.notices.push(text.clone());
                 }
+                self.outcome = Some(outcome);
             }
             EventData::QueueUpdate(queue) => self.queue = queue,
             EventData::ModelChange(model) => self.model = model,
