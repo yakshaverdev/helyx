@@ -55,10 +55,16 @@ defmodule Helyx.Session.LateCallTest do
     pid = Session.pid(session)
     :ok = :sys.suspend(pid)
 
+    product = %{kind: :product, id: "p1"}
+
     calls = [
-      prompt: &Session.prompt(&1, "late text"),
-      steer: &Session.steer(&1, "late text"),
-      follow_up: &Session.follow_up(&1, "late text"),
+      # A product text is one call. A user text first asks the session for
+      # its ModelContext plugin, and that read is the call that is late
+      # (docs/features/skills.md).
+      prompt: &Session.prompt(&1, "late text", origin: product),
+      steer: &Session.steer(&1, "late text", origin: product),
+      follow_up: &Session.follow_up(&1, "late text", origin: product),
+      user_text_context: &Session.prompt(&1, "late text"),
       compact: &Session.compact(&1, "late text"),
       set_model: &Session.set_model(&1, "test/other"),
       subscribe: &Session.subscribe/1
