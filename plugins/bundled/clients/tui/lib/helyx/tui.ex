@@ -83,7 +83,7 @@ defmodule Helyx.TUI do
       question: nil,
       composer: Composer.new(),
       cwd: cwd,
-      # The folder of the user skills, for the mount scan and `/name`.
+      # The folder of the user skills, for the mount scan.
       home: home,
       # Row 1 of the footer: the branch of a task at mount and after each turn.
       location: Footer.location(cwd, nil),
@@ -240,7 +240,7 @@ defmodule Helyx.TUI do
     do: {:noreply, %{state | vm: ViewModel.reject(state.vm, "not sent: a switch runs")}}
 
   def handle_event(%Key{code: "enter", kind: "press"} = key, state) do
-    case Composer.submit(state.composer, &Helyx.Skills.expand(&1, state.cwd, state.home)) do
+    case Composer.submit(state.composer) do
       :empty -> {:noreply, state}
       {:message, text} -> {:noreply, send_message(text, key, state)}
       # A notice is a new cell, so the position gets its check.

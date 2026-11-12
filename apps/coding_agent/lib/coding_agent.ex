@@ -70,7 +70,8 @@ defmodule CodingAgent do
       case folder(conn, id) do
         {:ok, cwd} ->
           home = Application.get_env(:coding_agent, :home, System.user_home!())
-          prompt = CodingAgent.Print.skills(Keyword.fetch!(opts, :prompt), cwd, home)
+          :ok = CodingAgent.Print.skill_notices(cwd, home)
+          prompt = Keyword.fetch!(opts, :prompt)
 
           try do
             CodingAgent.Print.run(conn, ref, id, prompt, end_session(conn, id, own?))

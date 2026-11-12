@@ -1062,7 +1062,9 @@ defmodule CodingAgent.PrintTest do
     end
   end
 
-  test "a skill command expands after the scan notices go to stderr", %{tmp_dir: dir} do
+  test "a skill command expands on the server, after the scan notices go to stderr", %{
+    tmp_dir: dir
+  } do
     File.mkdir_p!(Path.join(dir, ".git"))
 
     for {name, frontmatter} <- [
@@ -1077,16 +1079,31 @@ defmodule CodingAgent.PrintTest do
       )
     end
 
-    stderr =
-      capture_io(:stderr, fn ->
-        send(self(), {:prompt, Print.skills("/probe-skill-471 730", dir)})
-        send(self(), {:plain, Print.skills("/probe-none 730", dir)})
-      end)
+    server = server(dir)
+
+    {:ok, session} =
+      Helyx.Session.start(server.core, model: "fake/echo", cwd: dir, sessions_dir: dir)
+
+    assert {0, out, stderr} =
+             io("", fn ->
+               print_run(server, prompt: "/probe-skill-471 730", cwd: dir, resume: session.id)
+             end)
 
     bad = Path.join(dir, ".agents/skills/probe-bad-471")
     assert stderr =~ "helyx: skill #{bad} is not loaded: the name other is not the folder name\n"
-    assert_received {:prompt, prompt}
-    assert prompt =~ ~r/\A<skill name="probe-skill-471">\n.*Do it\.\n\n<\/skill>\n\n730\z/s
-    assert_received {:plain, "/probe-none 730"}
+
+    folder = Path.join(dir, ".agents/skills/probe-skill-471")
+
+    load =
+      ~r/\A<skill name="probe-skill-471">\nFolder: #{Regex.escape(folder)} .*Do it\.\n\n<\/skill>\n\n730/s
+
+    assert out =~ load
+
+    {:ok, snapshot, _ref} = Helyx.Session.subscribe(session)
+
+    assert [%Helyx.Message{role: :user} = user] =
+             Enum.filter(snapshot.messages, &(&1.role == :user))
+
+    assert Helyx.Message.text(user) =~ load
   end
 end
