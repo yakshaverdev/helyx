@@ -28,8 +28,7 @@ defmodule Helyx.Tool.Args do
     "maxLength" => ~w(string),
     "minItems" => ~w(array),
     "maxItems" => ~w(array),
-    "items" => ~w(array),
-    "additionalProperties" => ~w(object)
+    "items" => ~w(array)
   }
 
   @doc false
