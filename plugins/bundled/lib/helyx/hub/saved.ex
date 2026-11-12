@@ -1,11 +1,11 @@
 defmodule Helyx.Hub.Saved do
   @moduledoc false
   # `sessions.saved` and the `resume` of a folder under a Hub, in the caller
-  # (`docs/features/hub.md`, decision 7). Two sources: the stored records
-  # that the user may read, from one Hub call; and for the default owner the
-  # scan of Core (`Helyx.Sessions.list_saved/2`, the 256 newest files), with
-  # the ids that have a row dropped in the same Hub call. Each is filtered
-  # by access before the page and the cursor are made.
+  # (`docs/features/hub.md`, decision 7). One source: the records that the
+  # user may read, from one Hub call. For the default owner the scan of Core
+  # (`Helyx.Sessions.list_saved/2`, the 256 newest files) goes first, and the
+  # Hub call writes the rows of the files that have none, so the page and the
+  # cursor hold only records.
 
   alias Helyx.Hub
   alias Helyx.Hub.Params
@@ -27,10 +27,8 @@ defmodule Helyx.Hub.Saved do
 
     with {:ok, cwd, cursor, limit} <- params(params),
          {:ok, scanned} <- scan(arg, auth, cwd, params["after"]) do
-      ids = Enum.map(scanned, & &1.id)
-
-      case Hub.call(arg.hub, {:saved, auth, cwd, cursor, limit, ids}, until) do
-        {:ok, stored, derived} -> {:ok, merge(stored, scanned, derived, limit)}
+      case Hub.call(arg.hub, {:saved, auth, cwd, cursor, limit, scanned}, until) do
+        {:ok, rows} -> {:ok, page(rows, limit)}
         other -> other
       end
     else
@@ -93,7 +91,8 @@ defmodule Helyx.Hub.Saved do
   end
 
   # The scan of Core, for the default owner only, in a Task killed past its
-  # deadline. Another user gets no item of a session with no record.
+  # deadline. The Hub call writes the rows of the files that have none;
+  # another user gets no item of a session with no record.
   defp scan(%{default_owner: user} = arg, %{user: user}, cwd, cursor) do
     opts =
       for {key, value} <- [limit: @scan_limit, cwd: cwd, after: cursor], value, do: {key, value}
@@ -108,34 +107,34 @@ defmodule Helyx.Hub.Saved do
 
   defp scan(_arg, _auth, _cwd, _cursor), do: {:ok, []}
 
-  # The two lists, newest first by `{mtime, id}`; each holds only items
-  # after the cursor (the query and the scan of Core compare them), so the
-  # page is their first `limit`, and `next` the key of its last item when
-  # either list holds more.
-  defp merge(stored, scanned, derived, limit) do
-    keep = MapSet.new(derived)
-
-    items =
-      Enum.map(stored, &item(&1.session_id, &1.cwd, &1.model, &1.active_at, &1.prompt)) ++
-        for s <- scanned, s.id in keep, do: item(s.id, s.cwd, s.model, s.mtime, s.prompt)
-
-    {page, rest} = items |> Enum.sort_by(&{&1["mtime"], &1["id"]}, :desc) |> Enum.split(limit)
+  # The page of at most `limit` rows, newest first by `{active_at, id}`, and
+  # the cursor of its last item when the store read one more. The store
+  # applies the cursor of the client, so every row is after it.
+  defp page(rows, limit) do
+    {page, rest} = Enum.split(rows, limit)
     next = if rest != [], do: next(List.last(page))
-    %{"items" => page, "next" => next}
+    %{"items" => Enum.map(page, &item/1), "next" => next}
   end
 
-  defp item(id, cwd, model, mtime, prompt),
-    do: %{"id" => id, "cwd" => cwd, "model" => model, "mtime" => mtime, "prompt" => prompt}
+  defp item(row),
+    do: %{
+      "id" => row.session_id,
+      "cwd" => row.cwd,
+      "model" => row.model,
+      "mtime" => row.active_at,
+      "prompt" => row.prompt
+    }
 
-  defp next(%{"mtime" => mtime, "id" => id}), do: "#{mtime}:#{id}"
+  defp next(row), do: "#{row.active_at}:#{row.session_id}"
 
   # The `resume` of a folder: the id of the newest session of the folder
   # that the user owns, or `{:error, :not_found}`, after one credential
-  # check as for `page/3`. The scan goes to Hub as the `mtime` of each id.
+  # check as for `page/3`. The scan goes to Hub as its summaries, whose
+  # `mtime` and prompt become the row of a file that has none.
   def newest(arg, auth, cwd) do
     with :ok <- cwd(cwd),
          {:ok, scanned} <- scan(arg, auth, cwd, nil) do
-      Hub.call(arg.hub, {:newest, auth, cwd, Map.new(scanned, &{&1.id, &1.mtime})})
+      Hub.call(arg.hub, {:newest, auth, cwd, scanned})
     else
       early -> after_credential(arg, auth, early)
     end

@@ -50,11 +50,56 @@ defmodule Helyx.Hub.Store.SQLite.Records do
   defp insert(_db, _record, false = _room), do: {:error, :too_many_records}
   defp insert(db, record, true), do: insert(db, record)
 
+  # The id is new: Core made it for this start, so the only row it can have is
+  # the feed row of the same start, which can come first (hub.md, decision 8).
   defp insert(db, r) do
     run(
       db,
       "INSERT INTO records (session_id, owner, cwd, model, prompt, active_at, " <>
-        "created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+        "created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) " <>
+        "ON CONFLICT(session_id) DO UPDATE SET owner = excluded.owner, " <>
+        "cwd = excluded.cwd, model = excluded.model",
+      [r.session_id, r.owner, r.cwd, r.model, r.prompt, r.active_at, r.created_at]
+    )
+  end
+
+  # The row of a Live of the feed: a new row of the default owner, or the
+  # model and `active_at` of the row that the session has. The owner, title,
+  # labels, project, prompt, and `created_at` of a row stay.
+  def seen_record(db, record, deadline) do
+    transaction(db, deadline, fn ->
+      run(
+        db,
+        "INSERT INTO records (session_id, owner, cwd, model, prompt, active_at, " <>
+          "created_at, updated_at) VALUES (?1, ?2, ?3, ?4, '', ?5, ?5, ?5) " <>
+          "ON CONFLICT(session_id) DO UPDATE SET model = excluded.model, " <>
+          "active_at = excluded.active_at",
+        [record.session_id, record.owner, record.cwd, record.model, record.active_at]
+      )
+    end)
+  end
+
+  # The rows of the sessions that a scan found, each with its own prompt and
+  # time; a session that has a row keeps it. At most 256 rows, the bound of
+  # the caller.
+  def ensure_records(db, records, deadline),
+    do: transaction(db, deadline, fn -> ensure_all(db, records) end)
+
+  defp ensure_all(db, records) do
+    Enum.reduce_while(records, :ok, fn record, :ok ->
+      case ensure_record(db, record) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp ensure_record(db, r) do
+    run(
+      db,
+      "INSERT INTO records (session_id, owner, cwd, model, prompt, active_at, " <>
+        "created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) " <>
+        "ON CONFLICT(session_id) DO NOTHING",
       [r.session_id, r.owner, r.cwd, r.model, r.prompt, r.active_at, r.created_at]
     )
   end
@@ -86,13 +131,11 @@ defmodule Helyx.Hub.Store.SQLite.Records do
     end
   end
 
-  # One step: the row of a derived record when `new` is given (within the
-  # cap of its owner), then the changes, each checked against the row: a
-  # project must be one of the owner of the row.
-  def update_record(db, session_id, new, changes, max, deadline) do
+  # One step: the changes, each checked against the row: a project must be
+  # one of the owner of the row.
+  def update_record(db, session_id, changes, deadline) do
     transaction(db, deadline, fn ->
-      with :ok <- put_new(db, new, max),
-           {:ok, owner} <- owner(db, session_id),
+      with {:ok, owner} <- owner(db, session_id),
            :ok <- project_of(db, Map.get(changes, :project_id), owner),
            :ok <- set(db, session_id, changes),
            do: set_labels(db, session_id, Map.get(changes, :labels))

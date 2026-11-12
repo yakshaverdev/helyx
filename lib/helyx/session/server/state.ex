@@ -83,7 +83,10 @@ defmodule Helyx.Session.Server.State do
     compacted: nil,
     # The caller of `Helyx.Sessions.stop/1`, which `terminate/2` answers with
     # the stop report, or nil.
-    stopper: nil
+    stopper: nil,
+    # The key of the last Live that the session feed sent, or nil
+    # (`Helyx.Session.Server.Feed`).
+    fed: nil
   ]
 
   @type t :: %__MODULE__{
@@ -121,7 +124,8 @@ defmodule Helyx.Session.Server.State do
           summary: Helyx.Summary.t() | nil,
           summary_call: Helyx.Session.Server.Summary.t() | nil,
           compacted: Helyx.Session.Totals.compaction() | nil,
-          stopper: GenServer.from() | nil
+          stopper: GenServer.from() | nil,
+          fed: {String.t(), boolean(), Helyx.ModelRef.t()} | nil
         }
 
   def ask(state, pid, req, key), do: ProviderRequest.ask(pid, req, state.provider_ms[key])

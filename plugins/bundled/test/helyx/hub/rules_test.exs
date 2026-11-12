@@ -119,11 +119,11 @@ defmodule Helyx.Hub.RulesTest do
     assert {:ok, %{owner: "ann", prompt: ""}} = SQLite.record(db, "s10001xxxxxx")
   end
 
-  test "the first update of a derived record holds the cap of 10,000 records",
+  test "a get or update of a found session writes its row, with no cap on the rows of the default owner",
        %{state: state, db: db, connection: connection} do
     :ok = Exqlite.Sqlite3.execute(connection, "BEGIN")
 
-    for n <- 1..9_999,
+    for n <- 1..10_000,
         do:
           row(
             connection,
@@ -137,9 +137,11 @@ defmodule Helyx.Hub.RulesTest do
     found = %{cwd: "/w", model: "fake/echo"}
     update = &Rules.handle({:record_update, auth, &1, found, %{title: "t"}}, :infinity, state)
 
+    # The rows of the sessions of the default owner have no cap: the session
+    # files bound them (hub.md, decision 8).
     assert {:ok, %{stored: true}} = update.("DERIVED1xxxx")
-    assert update.("DERIVED2xxxx") == {:error, :too_many_records}
-    assert SQLite.record(db, "DERIVED2xxxx") == {:error, :not_found}
+    assert {:ok, %{stored: true}} = update.("DERIVED2xxxx")
+    assert {:ok, %{owner: "owner", cwd: "/w"}} = SQLite.record(db, "DERIVED2xxxx")
   end
 
   test "the cwd of a start of a user: 1 to 4,096 bytes", %{state: state} do

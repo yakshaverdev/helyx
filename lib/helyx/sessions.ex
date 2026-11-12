@@ -10,6 +10,11 @@ defmodule Helyx.Sessions do
   Core attaches to it, also at the cap, and concurrent resumes of one id
   get one result; an attach with other `:provider_opts` than the running
   session's gives `{:error, :provider_opts_differ}`.
+
+  `watch/2` follows every session of the Core without a subscription to
+  each: the feed sends the `Live` of a session at its open and at each
+  change of status or model, and the events of the types that the watcher
+  names (`docs/features/session-feed.md`).
   """
 
   alias Helyx.Session
@@ -33,9 +38,11 @@ defmodule Helyx.Sessions do
 
   defmodule Live do
     @moduledoc """
-    One session of `Helyx.Sessions.list_live/1`. `model` is the current
-    model ref. `status` is `:idle` when the session has no turn and no wait
-    after a turn, else `:running`.
+    One session of `Helyx.Sessions.list_live/1`, and the notice of a start,
+    a resume, or a change of status or model that
+    `Helyx.Sessions.watch/2` sends. `model` is the current model ref.
+    `status` is `:idle` when the session has no turn and no wait after a
+    turn, else `:running`.
     """
     @enforce_keys [:id, :instance_id, :cwd, :model, :status]
     defstruct @enforce_keys
@@ -83,6 +90,63 @@ defmodule Helyx.Sessions do
   catch
     :exit, _reason -> nil
   end
+
+  @doc """
+  Registers the calling process as a watcher of `core`: it gets the `Live`
+  of every session of the Core at its open and at each change of status or
+  model, and the events whose type is in `types`. A second `watch/2` by the
+  same process replaces the first, and `unwatch/1` ends the notices.
+
+  Messages, each from the session process:
+
+    * `{:helyx_feed, session_pid, %Helyx.Sessions.Live{}}`
+    * `{:helyx_feed, session_pid, %Helyx.Event{}}` for a named type
+
+  Per session the order is the send order: the first `Live` of an instance
+  comes before every event of it, and a `Live` with a new status comes before
+  the events of that status. Notices of two sessions have no order. No
+  notice tells of a stop: monitor `session_pid`, whose `:DOWN` reason
+  `Helyx.Session.end_reason/1` maps.
+
+  Returns the counter of the notices that the feed dropped, which
+  `dropped/1` reads. A watcher whose mailbox is at
+  `max_feed_queue/0` loses its notices, and the count says how many: read
+  `list_live/1` again to repair the view. A `core` that is not running
+  raises `ArgumentError`.
+  """
+  @spec watch(Helyx.Core.name(), [Helyx.Event.type()]) ::
+          {:ok, :counters.counters_ref()} | {:error, :invalid_types}
+  def watch(core, types) when is_list(types) do
+    if Enum.all?(types, &(&1 in Helyx.Event.types())) do
+      :ok = unwatch(core)
+      dropped = :counters.new(1, [:write_concurrency])
+      registry = Helyx.Core.feed_registry(core)
+
+      for key <- Enum.uniq([:live | types]),
+          do: {:ok, _} = Registry.register(registry, key, dropped)
+
+      {:ok, dropped}
+    else
+      {:error, :invalid_types}
+    end
+  end
+
+  def watch(_core, _types), do: {:error, :invalid_types}
+
+  @doc "Ends the notices of the calling process to the feed of `core`."
+  @spec unwatch(Helyx.Core.name()) :: :ok
+  def unwatch(core) do
+    registry = Helyx.Core.feed_registry(core)
+    Enum.each(Registry.keys(registry, self()), &Registry.unregister(registry, &1))
+  end
+
+  @doc "The number of notices that the feed dropped for the watch of `ref`."
+  @spec dropped(:counters.counters_ref()) :: non_neg_integer()
+  def dropped(ref), do: :counters.get(ref, 1)
+
+  @doc "The mailbox length of a watcher at which the feed drops its notices."
+  @spec max_feed_queue() :: pos_integer()
+  defdelegate max_feed_queue, to: Helyx.Session.Server.Feed, as: :max_queue
 
   @doc """
   One page of the saved sessions of the `:sessions_dir` of `core`, newest

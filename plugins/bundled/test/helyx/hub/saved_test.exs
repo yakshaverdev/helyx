@@ -202,7 +202,7 @@ defmodule Helyx.Hub.SavedTest do
     assert %{"error" => %{"code" => "not_found"}} = req(bob, "resume", %{"cwd" => two})
   end
 
-  test "the default owner: every limit over its two sources, the item fields, next null on a full page",
+  test "the default owner: every limit over its rows, the item fields, next null on a full page",
        context do
     [one, two] = context.folders
     owner = open(context.port)
@@ -211,8 +211,9 @@ defmodule Helyx.Hub.SavedTest do
     for id <- stored,
         do: %{"ok" => true} = req(owner, "hub.records.update", %{"session" => id, "title" => "t"})
 
-    derived = for cwd <- [one, two, one], do: session(owner, cwd)
-    all = MapSet.new(stored ++ derived)
+    # The feed wrote the row of each of these at its start, with no title.
+    plain = for cwd <- [one, two, one], do: session(owner, cwd)
+    all = MapSet.new(stored ++ plain)
 
     for limit <- 1..(MapSet.size(all) + 1) do
       pages = pages(owner, limit, %{})
