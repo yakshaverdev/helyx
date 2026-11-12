@@ -49,7 +49,11 @@ pub enum EventData {
     ModelChange(String),
     ResumeId,
     SteerUnconfirmed(Message),
-    Compaction,
+    /// A compaction of the session: `tokens_after` is the context estimate
+    /// that the server set, `None` when it is unknown.
+    Compaction {
+        tokens_after: Option<u64>,
+    },
     Notice(String),
     Ask(Ask),
     AskEnd {
@@ -178,8 +182,8 @@ fn parse_data(kind: &str, data: &Json) -> Checked<Option<EventData>> {
         "compaction" => {
             one_of(data, "trigger", &["manual", "auto"], "compaction")?;
             int_or_null(data, "tokens_before", "compaction")?;
-            int_or_null(data, "tokens_after", "compaction")?;
-            EventData::Compaction
+            let tokens_after = int_or_null(data, "tokens_after", "compaction")?;
+            EventData::Compaction { tokens_after }
         }
         "notice" => EventData::Notice(string(data, "text", "notice")?.to_owned()),
         "ask" => EventData::Ask(Ask::from_map(data)?),
