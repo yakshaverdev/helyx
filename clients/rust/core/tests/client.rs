@@ -1269,11 +1269,11 @@ fn the_records_feed_takes_its_frames_between_its_reply_and_its_unsubscribe() {
     let change = r#"{"type":"record","change":{"kind":"removed","session":"s1"}}"#;
 
     // A record frame before the reply is a break, and the connection ends.
-    let mut before = Client::new(None);
+    let mut before = Client::new();
     welcomed(&mut before);
     assert_eq!(before.receive(change), Err(Broken("record frame")));
 
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
 
     let (subscribe, _) = client.perform(Operation::records_subscribe()).unwrap();
@@ -1300,7 +1300,7 @@ fn the_records_feed_takes_its_frames_between_its_reply_and_its_unsubscribe() {
 #[test]
 fn the_records_feed_ends_with_records_end() {
     let change = r#"{"type":"record","change":{"kind":"removed","session":"s1"}}"#;
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
 
     let (subscribe, _) = client.perform(Operation::records_subscribe()).unwrap();
@@ -1320,7 +1320,7 @@ fn the_records_feed_ends_with_records_end() {
 #[test]
 fn a_refused_records_unsubscribe_keeps_the_feed_live() {
     let change = r#"{"type":"record","change":{"kind":"removed","session":"s1"}}"#;
-    let mut client = Client::new(None);
+    let mut client = Client::new();
     welcomed(&mut client);
 
     let (subscribe, _) = client.perform(Operation::records_subscribe()).unwrap();
