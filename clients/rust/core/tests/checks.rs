@@ -121,7 +121,7 @@ fn a_cost_of_signed_zero_is_zero() {
 
 #[test]
 fn refused_names_another_protocol() {
-    for (server_protocol, valid) in [(7, true), (10, false), (11, true)] {
+    for (server_protocol, valid) in [(7, true), (11, true), (13, false), (14, true)] {
         let mut handshake = Handshake::new(None);
         handshake.step(&j(&challenge(32))).unwrap();
         let refused =

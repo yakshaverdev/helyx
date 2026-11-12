@@ -4,7 +4,7 @@ defmodule Helyx.Session.BeforeSettleTest do
   use ExUnit.Case, async: true
 
   import Helyx.Test.Events, only: [collect_until: 1, messages: 1, of_type: 2, wait_until: 1]
-  import Helyx.Test.SessionCase, only: [start_core: 1, stop_session: 2]
+  import Helyx.Test.SessionCase, only: [start_core: 2, stop_session: 2]
 
   alias Helyx.{Message, Session}
   alias Helyx.Test.Hook
@@ -13,8 +13,8 @@ defmodule Helyx.Session.BeforeSettleTest do
   # hook that ran would send it within this time even on a loaded machine.
   @load_ms 300
 
-  defp core(hooks) do
-    core = start_core([Helyx.Test.Provider | hooks])
+  defp core(hooks, opts \\ []) do
+    core = start_core([Helyx.Test.Provider | hooks], opts)
     test = self()
     proxy = spawn_link(fn -> forward(test) end)
     Process.register(proxy, Hook.test_name(core))
@@ -148,7 +148,7 @@ defmodule Helyx.Session.BeforeSettleTest do
   describe "the continue" do
     @tag :tmp_dir
     test "starts the next turn with the hook's message, and is recorded", %{tmp_dir: dir} do
-      core = core([Hook.SettleA])
+      core = core([Hook.SettleA], sessions_dir: dir)
       answers(core, Hook.SettleA, [{:continue, "the tests fail"}])
       cwd = Path.join(dir, "work")
       File.mkdir_p!(cwd)
@@ -191,7 +191,7 @@ defmodule Helyx.Session.BeforeSettleTest do
 
       # The message of the continue reads back with its origin.
       stop_session(session, &GenServer.stop/1)
-      {:ok, resumed} = Session.resume(core, sessions_dir: dir, cwd: cwd)
+      {:ok, resumed, _} = Session.resume(core, sessions_dir: dir, cwd: cwd)
       {:ok, snapshot, _ref} = Session.subscribe(resumed)
 
       assert [_go, %{origin: %{kind: :hook, id: "Helyx.Test.Hook.SettleA"}}] =
@@ -285,7 +285,7 @@ defmodule Helyx.Session.BeforeSettleTest do
     @tag :tmp_dir
     test "at most 8 turns in a row start from a continue; a client message resets it",
          %{tmp_dir: dir} do
-      core = core([Hook.SettleA])
+      core = core([Hook.SettleA], sessions_dir: dir)
       Hook.script(core, Hook.SettleA, :before_settle, fn _ -> {:continue, "more"} end)
       session = run(core, "ok", sessions_dir: dir)
 
@@ -341,7 +341,7 @@ defmodule Helyx.Session.BeforeSettleTest do
   describe "a failed hook" do
     @tag :tmp_dir
     test "fails open: a notice, the chain goes on, and it is recorded", %{tmp_dir: dir} do
-      core = core([Hook.SettleA, Hook.SettleB])
+      core = core([Hook.SettleA, Hook.SettleB], sessions_dir: dir)
 
       for {answer, how} <- [
             {fn _ -> raise "boom" end, "boom"},

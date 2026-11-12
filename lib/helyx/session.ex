@@ -12,7 +12,9 @@ defmodule Helyx.Session do
   The turn and the late calls are in `docs/features/session-lifecycle.md`; the
   subscription is in `docs/features/session-subscribers.md`; every message has
   an id and every user message an origin
-  (`docs/features/message-identity.md`).
+  (`docs/features/message-identity.md`). A session that no client watches and
+  that has no work stops for idleness after the Core option `:idle_stop_ms`,
+  and its file resumes it (`docs/features/idle-unload.md`).
   """
 
   alias Helyx.ModelRef
@@ -51,34 +53,45 @@ defmodule Helyx.Session do
   `:sessions_dir` the session is written to disk
   (docs/features/session-lock.md, docs/features/server-management.md).
 
-  Errors: `{:error, :invalid_cwd}`, `{:error, :invalid_parent}`,
+  `:sessions_dir` is absent (no file) or the folder of the Core. Errors:
+  `{:error, :invalid_cwd}`, `{:error, :invalid_parent}`,
   `{:error, :invalid_tools}`, `{:error, :invalid_model_context}`,
   `{:error, :invalid_provider_opts}`, `{:error, :invalid_max_output_tokens}`,
-  the model errors of `t:model_error/0`, `{:error, {:session_locked, id}}`,
-  `{:error, {:lock_failed, text}}`, `{:error, :open_timeout}`,
-  `{:error, {:create_failed, reason}}`, and `{:error, :too_many_sessions}`.
+  the model errors of `t:model_error/0`,
+  `{:error, {:invalid_option, :sessions_dir}}`, `{:error, :editing}`,
+  `{:error, :open_timeout}`, `{:error, {:create_failed, reason}}`, and
+  `{:error, :too_many_sessions}`.
   """
   @spec start(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def start(core \\ Helyx.Core, opts) do
     # The file is created only after the plugins resolve, which narrows the
     # window for an orphan file from a failed start. A crash of the session's
     # open after the create still leaves one.
-    with {:ok, cwd} <- Input.cwd_option(opts),
+    with {:ok, dir} <- Input.sessions_dir(core, opts),
+         {:ok, cwd} <- Input.cwd_option(opts),
          {:ok, provider_opts} <- Input.provider_opts(opts),
          {:ok, parent, only, model_context, limit} <- Input.start_options(core, opts),
          id = if(parent, do: Id.child(parent.session_id, parent.call_id), else: Id.new()),
          {:ok, tools, sources} <- Input.tools(core, only),
          concurrent = Helyx.Tool.concurrent(tools),
          {:ok, {ref, provider}} <- Input.model(core, Keyword.fetch!(opts, :model), limit),
-         # The folders come before the lock, whose file is in them.
-         :ok <- mkdir(opts[:sessions_dir], cwd, parent) do
-      state = %State{id: id, core: core, model: ref, provider: provider, cwd: cwd}
+         :ok <- mkdir(dir, cwd, parent) do
+      state = %State{
+        id: id,
+        core: core,
+        model: ref,
+        provider: provider,
+        cwd: cwd,
+        parent: parent,
+        deadline_ms: State.deadline_ms(core)
+      }
+
       init = %{provider_opts: provider_opts, max_output_tokens: limit}
 
       Server.create(
         %{state | init: init, plugins: %{state.plugins | model_context: model_context}},
         {tools, concurrent, sources},
-        Server.Open.create_spec(opts[:sessions_dir], id, cwd, ModelRef.to_string(ref), parent)
+        Server.Open.create_spec(dir, id, cwd, ModelRef.to_string(ref), parent)
       )
     end
   end
@@ -88,24 +101,37 @@ defmodule Helyx.Session do
 
   @doc """
   Resumes from `:sessions_dir` the session `Helyx.Session.File.pick/3` picks:
-  the newest of the working directory, or with `:id` that session. `:cwd`, the
-  tool checks, the model ref, `:provider_opts`, the lock, the cap, and the read
-  bounds are as in `start/2`. A session that runs in this Core is attached, and
-  other `:provider_opts` give `{:error, :provider_opts_differ}`
-  (docs/features/server-management.md).
+  the newest of the working directory, or with `:id` that session. `:cwd`,
+  the tool checks, the model ref, `:provider_opts`, the cap, and the read
+  bounds are as in `start/2`. `:sessions_dir` is the folder of the Core.
+  The result tells whether a process ran already (`:attached`) or this call
+  started it (`:started`); other `:provider_opts` to a running session give
+  `{:error, :provider_opts_differ}` (docs/features/server-management.md).
   """
-  @spec resume(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
+  @spec resume(Helyx.Core.name(), keyword()) ::
+          {:ok, t(), :started | :attached} | {:error, model_error() | term()}
   def resume(core \\ Helyx.Core, opts) do
-    dir = Keyword.fetch!(opts, :sessions_dir)
+    # The option is required; the check of the folder of the Core follows.
+    _ = Keyword.fetch!(opts, :sessions_dir)
     header? = Keyword.has_key?(opts, :id) and not Keyword.has_key?(opts, :cwd)
 
-    with {:ok, cwd} <- if(header?, do: {:ok, nil}, else: Input.cwd_option(opts)),
+    with {:ok, dir} <- Input.sessions_dir(core, opts),
+         {:ok, cwd} <- if(header?, do: {:ok, nil}, else: Input.cwd_option(opts)),
          {:ok, provider_opts} <- Input.provider_opts(opts),
          {:ok, tools, sources} <- Input.tools(core, nil),
          concurrent = Helyx.Tool.concurrent(tools),
          {:ok, path, cwd} <- Helyx.Session.File.pick(dir, cwd, Keyword.take(opts, [:id])) do
       id = Path.basename(path, ".jsonl")
-      state = %State{id: id, core: core, model: nil, provider: nil, cwd: cwd}
+
+      state = %State{
+        id: id,
+        core: core,
+        model: nil,
+        provider: nil,
+        cwd: cwd,
+        deadline_ms: State.deadline_ms(core)
+      }
+
       state = %{state | init: %{state.init | provider_opts: provider_opts}}
       Server.start(state, {tools, concurrent, sources}, {path, &Server.Open.load(&1, path)})
     end
@@ -225,6 +251,8 @@ defmodule Helyx.Session do
   `{:error, :queue_full}`. Its message has the origin `:user`; product code
   passes `origin: %{kind: :product, id: id}`, else `{:error, :invalid_origin}`.
   `steer/3` and `follow_up/3` take it too (docs/features/message-identity.md).
+  The ModelContext plugin of the session can replace a text of the user
+  origin (`Helyx.ModelContext.user_text/2`).
   """
   @spec prompt(t(), String.t(), keyword()) :: :ok | {:error, :turn_running | send_error()}
   def prompt(%__MODULE__{} = session, text, opts \\ []) when is_binary(text) and is_list(opts),
@@ -265,10 +293,54 @@ defmodule Helyx.Session do
 
   defp send_user(session, op, text, opts),
     do:
-      with({:ok, origin} <- Input.origin(opts), do: send_text(session, {op, text, origin}, text))
+      with(
+        {:ok, origin} <- Input.origin(opts),
+        # The plugin gets a checked text; its return gets the check again.
+        :ok <- Input.text(text),
+        {:ok, text} <- user_text(session, origin, text, &Call.call/3),
+        do: send_text(session, {op, text, origin}, text)
+      )
+
+  # The ModelContext plugin replaces the text of a user message before the
+  # checks; product code keeps its own text (`Helyx.ModelContext.user_text/2`).
+  # `call` is the call of the caller's contract: a session that does not run
+  # answers as its text call does.
+  defp user_text(_session, %{kind: :product}, text, _call), do: {:ok, text}
+
+  defp user_text(session, %{kind: :user}, text, call) do
+    with {:ok, module, cwd} <- call.(session, :user_text_context, @call_timeout_ms) do
+      if module != nil and Code.ensure_loaded?(module) and
+           function_exported?(module, :user_text, 2) do
+        {:ok, module.user_text(text, core: session.core, session_id: session.id, cwd: cwd)}
+      else
+        {:ok, text}
+      end
+    end
+  end
 
   defp send_text(session, request, text),
     do: with(:ok <- Input.text(text), do: call(session, request))
+
+  @doc false
+  # A prompt, steer, or follow-up whose missing session tells whether it took
+  # nothing: `{:error, {:stopped, reason}}`, where `reason` is `:noproc` for
+  # no process, or the exit reason of a call that got no reply. `Helyx.Send`
+  # sends again only for `:noproc` and the idle stop; the other callers keep
+  # `prompt/3` and its `{:error, :session_not_found}`
+  # (docs/features/idle-unload.md).
+  @spec send_text(t(), :prompt | :steer | :follow_up, String.t(), keyword()) ::
+          :ok | {:error, {:stopped, term()}} | {:error, send_error()}
+  def send_text(%__MODULE__{} = session, op, text, opts)
+      when op in [:prompt, :steer, :follow_up] and is_binary(text) and is_list(opts) do
+    with {:ok, origin} <- Input.origin(opts),
+         :ok <- Input.text(text),
+         # The context call takes no text, so a session that stopped at it
+         # took nothing (`Call.send/3`).
+         {:ok, text} <- user_text(session, origin, text, &Call.send/3),
+         :ok <- Input.text(text) do
+      Call.send(session, {op, text, origin}, @call_timeout_ms)
+    end
+  end
 
   @doc """
   Switches the session's model. The ref is parsed and its provider resolved like

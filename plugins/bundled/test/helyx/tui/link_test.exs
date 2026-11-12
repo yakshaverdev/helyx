@@ -342,7 +342,7 @@ defmodule Helyx.TUI.LinkTest do
 
     for {reason, text} <- [
           {:too_many_sessions, "too many sessions on the server"},
-          {{:start_failed, ~s({:session_locked, "x"})}, "the server could not open the session"},
+          {{:start_failed, ~s(:open_timeout)}, "the server could not open the session"},
           {{:unknown_provider, "nope"}, "the model has an unknown provider"},
           {:bad_params, "the session did not open"}
         ] do

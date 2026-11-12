@@ -2,7 +2,7 @@
 //! file that holds the numbers of the wire; the server reads the same file.
 
 use helyx_client_core::json::{Json, WIRE, decode};
-use helyx_client_core::{frame, handshake, operation, parts};
+use helyx_client_core::{frame, handshake, operation, parts, records};
 
 #[test]
 fn the_client_has_the_bounds_of_the_file() {
@@ -16,6 +16,7 @@ fn the_client_has_the_bounds_of_the_file() {
     assert_eq!(WIRE.frame_bytes as u64, int(&bounds, "server_frame_bytes"));
     assert_eq!(WIRE.values as u64, int(&bounds, "server_frame_values"));
     assert_eq!(WIRE.integer_chars as u64, int(&bounds, "integer_chars"));
+    assert_eq!(records::MAX_ROWS as u64, int(&bounds, "record_rows"));
 
     let deadlines = bounds.get("deadlines_ms").unwrap();
     for (key, op) in [

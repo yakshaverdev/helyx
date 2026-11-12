@@ -190,7 +190,9 @@ defmodule Helyx.Hub do
   `too_many_records`), `Helyx.Sessions.start/2` with `opts`, and the
   `result`, which writes the record of a user who is not the default owner
   (`docs/features/hub.md`, decisions 5 and 14). `opts` needs `:cwd`, a
-  string, else `{:error, :invalid_cwd}`. A Core error comes back as Core
+  string, else `{:error, :invalid_cwd}`; the option `:thread_of`, the id of
+  the calling session, makes the record a thread of it
+  (`docs/features/coordinator.md`). A Core error comes back as Core
   gives it; a `result` that fails stops the session and gives its code. A
   user that no longer exists gives `{:error, :unknown_user}`, and an exit of
   a Hub call `{:error, :timeout}`.
@@ -199,6 +201,23 @@ defmodule Helyx.Hub do
           {:ok, Helyx.Session.t()} | {:error, atom() | term()}
   def start_session(hub, user_id, opts) when is_binary(user_id) and is_list(opts) do
     with {:ok, arg} <- api_arg(hub), do: Helyx.Hub.Api.start_session(arg, user_id, opts)
+  end
+
+  @doc """
+  Resumes the session `session_id` for the user `user_id` as the wire `resume`
+  does: the place of the live sessions of the user, `Helyx.Sessions.resume/2`,
+  and the starter that the coordinator tools act for (`docs/features/hub.md`,
+  decision 14, `docs/features/coordinator.md`, decision 3). A resume at the
+  cap gives `{:error, :too_many_sessions}`. A file that the resume does not
+  find gives `{:error, :session_not_found}`. A user that no longer exists
+  gives `{:error, :unknown_user}`, and an exit of a Hub call
+  `{:error, :timeout}`. A coordinator tool loads a stopped session so
+  (`docs/features/idle-unload.md`).
+  """
+  @spec resume(hub(), String.t(), String.t()) :: {:ok, Helyx.Session.t()} | {:error, term()}
+  def resume(hub, user_id, session_id)
+      when is_binary(user_id) and is_binary(session_id) do
+    with {:ok, arg} <- api_arg(hub), do: Helyx.Hub.Api.resume(arg, user_id, session_id)
   end
 
   @doc """

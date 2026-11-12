@@ -87,17 +87,33 @@ defmodule Helyx.Tool.SessionRead do
 
   # The snapshot is read and rendered in a process of its own: its
   # subscription ends with it, so no event of the session reaches the Task
-  # of the call, and the Task holds only the text within the budget.
+  # of the call, and the Task holds only the text within the budget. A
+  # session that a stop unloaded is read from its file, with no process
+  # (docs/features/idle-unload.md).
   defp read(session, budget) do
     task =
       Task.async(fn ->
         case Session.subscribe(session, tail: @tail) do
           {:ok, snapshot, _ref} -> {:ok, render(session.id, snapshot, budget)}
+          {:error, :session_not_found} -> read_saved(session, budget)
           {:error, reason} -> {:error, Coordinator.text(reason)}
         end
       end)
 
     Task.await(task, :infinity)
+  end
+
+  # A stopped session is read from its file, as a live idle session is read
+  # from its snapshot: no turn, the same messages, the same budget.
+  defp read_saved(%Session{core: core, id: id}, budget) do
+    with dir when is_binary(dir) <- Helyx.Core.config(core, :sessions_dir),
+         {:ok, path, cwd} <- Helyx.Session.File.pick(dir, nil, id: id),
+         {:ok, resumed, _tail, _limits} <- Helyx.Session.File.read_picked(path, cwd, []) do
+      {:ok, render_body(id, resumed.messages, false, false, budget)}
+    else
+      {:error, reason} -> {:error, Coordinator.text(reason)}
+      _missing -> {:error, Coordinator.text(:session_not_found)}
+    end
   end
 
   defp answer(_env, text, "", _cwd), do: {:ok, text}
@@ -125,11 +141,17 @@ defmodule Helyx.Tool.SessionRead do
   # one kept, so the text never passes the budget.
   @doc false
   def render(id, snapshot, budget) do
-    state = if snapshot.turn, do: "a turn runs", else: "no turn runs"
+    render_body(id, snapshot.messages, snapshot.turn != nil, snapshot.older > 0, budget)
+  end
+
+  # The text of the messages, with the head line and a note when messages are
+  # left out.
+  defp render_body(id, messages, turn?, older?, budget) do
+    state = if turn?, do: "a turn runs", else: "no turn runs"
     head = "session #{id}, #{state}\n\n"
     room = budget - byte_size(head) - byte_size(@left_out)
-    {parts, cut?} = newest(Enum.reverse(snapshot.messages), room, [])
-    left_out = if cut? or snapshot.older > 0, do: @left_out, else: ""
+    {parts, cut?} = newest(Enum.reverse(messages), room, [])
+    left_out = if cut? or older?, do: @left_out, else: ""
     IO.iodata_to_binary([head, left_out | parts])
   end
 

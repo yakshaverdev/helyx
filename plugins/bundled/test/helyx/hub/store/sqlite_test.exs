@@ -31,10 +31,79 @@ defmodule Helyx.Hub.Store.SQLiteTest do
   test "a file of another schema version stops the open", %{tmp_dir: dir} do
     path = Path.join(dir, "hub.db")
     {:ok, db} = Exqlite.Sqlite3.open(path)
-    :ok = Exqlite.Sqlite3.execute(db, "PRAGMA user_version = 3")
+    :ok = Exqlite.Sqlite3.execute(db, "PRAGMA user_version = 4")
     :ok = Exqlite.Sqlite3.close(db)
 
-    assert SQLite.open(path: path) == {:error, {:store_version, 3}}
+    assert SQLite.open(path: path) == {:error, {:store_version, 4}}
+  end
+
+  # A store of version 2, the schema before the parent columns of a record.
+  defp version_2(path) do
+    {:ok, db} = Exqlite.Sqlite3.open(path)
+
+    :ok =
+      Exqlite.Sqlite3.execute(db, """
+      PRAGMA user_version = 2;
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL
+      ) STRICT;
+      CREATE TABLE records (
+        session_id TEXT PRIMARY KEY,
+        owner TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        project_id TEXT,
+        title TEXT NOT NULL DEFAULT '',
+        cwd TEXT NOT NULL,
+        model TEXT NOT NULL,
+        prompt TEXT NOT NULL DEFAULT '',
+        active_at INTEGER NOT NULL,
+        visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'hub')),
+        archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      ) STRICT;
+      INSERT INTO users VALUES ('ann', 'ann', 1);
+      INSERT INTO records (session_id, owner, cwd, model, active_at, created_at, updated_at)
+        VALUES ('OLDxxxxxxxxx', 'ann', '/w', 'fake/echo', 10, 10, 10);
+      """)
+
+    :ok = Exqlite.Sqlite3.close(db)
+  end
+
+  test "a store of version 2 opens as version 3 with its rows, and takes a parent", %{
+    tmp_dir: dir
+  } do
+    path = Path.join(dir, "hub.db")
+    version_2(path)
+
+    {:ok, db} = SQLite.open(path: path)
+    assert {:ok, [%{name: "ann"}]} = SQLite.users(db)
+
+    assert {:ok, %{session_id: "OLDxxxxxxxxx", parent_id: nil, parent_kind: nil}} =
+             SQLite.record(db, "OLDxxxxxxxxx")
+
+    %{db: connection} = db
+    assert {:ok, [3]} = Helyx.Hub.Store.SQLite.Query.one(connection, "PRAGMA user_version", [])
+
+    row = %{
+      session_id: "NEWxxxxxxxxx",
+      owner: "ann",
+      cwd: "/w",
+      model: "fake/echo",
+      prompt: "",
+      active_at: 20,
+      created_at: 20,
+      parent_id: "PARENTxxxxxx",
+      parent_kind: "child"
+    }
+
+    assert :ok = SQLite.seen_record(db, row, :infinity)
+
+    assert {:ok, %{parent_id: "PARENTxxxxxx", parent_kind: "child"}} =
+             SQLite.record(db, "NEWxxxxxxxxx")
+
+    :ok = SQLite.close(db)
   end
 
   test "a store in memory ends with its connection" do
@@ -225,6 +294,129 @@ defmodule Helyx.Hub.Store.SQLiteTest do
     else
       assert_receive {^port, {:data, data}}, 30_000
       held(port, seen <> data)
+    end
+  end
+
+  describe "the row of a session of the feed" do
+    defp record(session_id, owner, overrides \\ %{}) do
+      Map.merge(
+        %{
+          session_id: session_id,
+          owner: owner,
+          cwd: "/w",
+          model: "fake/echo",
+          prompt: "",
+          active_at: 10,
+          created_at: 10
+        },
+        overrides
+      )
+    end
+
+    test "seen_record inserts a default-owner row and moves model and active_at only" do
+      {:ok, db} = SQLite.open(path: nil)
+      :ok = SQLite.add_user(db, user("ann"), 64, :infinity)
+      :ok = SQLite.add_user(db, user("bob"), 64, :infinity)
+      ann = user("ann").id
+
+      link = %{parent_id: "PARENTxxxxxx", parent_kind: "child"}
+      first = Map.merge(record("SEENxxxxxxxx", ann), link)
+      assert :ok = SQLite.seen_record(db, first, :infinity)
+
+      assert {:ok, row} = SQLite.record(db, "SEENxxxxxxxx")
+      assert %{owner: ^ann, cwd: "/w", model: "fake/echo", prompt: "", active_at: 10} = row
+      assert row.created_at == 10
+      assert %{parent_id: "PARENTxxxxxx", parent_kind: "child"} = row
+
+      :ok = SQLite.update_record(db, "SEENxxxxxxxx", %{title: "mine", labels: ["l"]}, :infinity)
+
+      moved =
+        record("SEENxxxxxxxx", user("bob").id, %{model: "b/two", active_at: 20, created_at: 20})
+
+      assert :ok = SQLite.seen_record(db, moved, :infinity)
+
+      assert {:ok, row} = SQLite.record(db, "SEENxxxxxxxx")
+      assert %{owner: ^ann, cwd: "/w", model: "b/two", prompt: "", active_at: 20} = row
+      assert %{title: "mine", created_at: 10} = row
+      # The parent of the row stays.
+      assert %{parent_id: "PARENTxxxxxx", parent_kind: "child"} = row
+      assert SQLite.labels(db, ["SEENxxxxxxxx"]) == {:ok, %{"SEENxxxxxxxx" => ["l"]}}
+      :ok = SQLite.close(db)
+    end
+
+    test "the parent pair is set together: a child, a start with a thread, and neither" do
+      {:ok, db} = SQLite.open(path: nil)
+      :ok = SQLite.add_user(db, user("ann"), 64, :infinity)
+      ann = user("ann").id
+      %{db: connection} = db
+
+      child =
+        Map.merge(record("CHILDxxxxxxx", ann), %{parent_id: "PARENTxxxxxx", parent_kind: "child"})
+
+      :ok = SQLite.seen_record(db, child, :infinity)
+
+      assert {:ok, %{parent_id: "PARENTxxxxxx", parent_kind: "child"}} =
+               SQLite.record(db, "CHILDxxxxxxx")
+
+      thread =
+        Map.merge(record("THREADxxxxxx", ann), %{parent_id: "SESSIONxxxxx", parent_kind: "thread"})
+
+      :ok = SQLite.put_record(db, thread, 10_000, :infinity)
+
+      assert {:ok, %{parent_id: "SESSIONxxxxx", parent_kind: "thread"}} =
+               SQLite.record(db, "THREADxxxxxx")
+
+      plain = record("PLAINxxxxxxx", ann)
+      :ok = SQLite.seen_record(db, plain, :infinity)
+      assert {:ok, %{parent_id: nil, parent_kind: nil}} = SQLite.record(db, "PLAINxxxxxxx")
+
+      # The schema refuses a pair of one: the store code never writes one.
+      assert {:error, _} =
+               Exqlite.Sqlite3.execute(
+                 connection,
+                 "INSERT INTO records (session_id, owner, cwd, model, active_at, created_at, " <>
+                   "updated_at, parent_id) VALUES ('HALFxxxxxxxx', '#{ann}', '/w', 'fake/echo', " <>
+                   "1, 1, 1, 'PARENTxxxxxx')"
+               )
+
+      :ok = SQLite.close(db)
+    end
+
+    test "ensure_records inserts the rows that are missing and changes no row that exists" do
+      {:ok, db} = SQLite.open(path: nil)
+      :ok = SQLite.add_user(db, user("ann"), 64, :infinity)
+      ann = user("ann").id
+      a = record("Axxxxxxxxxxx", ann, %{cwd: "/a", prompt: "pa"})
+      b = record("Bxxxxxxxxxxx", ann, %{cwd: "/b", prompt: "pb", active_at: 20, created_at: 20})
+
+      assert :ok = SQLite.ensure_records(db, [a], :infinity)
+      :ok = SQLite.update_record(db, "Axxxxxxxxxxx", %{title: "t"}, :infinity)
+
+      changed = %{a | prompt: "other", model: "b/two", active_at: 99}
+      assert :ok = SQLite.ensure_records(db, [changed, b], :infinity)
+
+      assert {:ok, row} = SQLite.record(db, "Axxxxxxxxxxx")
+      assert %{prompt: "pa", model: "fake/echo", active_at: 10, title: "t"} = row
+      assert {:ok, %{prompt: "pb", active_at: 20, cwd: "/b"}} = SQLite.record(db, "Bxxxxxxxxxxx")
+      :ok = SQLite.close(db)
+    end
+
+    test "put_record after the feed row of the same start sets the owner of the start" do
+      {:ok, db} = SQLite.open(path: nil)
+      :ok = SQLite.add_user(db, user("ann"), 64, :infinity)
+      :ok = SQLite.add_user(db, user("own"), 64, :infinity)
+      ann = user("ann").id
+      owner = user("own").id
+
+      # The feed row of the start comes first.
+      assert :ok = SQLite.seen_record(db, record("RACExxxxxxxx", owner), :infinity)
+      start = record("RACExxxxxxxx", ann, %{active_at: 20, created_at: 20})
+      assert :ok = SQLite.put_record(db, start, 10_000, :infinity)
+
+      assert {:ok, %{owner: ^ann, cwd: "/w", model: "fake/echo"}} =
+               SQLite.record(db, "RACExxxxxxxx")
+
+      :ok = SQLite.close(db)
     end
   end
 end

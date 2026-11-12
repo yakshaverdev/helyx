@@ -15,13 +15,13 @@ Two Helyx servers can append to one session file. Each keeps its own leaf, so ea
 
 ## Update 2026-10-16: one chain (#629)
 
-This update replaces the update of 2026-09-30. Since the writer lock (#579), one process at a time writes a session file. A session that loses its lock stops saving and goes on in memory, the same as after a write failure. So a writer never appends to a file that it does not hold, and the reader reads the file as one chain: the header, then each entry with the id of the entry before it as its `parent_id`. A line that does not decode is skipped, and a last line without its newline gets one before the next append, as before. An entry that does not continue the chain is `{:invalid_file, text}` with its line number, and the resume changes nothing. The index by id, the walk from the newest leaf, the rule for a repeated id, and the fork rule of #282 are removed.
+This update replaces the update of 2026-09-30. Since the lock of the data folder (#579, #833), one Core at a time writes a folder, and a file edit of the Core excludes the sessions through the Registry. So a writer never appends to a file after the exclusion ended, and the reader reads the file as one chain: the header, then each entry with the id of the entry before it as its `parent_id`. A line that does not decode is skipped, and a last line without its newline gets one before the next append, as before. An entry that does not continue the chain is `{:invalid_file, text}` with its line number, and the resume changes nothing. The index by id, the walk from the newest leaf, the rule for a repeated id, and the fork rule of #282 are removed.
 
 Capabilities removed: a file with two branches is rejected, not partly read. A file with a break in its chain is rejected, also when a valid start of it could be resumed; the user can inspect or repair it. A residual case stays: the lock can end, and an append can come before the session handles that end. A file that breaks in that window is rejected and not changed. The `parent_id` field stays, so a later branch feature needs no format change.
 
 ## Update 2026-11-06: delete and removal (#833)
 
-A session still only appends. Two calls of `Helyx.Sessions` change a saved file while no session holds it: `delete/2` removes it, and `remove_message/3` replaces it with a copy without one message and the messages that pair with it, relinked to one chain. Each holds the writer lock and refuses a session that runs. The rules are in `docs/features/session-edit.md`.
+A session still only appends. Two calls of `Helyx.Sessions` change a saved file while no session of the id runs: `delete/2` removes it, and `remove_message/3` replaces it with a copy without one message and the messages that pair with it, relinked to one chain. Each registers `{:edit, id}` and refuses a session that runs. The rules are in `docs/features/session-edit.md`.
 
 ## Update 2026-11-06: UI blocks on a tool result (#878)
 

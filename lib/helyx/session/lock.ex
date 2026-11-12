@@ -1,11 +1,10 @@
 defmodule Helyx.Session.Lock do
   @moduledoc false
-  # The writer lock of a file, a session file for the session server
-  # (docs/features/session-lock.md): a `flock` on `<id>.lock` next to
-  # `<id>.jsonl`, held by a perl program on a port. The session server takes
-  # it with `hold/2` at its start and releases it at its stop (`release/1`).
-  # When the owner of the port ends, the port closes, perl exits, and the
-  # kernel releases the lock.
+  # The `flock` of a file, held by a perl program on a port
+  # (docs/features/session-lock.md). Its users: the data folder of a Core
+  # (`Helyx.Core.FolderLock`, `<sessions_dir>/core.lock`), `server.lock` of
+  # `helyx serve`, and `hub.db.lock` of the Hub store. When the owner of the
+  # port ends, the port closes, perl exits, and the kernel releases the lock.
 
   # The program writes `<nonce> ok`, `<nonce> locked`, or `<nonce> error
   # <reason>`, then reads commands on stdin and answers `done` or `fail
@@ -31,38 +30,10 @@ defmodule Helyx.Session.Lock do
     $buf;
   }
   sub field { take(unpack('N', take(4))) }
-  my $copy;
   while (sysread(STDIN, my $op, 1)) {
-    if ($op eq 'c') {
-      my $file = field();
-      close($copy) if $copy;
-      unlink($file);
-      my $ok = sysopen($copy, $file, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600)
-        && chmod(0600, $copy);
-      my $error = "$!";
-      undef $copy unless $ok;
-      print($ok ? "done\n" : "fail $error\n");
-    } elsif ($op eq 'a') {
-      my $data = field();
-      my ($ok, $at) = (defined($copy), 0);
-      while ($ok && $at < length($data)) {
-        my $n = syswrite($copy, $data, length($data) - $at, $at);
-        $ok = defined($n) && $n > 0;
-        $at += $n if $ok;
-      }
-      print($ok ? "done\n" : defined($copy) ? "fail $!\n" : "fail no copy\n");
-    } elsif ($op eq 'k') {
-      my $mode = unpack('N', take(4));
-      my $ok = defined($copy) && chmod($mode, $copy) && close($copy);
-      my $error = defined($copy) ? "$!" : "no copy";
-      undef $copy;
-      print($ok ? "done\n" : "fail $error\n");
-    } elsif ($op eq 'r') {
+    if ($op eq 'r') {
       my $file = field();
       print(unlink($file) || $!{ENOENT} ? "done\n" : "fail $!\n");
-    } elsif ($op eq 'm') {
-      my ($from, $to) = (field(), field());
-      print(rename($from, $to) ? "done\n" : "fail $!\n");
     } elsif ($op eq 'w') {
       my ($file, $data) = (field(), field());
       my $tmp = "$file.tmp";
@@ -92,26 +63,6 @@ defmodule Helyx.Session.Lock do
 
   def release_ms, do: @release_ms
 
-  # Takes the lock of the session file `path`, then runs `fun`, which writes
-  # the file. Returns `{:ok, lock, result}` for `{:ok, result}` of `fun`.
-  # perl can end while `fun` runs, a resume read for example: the port then
-  # sends its exit to the owner, which handles it as a lock lost while the
-  # session runs (docs/features/session-lock.md). Any other return of `fun`
-  # releases the lock and is returned. The caller traps exits, so a perl that
-  # ends with no answer is seen at the exit of its port.
-  def hold(path, fun) do
-    with {:ok, lock} <- take(path) do
-      case fun.() do
-        {:ok, result} ->
-          {:ok, lock, result}
-
-        error ->
-          release(lock)
-          error
-      end
-    end
-  end
-
   # Takes the lock of `<path without extension>.lock` and returns the port
   # that holds it; the caller owns the port. The folder of the lock file must
   # exist.
@@ -134,7 +85,7 @@ defmodule Helyx.Session.Lock do
 
         :locked ->
           close(port)
-          {:error, {:session_locked, Path.basename(path, ".jsonl")}}
+          {:error, :locked}
 
         {:error, text} ->
           close(port)
@@ -145,8 +96,11 @@ defmodule Helyx.Session.Lock do
 
   defp find_perl do
     case System.find_executable("perl") do
-      nil -> {:error, {:lock_failed, "perl is not on the PATH; Helyx needs it to lock a session"}}
-      perl -> {:ok, perl}
+      nil ->
+        {:error, {:lock_failed, "perl is not on the PATH; Helyx needs it for its file locks"}}
+
+      perl ->
+        {:ok, perl}
     end
   end
 
@@ -169,24 +123,6 @@ defmodule Helyx.Session.Lock do
   # Removes `path` in the perl process that holds the lock `port`; a file that
   # is not there counts as removed.
   def remove_file(port, path), do: command(port, fn -> ["r", field(path)] end)
-
-  # Renames `from` to `to` in the perl process that holds the lock `port`, so
-  # the rename happens only while the lock is held.
-  def rename_file(port, from, to), do: command(port, fn -> ["m", field(from), field(to)] end)
-
-  # Makes the file `path` new with mode 0600 in the perl process that holds
-  # the lock `port`, and keeps it open there for `append_copy/2` and
-  # `close_copy/2` (docs/features/session-edit.md). When the lock ends, perl
-  # ends, so no byte is written to the copy after it. A second create closes
-  # the copy before.
-  def create_copy(port, path), do: command(port, fn -> ["c", field(path)] end)
-
-  # Appends the iodata `data`, under 4 GiB, to the open copy.
-  def append_copy(port, data), do: command(port, fn -> ["a", field(data)] end)
-
-  # Sets the permission bits of `mode` on the open copy and closes it.
-  def close_copy(port, mode),
-    do: command(port, fn -> ["k", <<Bitwise.band(mode, 0o7777)::32>>] end)
 
   defp field(text), do: [<<IO.iodata_length(text)::32>>, text]
 

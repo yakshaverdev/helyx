@@ -1,42 +1,39 @@
 defmodule Helyx.Session.File.Edit do
   @moduledoc false
   # The delete of a saved session file and the removal of messages from it
-  # (docs/features/session-edit.md). Each call takes the writer lock of the
-  # file (`Helyx.Session.Lock`), works under it, and releases it; a held lock,
-  # or a session of the id in the Registry of the Core after the take, is
-  # `{:error, :running}`. The caller traps exits, as `Lock.take/1` needs, and
-  # owns the port.
+  # (docs/features/session-edit.md). Each call registers `{:edit, id}` in the
+  # session Registry of the Core, then looks up the id. A session of the id,
+  # or another edit of it, is `{:error, :running}`. The Core holds the lock
+  # of the data folder, so no other OS process writes the folder.
 
   alias Helyx.Message
   alias Helyx.Session.File, as: SessionFile
   alias Helyx.Session.File.Reader
-  alias Helyx.Session.{Killer, Lock}
+  alias Helyx.Session.Killer
 
   defmodule Copy do
     @moduledoc false
-    # The state of the copy. `lock` writes the copy; `buffer` holds the kept
-    # lines not yet sent, reversed, `size` bytes.
-    @enforce_keys [:removed, :calls, :lock]
-    defstruct [:removed, :calls, :lock, :leaf, :last, pending: [], next: %{}, buffer: [], size: 0]
+    # The state of the copy. `out` is the open copy; `buffer` holds the kept
+    # lines not yet written, reversed, `size` bytes.
+    @enforce_keys [:removed, :calls, :out]
+    defstruct [:removed, :calls, :out, :leaf, :last, pending: [], next: %{}, buffer: [], size: 0]
   end
 
   # The bytes of kept lines in one append to the copy.
   @batch_bytes 1_048_576
 
   @doc false
-  # Runs `fun`, the work of a call of `Helyx.Sessions`, in a Task of `core`
-  # that owns the port of the lock and traps its exits, and gives its report.
-  # With a budget, the killer kills the Task at its deadline, also when the
-  # caller is gone. `fun` gets the pid of the killer and disarms it before it
-  # sends the rename, so a kill never follows a sent rename. The report is
-  # `:timeout` only when the killer reports its own kill, and `:unknown` for
-  # any other end of the Task with no result.
+  # Runs `fun`, the work of a call of `Helyx.Sessions`, in a Task of `core`,
+  # and gives its report. With a budget, the killer kills the Task at its
+  # deadline, also when the caller is gone. `fun` gets the pid of the killer
+  # and disarms it before it renames, so a kill never follows a rename. The
+  # report is `:timeout` only when the killer reports its own kill, and
+  # `:unknown` for any other end of the Task with no result.
   def run(core, budget, fun) do
     caller = self()
 
     task =
       Task.Supervisor.async_nolink(Helyx.Core.task_supervisor(core), fn ->
-        Process.flag(:trap_exit, true)
         fun.(killer(caller, budget))
       end)
 
@@ -80,15 +77,13 @@ defmodule Helyx.Session.File.Edit do
 
   @doc false
   # Removes the file `path` of the session `id` of `core` and the copy that a
-  # removal left. The lock file stays, as at a stop: a removed lock file would
-  # let a second process lock a new file of that path while an older open
-  # still holds the first. The copy goes first, so an error leaves the session
-  # file and a retry.
+  # removal left. The copy goes first, so an error leaves the session file
+  # and a retry.
   def delete(core, id, path) do
-    locked({core, id, path}, fn lock ->
+    claimed({core, id, path}, fn ->
       with :ok <- exists(path),
-           :ok <- edit_failed(Lock.remove_file(lock, tmp(path))),
-           do: edit_failed(Lock.remove_file(lock, path))
+           :ok <- remove(tmp(path)),
+           do: remove(path)
     end)
   end
 
@@ -100,41 +95,37 @@ defmodule Helyx.Session.File.Edit do
   # the ids. The copy replaces the file by a rename, and the `killer` of the
   # deadline (`Helyx.Session.Killer`) is disarmed before the rename is sent.
   def remove_message({_core, _id, path} = session, cwd, message_id, killer) do
-    locked(session, fn lock ->
+    claimed(session, fn ->
       with :ok <- exists(path),
            {:ok, resumed, _tail, limits} <- SessionFile.read_picked(path, cwd, []),
            {:ok, ids} <- group(resumed.messages, message_id),
-           :ok <- replace(copy_state(lock, resumed.messages, ids), {path, limits}, killer),
+           :ok <- replace(copy_state(resumed.messages, ids), {path, limits}, killer),
            do: {:ok, ids}
     end)
   end
 
-  defp copy_state(lock, messages, ids) do
+  defp copy_state(messages, ids) do
     removed = MapSet.new(ids)
-    %Copy{removed: removed, calls: call_ids(messages, removed), lock: lock}
+    %Copy{removed: removed, calls: call_ids(messages, removed), out: nil}
   end
 
-  # A session of the id in the Registry of `core` is refused after the take:
-  # one that lost its lock goes on, and one in its open takes the lock after
-  # it, so the check before the take is not enough. A session that registers
-  # after this check gets `{:session_locked, id}` at its take
-  # (docs/features/session-edit.md, accepted holes).
-  defp locked({core, id, path}, fun) do
-    case Lock.take(path) do
-      {:ok, lock} ->
-        result = if registered?(core, id), do: {:error, :running}, else: fun.(lock)
-        Lock.release(lock)
+  # The Registry is the exclusion of the Core: the edit registers its key
+  # first, then looks up the session, and a session open does the reverse
+  # (`Helyx.Session.Server.Open`). The key goes before the result returns,
+  # so a call after the result does not see it.
+  defp claimed({core, id, _path}, fun) do
+    registry = Helyx.Core.sessions_registry(core)
+
+    case Registry.register(registry, {:edit, id}, nil) do
+      {:ok, _owner} ->
+        result = if Registry.lookup(registry, id) == [], do: fun.(), else: {:error, :running}
+        :ok = Registry.unregister(registry, {:edit, id})
         result
 
-      {:error, {:session_locked, _id}} ->
+      {:error, {:already_registered, _pid}} ->
         {:error, :running}
-
-      {:error, {:lock_failed, _text}} = error ->
-        error
     end
   end
-
-  defp registered?(core, id), do: Registry.lookup(Helyx.Core.sessions_registry(core), id) != []
 
   # The file can go between the find and the take, by another delete. A
   # symlink is refused: the unlink and the rename would change the link and
@@ -148,9 +139,20 @@ defmodule Helyx.Session.File.Edit do
     end
   end
 
-  # The answer of a file command of the lock holder.
+  # A file that is not there counts as removed.
+  defp remove(path) do
+    case File.rm(path) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, reason} -> edit_failed(reason)
+    end
+  end
+
   defp edit_failed(:ok), do: :ok
-  defp edit_failed({:error, text}), do: {:error, {:edit_failed, text}}
+  defp edit_failed({:error, reason}), do: edit_failed(reason)
+
+  defp edit_failed(reason),
+    do: {:error, {:edit_failed, List.to_string(:file.format_error(reason))}}
 
   defp tmp(path), do: path <> ".tmp"
 
@@ -200,27 +202,53 @@ defmodule Helyx.Session.File.Edit do
   defp calls(%Message{role: :tool_result, tool_call_id: id}), do: [id]
   defp calls(%Message{content: content}), do: for(%Message.ToolCall{id: id} <- content, do: id)
 
-  defp replace(%Copy{lock: lock} = state, {path, limits}, killer) do
+  # The copy is made new with an exclusive create, so no file or link at its
+  # path is written through. It gets the mode of the session file before its
+  # first byte. A copy left by an error or a kill is removed by the next
+  # removal or delete of the id.
+  defp replace(%Copy{} = state, {path, limits}, killer) do
     tmp = tmp(path)
 
-    # Every change of the copy is a command of the lock holder: after the
-    # lock has ended, perl has ended, so no byte reaches the copy, and another
-    # removal that takes the lock owns the copy's path.
     result =
       with {:ok, %File.Stat{mode: mode}} <- File.stat(path),
-           :ok <- edit_failed(Lock.create_copy(lock, tmp)),
-           :ok <- copy(state, {path, limits}),
-           :ok <- edit_failed(Lock.close_copy(lock, mode)),
+           :ok <- remove(tmp),
+           {:ok, out} <- open_copy(tmp, mode),
+           :ok <- write_copy(%{state | out: out}, {path, limits}),
            :ok <- Killer.disarm(killer),
-           do: edit_failed(Lock.rename_file(lock, tmp, path))
+           do: edit_failed(File.rename(tmp, path))
 
-    if result != :ok, do: Lock.remove_file(lock, tmp)
+    if result != :ok, do: remove(tmp)
     result
   end
 
-  # The BEAM reads the session file; perl writes the copy, which it made new
-  # with `O_EXCL` and mode 0600 (`Lock.create_copy/2`), so no file or link at
-  # its path is written through and no other user reads it.
+  defp open_copy(tmp, mode) do
+    with {:ok, out} <- File.open(tmp, [:write, :exclusive, :raw, :binary]),
+         :ok <- chmod(out, tmp, mode) do
+      {:ok, out}
+    else
+      {:error, reason} -> edit_failed(reason)
+    end
+  end
+
+  defp chmod(out, tmp, mode) do
+    case File.chmod(tmp, Bitwise.band(mode, 0o7777)) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        File.close(out)
+        {:error, reason}
+    end
+  end
+
+  # The copy closes on every path, so no descriptor outlives the call.
+  defp write_copy(state, source) do
+    result = copy(state, source)
+    closed = File.close(state.out)
+    if result == :ok, do: edit_failed(closed), else: result
+  end
+
+  # The BEAM reads the session file and writes the copy in this Task.
   defp copy(state, {path, limits}) do
     result =
       File.open(path, [:read, :binary, :raw, :read_ahead], fn input ->
@@ -233,8 +261,7 @@ defmodule Helyx.Session.File.Edit do
 
   defp flush(%Copy{buffer: []}), do: :ok
 
-  defp flush(state),
-    do: edit_failed(Lock.append_copy(state.lock, Enum.reverse(state.buffer)))
+  defp flush(state), do: edit_failed(:file.write(state.out, Enum.reverse(state.buffer)))
 
   # The batch holds at most `@batch_bytes` and one line of at most the line
   # limit of the read (64 MiB).
@@ -248,9 +275,9 @@ defmodule Helyx.Session.File.Edit do
     end
   end
 
-  # The read under the lock checked every line and the chain; the file has not
-  # changed since. A line that does not decode to an entry, a torn append, is
-  # not copied: a read skips it.
+  # The read checked every line and the chain; no session of the Core writes
+  # the file while the edit holds its key. A line that does not decode to an
+  # entry, a torn append, is not copied: a read skips it.
   defp lines(input, n, limits, state) do
     case :file.read_line(input) do
       :eof ->

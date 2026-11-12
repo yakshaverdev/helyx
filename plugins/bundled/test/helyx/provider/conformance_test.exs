@@ -18,11 +18,13 @@ defmodule Helyx.Provider.ConformanceTest do
   @ok %{"command" => "echo hi"}
   @bad %{}
 
-  defp core(provider) do
+  defp core(provider, ctx) do
     core = :"core_#{System.unique_integer([:positive])}"
+    sessions = Path.join(ctx.sessions, inspect(provider))
 
     start_supervised!(
-      {Helyx.Core, name: core, plugins: Enum.uniq([provider, Fake, Helyx.Tool.Bash])},
+      {Helyx.Core,
+       name: core, plugins: Enum.uniq([provider, Fake, Helyx.Tool.Bash]), sessions_dir: sessions},
       id: {:conformance_core, provider}
     )
 
@@ -32,7 +34,11 @@ defmodule Helyx.Provider.ConformanceTest do
   # The events and the snapshot of the two turns.
   defp run(ctx, core, model) do
     {:ok, session} =
-      Session.start(core, model: model, cwd: ctx.work, sessions_dir: ctx.sessions <> model)
+      Session.start(core,
+        model: model,
+        cwd: ctx.work,
+        sessions_dir: Helyx.Core.config(core, :sessions_dir)
+      )
 
     {:ok, _, _} = Session.subscribe(session)
     events = for text <- ["run it", "again"], do: prompt(session, text)
@@ -47,7 +53,7 @@ defmodule Helyx.Provider.ConformanceTest do
   end
 
   defp api(ctx) do
-    core = core(Fake)
+    core = core(Fake, ctx)
     call = fn id, args -> %Message.ToolCall{id: id, name: "bash", arguments: args} end
     responses = [[call.("c1", @ok)], ["Ran."], [call.("c2", @bad)], ["Failed."]]
     :ok = Fake.script(core, "conf", responses)
@@ -122,7 +128,7 @@ defmodule Helyx.Provider.ConformanceTest do
         ~s{answered=$((answered+1)); out "out.after.$answered"\n}
       )
 
-      harness = run(ctx, core(ClaudeCode), "claude-code/haiku")
+      harness = run(ctx, core(ClaudeCode, ctx), "claude-code/haiku")
       assert shape(harness) == shape(api(ctx))
       assert {[:done, :done], [{"bash", _, false}, {"bash", _, true}], _} = shape(harness)
     end
@@ -182,7 +188,7 @@ defmodule Helyx.Provider.ConformanceTest do
       codex_turn(bin, 1, @ok, {"hi\n", false}, "Ran.")
       codex_turn(bin, 2, @bad, {"command is required", true}, "Failed.")
 
-      harness = run(ctx, core(Codex), "codex/gpt-6-luna")
+      harness = run(ctx, core(Codex, ctx), "codex/gpt-6-luna")
       assert shape(harness) == shape(api(ctx))
       assert {[:done, :done], [{"bash", _, false}, {"bash", _, true}], _} = shape(harness)
     end

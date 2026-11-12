@@ -5,6 +5,7 @@ defmodule Helyx.Provider.ClaudeCode.PromptTest do
 
   import Helyx.Test.ClaudeCodeFake
   import Helyx.Test.HarnessDriver
+  import Helyx.Test.OSHelpers
 
   alias Helyx.Message
   alias Helyx.Provider.ClaudeCode
@@ -62,11 +63,16 @@ defmodule Helyx.Provider.ClaudeCode.PromptTest do
     closed(state)
   end
 
-  # Each launch after the first waits the 500 ms of the release for the
-  # group that ignores TERM. The stuck child lives 60 s, far past the run
-  # of about 2 s, so load cannot end it first; `on_exit` KILLs it. The
-  # release always reaches its deadline here, so `assert_one_program/2`
-  # cannot apply: a stall at its first probes can keep more handles (#739).
+  # Each launch releases the groups of the program before with 500 ms
+  # (`HarnessIO.let_go_ms/0`), and that release starts no kill(1) run at or
+  # after its deadline. A release that passes its deadline before its probes
+  # keeps the handles of the program that ended, and the next release drops
+  # them (`watchdog/group_test.exs`, "a group that stays to the deadline
+  # does not keep the handles of gone groups"), so the held set right after
+  # a launch depends on load. The test reads what the launches cannot leave
+  # behind: no group of a program that ended still runs, and a release with
+  # room confirms every group, the one that ignores TERM too, and keeps no
+  # handle.
   @tag :slow
   test "a group that ignores TERM does not keep the handles of the later programs",
        %{bin: bin, work: work} do
@@ -74,7 +80,8 @@ defmodule Helyx.Provider.ClaudeCode.PromptTest do
     stuck = Path.join(bin, "stuck.pid")
 
     on_exit(fn ->
-      with {:ok, pid} <- File.read(stuck), do: System.cmd("kill", ["-KILL", String.trim(pid)])
+      with {:ok, pid} <- File.read(stuck),
+           do: System.cmd("kill", ["-KILL", String.trim(pid)], stderr_to_stdout: true)
     end)
 
     File.write!(Path.join(bin, "eof.1"), """
@@ -86,8 +93,19 @@ defmodule Helyx.Provider.ClaudeCode.PromptTest do
     assert programs(bin) == "4"
     assert File.exists?(stuck)
 
-    assert [{:command, _, _}, {:command, _, _}, {:watchdog, _, _}] =
-             Enum.sort(Helyx.Test.Hands.held())
+    # The hands hold the handles of the provider state, the ones of the
+    # programs that ended that a release could not confirm included.
+    assert Enum.sort(Helyx.Test.Hands.held()) == Enum.sort(state.stream.handles)
+
+    # The stuck child and the program of the last turn are the groups that
+    # still run: no launch kept a group of an earlier program alive.
+    live = for {_, group, _} = handle <- state.stream.handles, os_alive?("-#{group}"), do: handle
+    assert [{:command, _, _}, {:command, _, _}, {:watchdog, _, _}] = Enum.sort(live)
+
+    # A release with the deadline of the hands confirms every group, the one
+    # that ignores TERM too, and keeps no handle.
+    until = System.monotonic_time(:millisecond) + Helyx.Session.Hands.State.release_ms()
+    assert ClaudeCode.release(state.stream.handles, :deliver, until) == []
 
     closed(state)
   end

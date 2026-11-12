@@ -12,9 +12,15 @@ defmodule Helyx.Session.CompactionTest do
 
   @done {:done, %{stop_reason: :end_turn, usage: nil}}
 
-  setup do
+  @moduletag :tmp_dir
+
+  setup %{tmp_dir: dir} do
     core = :"core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [Connected, Helyx.Test.Provider]})
+
+    start_supervised!(
+      {Helyx.Core, name: core, plugins: [Connected, Helyx.Test.Provider], sessions_dir: dir}
+    )
+
     Process.register(self(), Connected.controller(core))
     %{core: core}
   end
@@ -215,7 +221,7 @@ defmodule Helyx.Session.CompactionTest do
     assert entry["tokens_after"] == nil
 
     Helyx.Test.SessionFile.stop(session)
-    assert {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+    assert {:ok, resumed, _} = Session.resume(core, sessions_dir: dir)
     {:ok, snapshot, _} = Session.subscribe(resumed)
     assert [%{role: :user}, %{role: :assistant}] = snapshot.messages
   end
@@ -254,7 +260,7 @@ defmodule Helyx.Session.CompactionTest do
       assert %{tokens: nil, window: 1000, bytes: 9} = live.context
 
       Helyx.Test.SessionFile.stop(session)
-      {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+      {:ok, resumed, _} = Session.resume(core, sessions_dir: dir)
       {:ok, snapshot, _} = Session.subscribe(resumed)
       assert snapshot.context == live.context
     end
@@ -278,7 +284,7 @@ defmodule Helyx.Session.CompactionTest do
       {:ok, file} = Helyx.Session.File.create(dir, "open00000000", File.cwd!(), "conn/hang")
       Helyx.Test.SessionFile.append_message(file, open)
 
-      {:ok, session} = Session.resume(core, sessions_dir: dir)
+      {:ok, session, _} = Session.resume(core, sessions_dir: dir)
       {:ok, _, _} = Session.subscribe(session)
       assert :ok = Session.compact(session)
       assert_receive {:conn, :compact, proc, {:compact, turn_id, _}}
@@ -288,7 +294,7 @@ defmodule Helyx.Session.CompactionTest do
       assert %{tokens: 40, bytes: 0} = live.context
 
       Helyx.Test.SessionFile.stop(session)
-      {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+      {:ok, resumed, _} = Session.resume(core, sessions_dir: dir)
       {:ok, snapshot, _} = Session.subscribe(resumed)
       assert snapshot.context == live.context
     end
@@ -320,7 +326,7 @@ defmodule Helyx.Session.CompactionTest do
     # the next turn connects a new provider process.
     defp reconnect(core, session, dir) do
       Helyx.Test.SessionFile.stop(session)
-      {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+      {:ok, resumed, _} = Session.resume(core, sessions_dir: dir)
       :ok = Session.prompt(resumed, "two")
       assert_receive {:conn, :init, _proc, {"hang", _tools, opts}}
       opts[:resume_id]

@@ -13,7 +13,13 @@ defmodule Helyx.TUI.QuestionTest do
 
   setup do
     core = :"tui_core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [Fake, Helyx.Tool.Question]})
+    dir = Path.join(System.tmp_dir!(), "helyx-#{core}")
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    start_supervised!(
+      {Helyx.Core, name: core, plugins: [Fake, Helyx.Tool.Question], sessions_dir: dir}
+    )
+
     %{core: core}
   end
 

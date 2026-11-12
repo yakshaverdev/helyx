@@ -35,7 +35,7 @@ defmodule Helyx.Session.Server.Prepare do
 
     session_dir =
       case state.save do
-        {:saving, file, _lock} -> Path.dirname(file.path)
+        {:saving, file} -> Path.dirname(file.path)
         _no_file -> nil
       end
 

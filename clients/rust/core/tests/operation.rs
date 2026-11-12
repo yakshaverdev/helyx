@@ -10,15 +10,15 @@ use helyx_client_core::client::{Client, Next, Output, Refusal};
 use helyx_client_core::frame::Reply;
 use helyx_client_core::json::{Json, decode};
 use helyx_client_core::operation::{
-    FormAnswer, Invalid, MAX_ANSWER_BYTES, MAX_CWD_BYTES, MAX_LIMIT, MAX_TEXT_BYTES, Operation,
-    Saved, approval_answer, deadline, form_answer,
+    FormAnswer, Invalid, MAX_ANSWER_BYTES, MAX_CWD_BYTES, MAX_LIMIT, MAX_MODEL_BYTES,
+    MAX_TEXT_BYTES, Operation, Saved, approval_answer, deadline, form_answer,
 };
 use serde_json::json;
 use std::time::Duration;
 
 const CHALLENGE: &str =
     r#"{"type":"challenge","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}"#;
-const WELCOME: &str = r#"{"type":"welcome","protocol":10}"#;
+const WELCOME: &str = r#"{"type":"welcome","protocol":13}"#;
 
 /// The frames that the client sends among `outputs`, decoded.
 fn sent(outputs: &[Output]) -> Vec<Json> {
@@ -63,6 +63,23 @@ fn each_operation_gives_the_params_of_the_schema() {
             r#"{"session":"s1","text":"hi"}"#,
         ),
         (Operation::abort("s1"), "abort", r#"{"session":"s1"}"#),
+        (Operation::stop("s1"), "stop", r#"{"session":"s1"}"#),
+        (
+            Operation::set_model("s1", "fake/echo").unwrap(),
+            "set_model",
+            r#"{"session":"s1","model":"fake/echo"}"#,
+        ),
+        (
+            Operation::compact("s1", "trim").unwrap(),
+            "compact",
+            r#"{"session":"s1","text":"trim"}"#,
+        ),
+        (
+            // An empty text sends none, so the default of the server holds.
+            Operation::compact("s1", "").unwrap(),
+            "compact",
+            r#"{"session":"s1"}"#,
+        ),
         (
             Operation::answer("s1", "a1", approval_answer(true)).unwrap(),
             "answer",
@@ -105,7 +122,14 @@ fn each_operation_gives_the_params_of_the_schema() {
         assert_eq!(operation.params(), decode(params).unwrap(), "{name}");
     }
     // Only a session operation names a session.
-    assert_eq!(Operation::abort("s1").session(), Some("s1"));
+    for operation in [
+        Operation::abort("s1"),
+        Operation::stop("s1"),
+        Operation::set_model("s1", "fake/echo").unwrap(),
+        Operation::compact("s1", "").unwrap(),
+    ] {
+        assert_eq!(operation.session(), Some("s1"), "{}", operation.name());
+    }
     for other in [
         Operation::start("/r", None).unwrap(),
         Operation::resume("abc"),
@@ -140,6 +164,48 @@ fn a_text_is_checked_by_its_bytes() {
         Err(Invalid::TextTooLarge)
     );
     assert_eq!(Invalid::TextTooLarge.text(), "the text is over 4 MiB");
+}
+
+#[test]
+fn a_model_ref_is_checked_by_its_bytes_and_its_slash() {
+    // A ref of exactly the bound is accepted, and one byte more is refused.
+    let at = format!("p/{}", "a".repeat(MAX_MODEL_BYTES - 2));
+    assert_eq!(at.len(), MAX_MODEL_BYTES);
+    assert!(Operation::set_model("s1", &at).is_ok());
+    let over = format!("{at}a");
+    assert_eq!(Operation::set_model("s1", &over), Err(Invalid::ModelRef));
+    // The bound counts bytes: 127 characters of two bytes fill it.
+    let multibyte = format!("p/{}", "é".repeat((MAX_MODEL_BYTES - 2) / 2));
+    assert_eq!(multibyte.len(), MAX_MODEL_BYTES);
+    assert!(Operation::set_model("s1", &multibyte).is_ok());
+    // A space, a tab, a control character, no slash, and an empty part on
+    // either side of the slash are refused.
+    for bad in ["p/m x", "p/m\tx", "p/m\u{7}", "pm", "/m", "p/"] {
+        assert_eq!(
+            Operation::set_model("s1", bad),
+            Err(Invalid::ModelRef),
+            "{bad:?}"
+        );
+    }
+    assert_eq!(
+        Invalid::ModelRef.text(),
+        "not a model ref: use provider/model"
+    );
+}
+
+#[test]
+fn compact_takes_the_bound_of_a_message_and_no_text_when_it_is_empty() {
+    let empty = Operation::compact("s1", "").unwrap();
+    assert_eq!(empty.text(), None);
+    let instructions = Operation::compact("s1", "trim").unwrap();
+    assert_eq!(instructions.text(), Some("trim"));
+    // The text is the message bound of a prompt.
+    let at = "a".repeat(MAX_TEXT_BYTES);
+    assert!(Operation::compact("s1", &at).is_ok());
+    assert_eq!(
+        Operation::compact("s1", &format!("{at}a")),
+        Err(Invalid::TextTooLarge)
+    );
 }
 
 #[test]
@@ -294,6 +360,9 @@ fn the_deadline_is_the_table_of_the_wire() {
     assert_eq!(deadline("history"), ms(6_000));
     assert_eq!(deadline("abort"), ms(46_000));
     assert_eq!(deadline("stop"), ms(77_000));
+    // A model switch and a compaction take the default of the table.
+    assert_eq!(deadline("set_model"), ms(6_000));
+    assert_eq!(deadline("compact"), ms(6_000));
     // 10,000 ms, or 15,000 ms under a Hub: the client knows the larger.
     assert_eq!(deadline("sessions.saved"), ms(15_000));
     assert_eq!(deadline("subscribe"), ms(5_000));

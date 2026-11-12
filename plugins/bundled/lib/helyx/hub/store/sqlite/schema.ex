@@ -1,12 +1,10 @@
 defmodule Helyx.Hub.Store.SQLite.Schema do
   @moduledoc false
-  # The schema of the SQLite store, `user_version` 2 (`docs/features/hub.md`,
-  # "Store schema"). A file of version 1 gets the tables and the column of
-  # the event subscriptions (decision 17); a file of another version is
-  # refused.
+  # The schema of the SQLite store, `user_version` 3 (`docs/features/hub.md`,
+  # "Store schema"). A file of version 2 gets the parent columns of a record
+  # (decision 8); a file of version 1 or of another version is refused.
 
-  # The event subscriptions of decision 17, in a new file and in a file of
-  # version 1.
+  # The event subscriptions of decision 17, in a new file.
   @subscriptions """
   CREATE TABLE subscriptions (
     id TEXT PRIMARY KEY,
@@ -24,7 +22,7 @@ defmodule Helyx.Hub.Store.SQLite.Schema do
   """
 
   @doc false
-  def version, do: 2
+  def version, do: 3
 
   @doc false
   def sql do
@@ -64,7 +62,10 @@ defmodule Helyx.Hub.Store.SQLite.Schema do
       visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'hub')),
       archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      parent_id TEXT,
+      parent_kind TEXT CHECK (parent_kind IN ('child', 'thread')),
+      CHECK ((parent_id IS NULL) = (parent_kind IS NULL))
     ) STRICT;
     CREATE INDEX records_owner ON records (owner, updated_at);
     CREATE INDEX records_visibility ON records (visibility, updated_at);

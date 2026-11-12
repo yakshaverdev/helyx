@@ -1,5 +1,5 @@
 defmodule Helyx.Tool.Write do
-  @moduledoc "Writes a file, creating parent directories. An existing regular file is replaced; another type of file is an error."
+  @moduledoc "Writes a file, creating parent directories. An existing regular file is replaced; another type of file is an error. The result carries a `diff` UI block against the old file (`docs/features/diff-blocks.md`)."
 
   @behaviour Helyx.Tool
 
@@ -32,12 +32,14 @@ defmodule Helyx.Tool.Write do
   def run(args, cwd) do
     with {:ok, args} <- Args.check(args, parameters()) do
       path = args["path"]
+      content = args["content"]
       full = Path.expand(path, cwd)
 
       with :ok <- regular_or_missing(full),
+           old = old_text(full),
            :ok <- File.mkdir_p(Path.dirname(full)),
-           :ok <- File.write(full, args["content"]) do
-        {:ok, "Wrote #{path}"}
+           :ok <- File.write(full, content) do
+        {:ok, "Wrote #{path}", [diff(path, old, content)]}
       else
         {:error, {:not_regular, type}} ->
           {:error, "cannot write #{path}: not a regular file (#{type})"}
@@ -45,6 +47,20 @@ defmodule Helyx.Tool.Write do
         {:error, reason} ->
           {:error, "cannot write #{path}: #{:file.format_error(reason)}"}
       end
+    end
+  end
+
+  defp diff(path, {:ok, old}, content), do: Helyx.Diff.block(path, old, content)
+  defp diff(path, {:error, reason}, _content), do: Helyx.Diff.unreadable(path, reason)
+
+  # The old text is read before the write, so the block shows what changed.
+  # A missing file is an empty old text; a file that the read refuses keeps
+  # the write, and the block says why the diff is absent.
+  defp old_text(full) do
+    case File.stat(full) do
+      {:error, :enoent} -> {:ok, ""}
+      {:error, reason} -> {:error, to_string(:file.format_error(reason))}
+      {:ok, _stat} -> Helyx.Text.read_file(full)
     end
   end
 

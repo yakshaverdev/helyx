@@ -188,17 +188,15 @@ defmodule CodingAgent.AttachTest do
     assert helyx([dir, "--model", "nope/m"]) == no_provider.("nope")
     assert helyx([empty]) == no_provider.("none")
 
-    # A newest session that another OS process has open is not skipped.
-    locked = Path.join(dir, "locked")
-    File.mkdir_p!(locked)
-    {:ok, session} = Helyx.Session.File.create(sessions, Helyx.Session.Id.new(), locked, "x/m")
+    # A newest session that does not resume is not skipped.
+    broken = Path.join(dir, "broken")
+    File.mkdir_p!(broken)
+    {:ok, session} = Helyx.Session.File.create(sessions, Helyx.Session.Id.new(), broken, "x/m")
     Helyx.Test.SessionFile.append_message(session, Helyx.Message.user("p"))
-    {:ok, lock} = Lock.take(Path.rootname(session.path))
 
-    assert helyx([locked]) =~
-             ~r/^helyx: could not reattach to the newest session \(helyx --new starts one\): .*session_locked/
-
-    Lock.release(lock)
+    assert helyx([broken]) ==
+             "helyx: could not reattach to the newest session (helyx --new starts one): " <>
+               ~s(no provider has the id "x"\n)
 
     assert helyx([empty, "--resume"]) ==
              "helyx: could not start the agent: no saved session for this directory; " <>
@@ -211,15 +209,16 @@ defmodule CodingAgent.AttachTest do
 
   # A launcher of the test: it writes its arguments, its pid and process
   # group, and its stdin to files of `dir`, prints one line, and then
-  # writes `ready`. With a `serve` model, a process of the test runs
-  # `helyx serve` in this VM after `ready`, in the place of the server of
-  # the launcher.
-  defp launcher(dir, serve \\ nil) do
+  # writes `ready`. A `delay` is a boot that takes that long, in ms. With a
+  # `serve` model, a process of the test runs `helyx serve` in this VM after
+  # `ready`, in the place of the server of the launcher.
+  defp launcher(dir, serve \\ nil, delay \\ 0) do
     path = Path.join(dir, "launcher")
+    slow = if delay > 0, do: "sleep #{delay / 1000}\n", else: ""
 
     File.write!(path, """
     #!/bin/sh
-    printf '%s\\n' "$@" > '#{dir}/args'
+    #{slow}printf '%s\\n' "$@" > '#{dir}/args'
     echo $$ $(ps -o pgid= -p $$) > '#{dir}/group'
     cat > '#{dir}/stdin'
     echo launcher output
@@ -255,6 +254,19 @@ defmodule CodingAgent.AttachTest do
     end)
 
     assert (File.stat!(sessions).mode &&& 0o777) == 0o700
+  end
+
+  # A start waits for the boot that it runs, not only for the read of the
+  # file of a server that runs (`docs/features/tui-attach.md`, decision 3).
+  @tag :slow
+  test "a launcher whose boot passes the read wait is still attached to",
+       %{tmp_dir: dir, sessions: sessions} do
+    path = launcher(dir, "fake/echo", Serve.wait_ms() + 1_000)
+
+    assert {:ok, socket, _ws} = Attach.start(sessions, path)
+
+    assert %{"ok" => true, "result" => %{"sessions" => []}} =
+             WireClient.request(socket, "1", "sessions.live", %{})
   end
 
   # The sink of `server.log` is one writer for the whole output of the
@@ -426,6 +438,8 @@ defmodule CodingAgent.AttachTest do
     assert reason =~ ~r/\A#{Regex.escape(log)}: [^\n]+\z/
   end
 
+  # Two starts that come to nothing wait the bound of a start each: the test
+  # is slow.
   @tag :slow
   test "a launcher that starts no server gives one line after the wait", %{
     tmp_dir: dir,
@@ -435,12 +449,12 @@ defmodule CodingAgent.AttachTest do
 
     assert Attach.start(sessions, launcher(dir)) ==
              {:error,
-              "could not attach to the server of #{sessions} in #{Serve.wait_ms()} ms: " <>
+              "could not attach to the server of #{sessions} in #{Attach.start_ms()} ms: " <>
                 "the server did not start; see #{log}"}
 
     assert Attach.start(sessions, Path.join(dir, "missing")) ==
              {:error,
-              "could not attach to the server of #{sessions} in #{Serve.wait_ms()} ms: " <>
+              "could not attach to the server of #{sessions} in #{Attach.start_ms()} ms: " <>
                 "the server did not start; see #{log}"}
 
     assert File.read!(log) =~ ~r/launcher output\nhelyx: .*missing: No such file or directory\n/
