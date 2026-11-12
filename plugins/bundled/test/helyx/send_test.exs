@@ -86,10 +86,13 @@ defmodule Helyx.SendTest do
     {:ok, session} =
       Helyx.Sessions.start(core, cwd: File.cwd!(), model: "fake/echo")
 
-    arm_timer(session)
     pid = Session.pid(session)
     ref = Process.monitor(pid)
+    # The suspend comes first: a suspended session still takes the system
+    # message that sets the timer, and it cannot take the timer message
+    # before the test is ready, however slow the host is (#193).
     :sys.suspend(pid)
+    arm_timer(session)
     # The timer message is in the mailbox before the prompt goes.
     Helyx.Test.Events.wait_until(fn -> mailbox(pid) == 1 end)
 
