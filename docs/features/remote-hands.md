@@ -51,7 +51,7 @@ An answer is the `res` of the request on the wire, and a term with no answer is 
 
 ## Codec on the wire
 
-The wire of ADR 0008 (`docs/features/wire-protocol.md`), protocol 12:
+The wire of ADR 0008 (`docs/features/wire-protocol.md`), protocol 14:
 
 - `hello` gets four fields: `role`, `"client"` (the default) or `"hands"`; `runner`, a `name` (1 to 64 bytes of a-z, 0-9, and `_`), required with the role `hands`; `pair`, the pairing handshake of "Pairing and the public listener"; and `signature`, the handshake of a paired peer. A `hello` carries `pair` or `signature`, never both.
 - A runner registers with one `req` `hands.register {runner, folder}`; the result is `{lease_ms}`.
@@ -193,7 +193,7 @@ A transport option `:hands_lease_ms` of `Helyx.Transport.WebSocket`, an integer 
 
 - `Helyx.Session.start/2` and `resume/2`: the option `:hands`, a runner name; the session file records it. The tool set comes from the capability report of the hands, local and remote. The `:provider_opts` of a session with `:hands` are a keyword list whose values encode as JSON, else the start fails before the session starts.
 - A public entry point through which a connection hands Core a remote hands (ADR 0012 §1). Name and shape in the entry-point slice.
-- `Helyx.Transport.WebSocket`: the role `hands`, `hands.*`, the option `:hands_lease_ms`, the option `:public` for the second listener, and the pairing operations of "Pairing and the public listener". Protocol 12.
+- `Helyx.Transport.WebSocket`: the role `hands`, `hands.*`, the option `:hands_lease_ms`, the option `:public` for the second listener, and the pairing operations of "Pairing and the public listener". Protocol 14.
 - `Helyx.Transport.WebSocket.TLS` (new): `ensure/1` and `pin/1` and `verify/2` of the certificate.
 - `Helyx.Transport.WebSocket.Pairing` (new): the links, the peer connections, the two handshakes, and the hands registrations.
 - `Helyx.Transport.WebSocket.Runner` (new): the client side of the role `hands`, with `Runner.Link` (the link), `Runner.State` (the state file), and `Runner.Connection` (TLS, the upgrade, and the handshake). Not a Core plugin, with no registration entry.

@@ -6,7 +6,7 @@ defmodule Helyx.Session.Server.Calls do
 
   alias Helyx.{Message, ModelRef}
   alias Helyx.Session.{History, Input}
-  alias Helyx.Session.Server.{Asks, Compaction, Events, Flow, Records, Sources, State}
+  alias Helyx.Session.Server.{Asks, Compaction, Events, Feed, IdleStop, Records, Sources, State}
   alias Helyx.Session.Server.{TurnLoop, UIBlocks}
 
   require Logger
@@ -18,7 +18,7 @@ defmodule Helyx.Session.Server.Calls do
       handle(request, from, state)
     else
       # The op name only, never the text of the call.
-      Logger.info("late session call dropped: #{elem(request, 0)}")
+      Logger.info("late session call dropped: #{op(request)}")
       {:noreply, state}
     end
   end
@@ -26,7 +26,9 @@ defmodule Helyx.Session.Server.Calls do
   def handle({op, text, origin}, _from, %State{} = state)
       when op in [:prompt, :steer, :follow_up] do
     {reply, state} = TurnLoop.admit(op, Message.user(text, origin), state)
-    {:reply, reply, state}
+    # A prompt starts a turn, and a steer or a follow-up queues: no idle stop
+    # (docs/features/idle-unload.md).
+    {:reply, reply, IdleStop.arm(state)}
   end
 
   def handle({:compact, text}, _from, %State{} = state) do
@@ -51,7 +53,8 @@ defmodule Helyx.Session.Server.Calls do
 
   def handle({:answer, ask_id, answer}, _from, %State{} = state) do
     {reply, state} = Asks.answer(state, ask_id, answer)
-    {:reply, reply, state}
+    # The answer can end the last ask of the turn (docs/features/idle-unload.md).
+    {:reply, reply, IdleStop.arm(state)}
   end
 
   # A page reads the transcript only (docs/features/session-snapshot.md).
@@ -94,25 +97,24 @@ defmodule Helyx.Session.Server.Calls do
   def handle(:transcript, _from, %State{} = state),
     do: {:reply, Helyx.Summary.kept(state.transcript, state.summary), state}
 
+  # The ModelContext plugin and the cwd for `Helyx.ModelContext.user_text/2`,
+  # which `Helyx.Session` calls in the caller of a user text.
+  def handle(:user_text_context, _from, %State{} = state),
+    do: {:reply, {:ok, state.plugins.model_context, state.cwd}, state}
+
   # A start with other provider options gets no session, because the session
   # runs with its own.
   def handle({:attach, opts}, _from, %State{init: %{provider_opts: opts}} = state),
-    do: {:reply, :ok, state}
+    # An attach of a resume arms the full idle wait again, so the client has
+    # the whole wait for its subscribe (docs/features/idle-unload.md).
+    do: {:reply, :ok, IdleStop.arm(state)}
 
   def handle({:attach, _provider_opts}, _from, %State{} = state),
     do: {:reply, {:error, :provider_opts_differ}, state}
 
-  def handle(:live, _from, %State{} = state) do
-    live = %Helyx.Sessions.Live{
-      id: state.id,
-      instance_id: state.instance_id,
-      cwd: state.cwd,
-      model: ModelRef.to_string(state.model),
-      status: if(Flow.idle?(state.phase), do: :idle, else: :running)
-    }
-
-    {:reply, live, state}
-  end
+  # One definition of the status, which the session feed sends too
+  # (`docs/features/session-feed.md`).
+  def handle(:live, _from, %State{} = state), do: {:reply, Feed.live(state), state}
 
   # The abort replies through `GenServer.reply/2` (`TurnLoop.abort/2`).
   def handle(:abort, from, %State{} = state), do: {:noreply, TurnLoop.abort(state, from)}
@@ -134,4 +136,8 @@ defmodule Helyx.Session.Server.Calls do
        do: id
 
   defp call_turn(_state, _pid), do: nil
+
+  # The op name of a request for the log of a late call.
+  defp op(request) when is_atom(request), do: request
+  defp op(request), do: elem(request, 0)
 end

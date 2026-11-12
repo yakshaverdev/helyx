@@ -17,24 +17,13 @@ use helyx_client_core::operation::Operation;
 pub const CARET: &str = "\u{258f}";
 
 /// The window's number of a send whose outcome the window waits for: a send
-/// of the composer, or the answer of an ask. The network thread reports one
+/// of the composer, or the answer of an ask. The network layer reports one
 /// `SendOutcome` for it, and the input drops the report once it has read it.
-pub type SendId = u64;
+pub use helyx_client_net::send::SendId;
 
 /// What became of a send that the window numbered, from the line of its
-/// request.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SendOutcome {
-    /// The client took it: the request waits for its reply.
-    Pending,
-    /// The server answered `ok`.
-    Ok,
-    /// The client refused it before it went, the server answered an error, or
-    /// the reply was lost. A composer send keeps its text, and an ask shows
-    /// again; the request line names the reason. The text is the reason, for
-    /// the host's line.
-    Failed(String),
-}
+/// request: the network layer's `SendOutcome`.
+pub use helyx_client_net::send::SendOutcome;
 
 /// What Enter sends, from the composer.
 #[derive(Debug, Clone, PartialEq)]

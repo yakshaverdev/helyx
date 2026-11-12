@@ -9,7 +9,7 @@ defmodule Helyx.Session.ApprovalsTest do
   import Helyx.Test.Events,
     only: [collect_until: 1, of_type: 2, snapshot: 1, wait_ms: 0, wait_until: 1]
 
-  import Helyx.Test.SessionCase, only: [start_core: 1]
+  import Helyx.Test.SessionCase, only: [start_core: 2]
 
   alias Helyx.Message.ToolCall
   alias Helyx.Session
@@ -23,8 +23,8 @@ defmodule Helyx.Session.ApprovalsTest do
 
   # The controller of `Helyx.Test.Connected` and the test name of the
   # hooks are two names, so two proxies forward to the test process.
-  defp core(hooks, tools \\ []) do
-    core = start_core([Helyx.Test.Connected | tools ++ hooks])
+  defp core(hooks, tools \\ [], opts \\ []) do
+    core = start_core([Helyx.Test.Connected | tools ++ hooks], opts)
     test = self()
     Process.register(spawn_link(fn -> forward(test) end), Hook.test_name(core))
     Process.register(spawn_link(fn -> forward(test) end), Helyx.Test.Connected.controller(core))
@@ -104,7 +104,7 @@ defmodule Helyx.Session.ApprovalsTest do
   @tag :tmp_dir
   test "every hook allows: the request is allowed, with the call and the provider id, and each answer is an entry",
        %{tmp_dir: dir} do
-    core = core([Hook.A, Hook.B])
+    core = core([Hook.A, Hook.B], [], sessions_dir: dir)
     Hook.script(core, Hook.B, :before_tool, fn _ -> {:allow, "fine"} end)
     {_session, pid, turn_id} = turn(core, sessions_dir: dir)
     events(pid, turn_id, [{:tool_call, @call}, {:approval, "0", "i1"}])

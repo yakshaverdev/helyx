@@ -4,7 +4,7 @@ defmodule Helyx.Session.ToolSourceTest do
   use ExUnit.Case, async: true
 
   import Helyx.Test.Events
-  import Helyx.Test.SessionCase, only: [start_core: 1, final_text: 1]
+  import Helyx.Test.SessionCase, only: [start_core: 1, start_core: 2, final_text: 1]
   import Helyx.Test.SourceCase
 
   alias Helyx.Session
@@ -12,8 +12,10 @@ defmodule Helyx.Session.ToolSourceTest do
 
   @plugins [Helyx.Test.Provider, Helyx.Test.Tool.Upcase, Source]
 
-  setup do
-    core = start_core(@plugins)
+  @moduletag :tmp_dir
+
+  setup %{tmp_dir: dir} do
+    core = start_core(@plugins, sessions_dir: dir)
     observe(core)
     %{core: core}
   end
@@ -549,14 +551,13 @@ defmodule Helyx.Session.ToolSourceTest do
   end
 
   test "a resume starts the tool source again", %{core: core} do
-    dir = Path.join(System.tmp_dir!(), "helyx-source-#{System.unique_integer([:positive])}")
-    on_exit(fn -> File.rm_rf!(dir) end)
+    dir = Helyx.Core.config(core, :sessions_dir)
     {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
     assert_receive {:source_up, _src, %{session_id: id}}
     assert id == session.id
     :ok = Helyx.Sessions.stop(session)
 
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir, id: id)
+    {:ok, resumed, _} = Session.resume(core, sessions_dir: dir, id: id)
     assert_receive {:source_up, _src, %{session_id: ^id}}
     assert Process.alive?(Session.pid(resumed))
   end

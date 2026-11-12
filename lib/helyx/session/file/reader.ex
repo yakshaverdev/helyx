@@ -144,7 +144,9 @@ defmodule Helyx.Session.File.Reader do
   end
 
   # The header: the first entry, with a string id and model, a known version,
-  # and the directory of the pick. Its own `parent_id` is not read.
+  # and the directory of the pick. Its own `parent_id` is not read. A parent
+  # link that does not pass its check is dropped, so a damaged link costs the
+  # session no resume (docs/features/agent-tool.md).
   defp add(%{"type" => "session", "id" => id, "model" => model} = header, _n, cwd, nil)
        when is_binary(id) and is_binary(model) do
     with :ok <- Scan.check_version(header),
@@ -154,6 +156,7 @@ defmodule Helyx.Session.File.Reader do
          leaf: id,
          ids: %{},
          model: model,
+         parent: parent(header["parent"]),
          messages: [],
          resume_ids: %{},
          summary: nil,
@@ -173,7 +176,16 @@ defmodule Helyx.Session.File.Reader do
   defp add(_entry, n, _cwd, _acc),
     do: {:error, {:invalid_file, "line #{n} does not continue the chain of the entry before it"}}
 
-  # The header can change between the pick and this read under the lock.
+  defp parent(nil), do: nil
+
+  defp parent(link) do
+    case Helyx.Session.Input.header_parent(link) do
+      {:ok, checked} -> checked
+      {:error, :invalid_parent} -> nil
+    end
+  end
+
+  # The header can change between the pick and this read.
   defp check_cwd(%{"cwd" => cwd}, cwd), do: :ok
   defp check_cwd(_header, _cwd), do: {:error, :not_found}
 

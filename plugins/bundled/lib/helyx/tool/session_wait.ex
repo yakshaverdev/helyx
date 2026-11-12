@@ -96,15 +96,26 @@ defmodule Helyx.Tool.SessionWait do
     end
   end
 
-  # A tail of one message keeps the snapshot small.
+  # A tail of one message keeps the snapshot small. A session that a stop
+  # unloaded has no turn either, so it answers at once as a live idle session
+  # does (docs/features/idle-unload.md).
   defp subscribe(env, id) do
-    session = Coordinator.session(env, id)
-
-    with :ok <- Helyx.Hub.authorize(env.hub, env.user, "subscribe", %{"session" => id}),
-         {:ok, snapshot, ref} <- Session.subscribe(session, tail: 1) do
-      if snapshot.turn, do: {:ok, ref}, else: {:done, "session #{id}: no turn runs"}
-    else
+    case Helyx.Hub.authorize(env.hub, env.user, "subscribe", %{"session" => id}) do
+      :ok -> subscribe_session(Coordinator.session(env, id), id)
       {:error, reason} -> {:error, "session #{id}: " <> Coordinator.text(reason)}
+    end
+  end
+
+  defp subscribe_session(session, id) do
+    case Session.subscribe(session, tail: 1) do
+      {:ok, snapshot, ref} ->
+        if snapshot.turn, do: {:ok, ref}, else: {:done, "session #{id}: no turn runs"}
+
+      {:error, :session_not_found} ->
+        {:done, "session #{id}: no turn runs"}
+
+      {:error, reason} ->
+        {:error, "session #{id}: " <> Coordinator.text(reason)}
     end
   end
 

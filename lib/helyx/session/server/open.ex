@@ -6,26 +6,38 @@ defmodule Helyx.Session.Server.Open do
   # gives an error (docs/features/server-management.md,
   # docs/features/session-lock.md).
 
-  alias Helyx.Session.{Background, Hands, Id, Input, Killer, Lock, Queue, Transcript}
-  alias Helyx.Session.Server.{Sources, State}
+  alias Helyx.Session.{Background, Hands, Id, Input, Killer, Queue, Transcript}
+  alias Helyx.Session.Server.{IdleStop, Sources, State}
 
-  # `open` is nil with no session file, or `{path, fun}`: the session takes
-  # the lock of `path` and runs `fun` under it, so the port of the lock has
-  # one owner for its whole life. Past the deadline of the take or of the
-  # load the session is killed, and the caller gets
-  # `{:error, :open_timeout}`. A start of an id that this Core runs attaches
-  # (docs/features/server-management.md). The second run of a start is its
-  # last.
+  # `open` is nil with no session file, or `{path, fun}`: the session runs
+  # `fun` to make or read the file. Past the deadline of the load the
+  # session is killed, and the caller gets `{:error, :open_timeout}`. A start
+  # of an id that this Core runs attaches
+  # (docs/features/server-management.md), and tells the caller so. The second
+  # run of a start is its last.
   def start(%State{} = state, tools, open, runs \\ 2) do
     start = {state, tools, open, runs}
 
     case launch(state, tools, open) do
-      {:error, {:already_started, pid}} -> attach(pid, session(state), start)
-      {:error, :max_children} -> attach(Helyx.Session.pid(session(state)), session(state), start)
-      {:started, result} -> result
-      error -> error
+      {:error, {:already_started, pid}} ->
+        origin(attach(pid, session(state), start), :attached)
+
+      {:error, :max_children} ->
+        origin(attach(Helyx.Session.pid(session(state)), session(state), start), :attached)
+
+      {:started, result} ->
+        origin(result, :started)
+
+      error ->
+        error
     end
   end
+
+  # The resume of an id tells whether the process ran (`:attached`) or this
+  # call started it (`:started`), so a load stops only a process that it
+  # started (docs/features/idle-unload.md).
+  defp origin({:ok, session}, origin), do: {:ok, session, origin}
+  defp origin(error, _origin), do: error
 
   # The open of `Helyx.Session.resume/2`: the read of the locked file and its
   # model ref. A repair of a crash may leave tool calls with no result, and
@@ -38,7 +50,8 @@ defmodule Helyx.Session.Server.Open do
          state
          | model: ref,
            provider: provider,
-           save: {:saving, resumed.file, nil},
+           parent: resumed.parent,
+           save: {:saving, resumed.file},
            transcript: Transcript.repair(resumed.messages),
            sync: {:replay, resumed.messages},
            summary: resumed.summary,
@@ -49,15 +62,15 @@ defmodule Helyx.Session.Server.Open do
     end
   end
 
-  # The file of a new session, which the session process opens at its start
-  # under the lock of `path` (`create/3`), or nil with no sessions dir.
+  # The file of a new session, which the session process makes at its start
+  # (`create/3`), or nil with no sessions dir.
   def create_spec(nil, _id, _cwd, _model, _parent), do: nil
 
   def create_spec(dir, id, cwd, model, parent) do
     {Helyx.Session.File.path(dir, cwd, id, parent),
      fn state ->
        with {:ok, file} <- Helyx.Session.File.create(dir, id, cwd, model, parent),
-            do: {:ok, %{state | save: {:saving, file, nil}}}
+            do: {:ok, %{state | save: {:saving, file}}}
      end}
   end
 
@@ -151,8 +164,7 @@ defmodule Helyx.Session.Server.Open do
 
   # The open waits for the go of the caller (`await_open/3`) and runs before
   # the hands, so no hands exist when it fails. A caller that ended before
-  # the go or during the open gets no session, and the stop releases the
-  # lock (`Server.terminate/2`).
+  # the go or during the open gets no session.
   def handle_continue({open, caller, ref, monitor}, state) do
     receive do
       {^ref, :go} -> run_open(state, open, caller, ref, monitor)
@@ -170,7 +182,9 @@ defmodule Helyx.Session.Server.Open do
             Process.demonitor(monitor, [:flush])
             state = state |> init_hands() |> Sources.start() |> Helyx.Session.Sync.open()
             send(caller, {ref, :ok})
-            {:noreply, state}
+            # The save fact holds from here: a session with a file and no
+            # work arms its idle stop (docs/features/idle-unload.md).
+            {:noreply, IdleStop.arm(state)}
         end
 
       # The reason reaches the attaches that wait (`attach/3`).
@@ -187,26 +201,22 @@ defmodule Helyx.Session.Server.Open do
   # (docs/features/session-lock.md).
   @load_bytes_per_ms 1_000
 
-  # A kill ends the session at the deadline of its open even when the caller
-  # is gone, so the port closes and perl frees the lock. After the take, the
-  # deadline of the load grows with the file.
+  # A file edit of the id in this Core refuses the open. The session is in
+  # the Registry under its id from before its `init/1`, and the edit
+  # registers `{:edit, id}` before it looks up the id, so at least one of
+  # the two sees the other (`Helyx.Session.File.Edit`).
   defp open_file(state, {path, fun}) do
-    killer = Killer.arm(state.deadline_ms.open)
-
-    result =
-      Lock.hold(path, fn ->
-        Killer.move(killer, state.deadline_ms.open + div(file_size(path), @load_bytes_per_ms))
-        fun.(state)
-      end)
-
-    Killer.cancel(killer)
-    with {:ok, lock, state} <- result, do: {:ok, %{state | save: hold_lock(state.save, lock)}}
+    if Registry.lookup(Helyx.Core.sessions_registry(state.core), {:edit, state.id}) == [] do
+      # A kill ends the open at its deadline, also when the caller is gone.
+      # The deadline grows with the file.
+      killer = Killer.arm(state.deadline_ms.open + div(file_size(path), @load_bytes_per_ms))
+      result = fun.(state)
+      Killer.cancel(killer)
+      result
+    else
+      {:error, :editing}
+    end
   end
-
-  # The lock is taken after the load, which sets the file. An open with no
-  # file holds the lock for its path until it ends: nothing is saved then.
-  defp hold_lock({:saving, file, nil}, lock), do: {:saving, file, lock}
-  defp hold_lock(:never, lock), do: {:stopped, 0, lock}
 
   # A file that is not there, as for a new session, or not readable, loads
   # nothing; the load gives its own error for it.

@@ -99,7 +99,7 @@ defmodule Helyx.Hub.Store.SQLite do
   defp take_lock(path) do
     case Lock.take(path <> ".lock") do
       {:ok, port} -> {:ok, port}
-      {:error, {:session_locked, _name}} -> {:error, :store_locked}
+      {:error, :locked} -> {:error, :store_locked}
       {:error, {:lock_failed, _text} = error} -> {:error, error}
     end
   end
@@ -179,13 +179,37 @@ defmodule Helyx.Hub.Store.SQLite do
     end
   end
 
+  # The version of the file: a new file, and a file that `schema/1` moves to
+  # the current version. A file of another version is refused (decision 9).
   defp version(db) do
     case one(db, "PRAGMA user_version", []) do
       {:ok, [0]} -> empty(db)
-      {:ok, [n]} when n in [2, @version] -> :ok
+      {:ok, [n]} when n in [2, 3, @version] -> :ok
       {:ok, [n]} -> {:error, {:store_version, n}}
       {:error, _} = error -> error
     end
+  end
+
+  # SQLite cannot add a table check, so the pair rule of `parent_id` and
+  # `parent_kind` holds in the store code here and in the schema of a new
+  # file; every write sets both. A file of version 2 holds no peers table, so
+  # the upgrade adds it too, in one step.
+  defp upgrade_2(db) do
+    with :ok <- exec(db, "ALTER TABLE records ADD COLUMN parent_id TEXT"),
+         :ok <-
+           exec(
+             db,
+             "ALTER TABLE records ADD COLUMN parent_kind TEXT " <>
+               "CHECK (parent_kind IN ('child', 'thread'))"
+           ),
+         :ok <- exec(db, Schema.peers_sql()),
+         do: set_version(db)
+  end
+
+  # A file of version 3 holds no peers table; the upgrade adds it and moves
+  # the version, in one step.
+  defp upgrade_3(db) do
+    with :ok <- exec(db, Schema.peers_sql()), do: set_version(db)
   end
 
   # A file of version 0 is new only when it holds no schema: a database of
@@ -202,19 +226,14 @@ defmodule Helyx.Hub.Store.SQLite do
     case one(db, "PRAGMA user_version", []) do
       {:ok, [@version]} -> :ok
       {:ok, [0]} -> transaction(db, :infinity, fn -> create_schema(db) end)
-      {:ok, [2]} -> transaction(db, :infinity, fn -> upgrade_peers(db) end)
+      {:ok, [2]} -> transaction(db, :infinity, fn -> upgrade_2(db) end)
+      {:ok, [3]} -> transaction(db, :infinity, fn -> upgrade_3(db) end)
       {:error, _} = error -> error
     end
   end
 
   defp create_schema(db) do
     with :ok <- exec(db, Schema.sql()), do: set_version(db)
-  end
-
-  # Version 2 holds no peers table; the upgrade adds it and moves the
-  # version, in one step.
-  defp upgrade_peers(db) do
-    with :ok <- exec(db, Schema.peers_sql()), do: set_version(db)
   end
 
   defp set_version(db), do: exec(db, "PRAGMA user_version = #{@version}")
@@ -320,11 +339,15 @@ defmodule Helyx.Hub.Store.SQLite do
   @impl true
   defdelegate put_record(db, record, max, deadline), to: Records
   @impl true
+  defdelegate seen_record(db, record, deadline), to: Records
+  @impl true
+  defdelegate ensure_records(db, records, deadline), to: Records
+  @impl true
   defdelegate touch_record(db, session_id, at, prompt, deadline), to: Records
   @impl true
   defdelegate labels(db, session_ids), to: Records
   @impl true
-  defdelegate update_record(db, session_id, new, changes, max, deadline), to: Records
+  defdelegate update_record(db, session_id, changes, deadline), to: Records
   @impl true
   defdelegate delete_record(db, session_id, deadline), to: Records
   @impl true
@@ -345,6 +368,10 @@ defmodule Helyx.Hub.Store.SQLite do
   defdelegate newest(db, owner, cwd), to: Records
   @impl true
   defdelegate hub_records?(db, owner), to: Records
+  @impl true
+  defdelegate owned(db, owner, limit), to: Records
+  @impl true
+  defdelegate rows(db, session_ids), to: Records
   @impl true
   defdelegate schedules(db, owner, session_id), to: Schedules
   @impl true
@@ -370,7 +397,7 @@ defmodule Helyx.Hub.Store.SQLite do
   @impl true
   defdelegate subscription_sent(db, id, at, outcome, deadline), to: Subscriptions
 
-  # The peers of the public listener (protocol 12).
+  # The peers of the public listener (protocol 14).
   @impl true
   def peers(db) do
     with {:ok, rows} <- all(db, Tables.select_sql(:peers) <> " ORDER BY kind, name", []) do

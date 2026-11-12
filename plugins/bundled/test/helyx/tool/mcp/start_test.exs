@@ -163,7 +163,10 @@ defmodule Helyx.Tool.MCP.StartTest do
     assert %{state: :ready} = group(session, "s")
     :ok = Session.prompt(session, "go")
     assert [{false, _search}, {false, "ok"}] = results(2)
-    assert %{tools: 2} = group(session, "s", fn _ -> "s__fresh" in names(session) end)
+    # The group of the wait is from a read before the one that has the new
+    # name, so the count comes from a read after it.
+    group(session, "s", fn _ -> "s__fresh" in names(session) end)
+    assert %{tools: 2} = group(session, "s")
   end
 
   test "a server that stops answering a listing after its start fails at the bound", ctx do
