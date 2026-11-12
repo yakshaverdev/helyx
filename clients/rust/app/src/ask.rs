@@ -111,7 +111,8 @@ impl Panel {
         let kind = match &block.view {
             View::Form(form) => Kind::Form(FormState::new(form)),
             View::Approval(approval) => Kind::Approval(approval.clone()),
-            View::Text => return None,
+            // A `diff` is a result, not an input: this window gives no answer.
+            View::Diff(_) | View::Text => return None,
         };
         Some((ask.ask_id.clone(), block, kind))
     }
@@ -120,7 +121,7 @@ impl Panel {
     /// kind that it reads is the one it shows.
     pub fn answers(ask: &Ask) -> bool {
         ask.block()
-            .is_some_and(|block| !matches!(block.view, View::Text))
+            .is_some_and(|block| matches!(block.view, View::Form(_) | View::Approval(_)))
     }
 
     /// The id of the oldest open ask that the window answers.
@@ -684,6 +685,13 @@ mod tests {
         let diff = ask(r#"{"kind":"diff","text":"x"}"#);
         assert_eq!(
             Panel::note(&diff, None),
+            Some("this app cannot answer this ask; another client can")
+        );
+        // A diff that the core reads is a result, not an input: no answer.
+        let readable =
+            ask(r#"{"kind":"diff","text":"x","path":"p","added":0,"removed":0,"hunks":[]}"#);
+        assert_eq!(
+            Panel::note(&readable, None),
             Some("this app cannot answer this ask; another client can")
         );
         let no_kind = ask(r#"{"questions":[]}"#);

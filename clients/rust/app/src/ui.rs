@@ -8,6 +8,8 @@
 //! the turn. A `form` or an `approval` of an ask is answered here
 //! (`ask::Panel`), by its keys or its buttons.
 
+mod diff;
+
 use gpui::{
     AnyElement, App, Application, Bounds, ClipboardItem, Context, FocusHandle, FontWeight,
     KeyDownEvent, ListAlignment, ListState, SharedString, Window, WindowBounds, WindowOptions, div,
@@ -1071,11 +1073,11 @@ impl Desktop {
     }
 }
 
-/// A UI block: a `form` and an `approval` natively, any other kind, and a
-/// known kind whose fields the app cannot read, as its fallback text; a mark
-/// when it was cut. `note` is the line of an ask: whether this window answers
-/// it now, later, or not at all, since an ask that it cannot read stays open
-/// for another client (ADR 0011 §4).
+/// A UI block: a `form`, an `approval`, and a `diff` natively, any other
+/// kind, and a known kind whose fields the app cannot read, as its fallback
+/// text; a mark when it was cut. `note` is the line of an ask: whether this
+/// window answers it now, later, or not at all, since an ask that it cannot
+/// read stays open for another client (ADR 0011 §4).
 fn ui_block(block: &UiBlock, note: Option<&'static str>) -> AnyElement {
     // The text of an ask has no size check in the client: the bound of a
     // block holds when it is drawn.
@@ -1083,6 +1085,7 @@ fn ui_block(block: &UiBlock, note: Option<&'static str>) -> AnyElement {
     let body = match &block.view {
         View::Form(form) => form_body(form),
         View::Approval(approval) => approval_body(&block.text, approval),
+        View::Diff(diff) => diff::body(diff, &block.text),
         View::Text => div().child(format!("▪ {text}")),
     };
     let cut = block.cut || (block.view == View::Text && more);
