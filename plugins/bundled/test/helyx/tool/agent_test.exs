@@ -232,7 +232,10 @@ defmodule Helyx.Tool.AgentTest do
     assert Keyword.take(opts, [:persist, :report]) == provider_opts
 
     :ok = Helyx.Sessions.stop(session)
-    {:ok, resumed} = Helyx.Sessions.resume(core, id: session.id, provider_opts: [report: self()])
+
+    {:ok, resumed, _} =
+      Helyx.Sessions.resume(core, id: session.id, provider_opts: [report: self()])
+
     {:ok, _snapshot, _ref} = Session.subscribe(resumed)
     :ok = Session.prompt(resumed, "more")
 
@@ -416,7 +419,7 @@ defmodule Helyx.Tool.AgentTest do
     true = :erlang.suspend_process(owner)
     Process.exit(pid, :kill)
     assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
-    {:ok, replacement} = Helyx.Sessions.resume(core, id: id)
+    {:ok, replacement, _} = Helyx.Sessions.resume(core, id: id)
     :ok = Session.prompt(replacement, "more")
     assert_receive {:blocked, ^id}
     new_pid = Session.pid(replacement)

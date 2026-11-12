@@ -350,7 +350,7 @@ defmodule Helyx.Provider.ClaudeCode.MeterTest do
       before = for _total <- totals, do: usage(prompt(session, "p"))
       Helyx.Test.SessionFile.stop(session)
 
-      {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
+      {:ok, session, _} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
       {:ok, _, _} = Session.subscribe(session)
       assert for(%Message{role: :assistant, usage: u} <- transcript(session), do: u) == before
       Enum.map(before ++ [usage(prompt(session, "back"))], & &1.cost)
@@ -434,7 +434,7 @@ defmodule Helyx.Provider.ClaudeCode.MeterTest do
       assert usage(prompt(session, "p")).cost == 0.4
       Helyx.Test.SessionFile.stop(session)
 
-      {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
+      {:ok, session, _} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
       {:ok, _, _} = Session.subscribe(session)
       assert %Helyx.Usage{cost: 0.05, context_window: 200_000} = usage(prompt(session, "back"))
     end

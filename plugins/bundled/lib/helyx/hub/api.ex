@@ -22,6 +22,21 @@ defmodule Helyx.Hub.Api do
          do: core_start(arg, auth, params, opts)
   end
 
+  # The resume of a session as the wire `resume` does, for a user with no
+  # token: the place of the live sessions, the Core resume, and the starter
+  # (docs/features/idle-unload.md). The load is the one of the wire
+  # authority, `Helyx.Hub.Access.resume/3`; this edge maps its error to the
+  # atoms of the Elixir API.
+  def resume(arg, user_id, session_id) do
+    auth = %{user: user_id, token: nil}
+
+    case safe(fn -> Access.resume(arg, auth, session_id) end) do
+      {:ok, session} -> {:ok, session}
+      {:close, 4403} -> {:error, :unknown_user}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp core_start(arg, auth, params, opts) do
     case Helyx.Sessions.start(arg.core, opts) do
       {:ok, session} ->

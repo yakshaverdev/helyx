@@ -304,7 +304,7 @@ defmodule Helyx.Test.ClaudeCodeFake do
 
   # The session of `start/2` again, from its file.
   def resume(ctx) do
-    {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
+    {:ok, session, _} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
     {:ok, _, _} = Session.subscribe(session)
     session
   end

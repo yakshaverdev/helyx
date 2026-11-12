@@ -191,7 +191,7 @@ defmodule Helyx.Session.BeforeSettleTest do
 
       # The message of the continue reads back with its origin.
       stop_session(session, &GenServer.stop/1)
-      {:ok, resumed} = Session.resume(core, sessions_dir: dir, cwd: cwd)
+      {:ok, resumed, _} = Session.resume(core, sessions_dir: dir, cwd: cwd)
       {:ok, snapshot, _ref} = Session.subscribe(resumed)
 
       assert [_go, %{origin: %{kind: :hook, id: "Helyx.Test.Hook.SettleA"}}] =

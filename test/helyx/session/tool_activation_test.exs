@@ -148,7 +148,7 @@ defmodule Helyx.Session.ToolActivationTest do
     id = session.id
     :ok = Helyx.Sessions.stop(session)
 
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir, id: id)
+    {:ok, resumed, _} = Session.resume(core, sessions_dir: dir, id: id)
     src = up(resumed)
     {:ok, snapshot, _ref} = Session.subscribe(resumed)
     assert snapshot.activated == ["r3", "r1", "r5", "r4", "r2"]
@@ -275,7 +275,7 @@ defmodule Helyx.Session.ToolActivationTest do
     assert_receive {:helyx_event, %Helyx.Event{type: :tools_change, turn_id: nil}}
     id = session.id
     :ok = Helyx.Sessions.stop(session)
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir, id: id)
+    {:ok, resumed, _} = Session.resume(core, sessions_dir: dir, id: id)
     _src = up(resumed)
     {:ok, snapshot, _ref} = Session.subscribe(resumed)
     assert snapshot.activated == ["y4", "y3", "y2", "y1"]
