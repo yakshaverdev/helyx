@@ -12,7 +12,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
-use stub::{LIVE, challenge, next_text, welcome};
+use stub::{challenge, next_text, welcome};
 use tungstenite::WebSocket;
 
 /// A margin for load in a bound of elapsed time: other worktrees run tests
@@ -26,10 +26,10 @@ const LOAD_MARGIN: Duration = Duration::from_secs(3);
 const SEND_BUFFER: usize = 16_384;
 
 /// Runs the network thread with `waits` against a stub that welcomes it and
-/// takes `sessions.live`, then runs `serve`, whose receiver gets a message
-/// once the thread has ended. Sends `commands` at the welcome, checks that
-/// the thread ends at the refused reconnect, and gives its time from its
-/// start and from the commands.
+/// takes the first request of the welcome, then runs `serve`, whose receiver
+/// gets a message once the thread has ended. Sends `commands` at the welcome,
+/// checks that the thread ends at the refused reconnect, and gives its time
+/// from its start and from the commands.
 fn after_welcome(
     waits: Waits,
     commands: Vec<Command>,
@@ -47,7 +47,14 @@ fn after_welcome(
     let thread = std::thread::spawn(move || {
         let started = Instant::now();
         let shared = Mutex::new(Shared::new());
-        let line = net::run_with(&server, None, &shared, &receive, &|| {}, waits);
+        let line = net::run_with(
+            &stub::fixed(&server),
+            None,
+            &shared,
+            &receive,
+            &|| {},
+            waits,
+        );
         (line, started.elapsed())
     });
     at_welcome.recv().unwrap();
@@ -174,7 +181,7 @@ fn the_tcp_connect_ends_at_its_wait() {
     let (_commands, receive) = channel();
     let started = Instant::now();
     let line = net::run_with(
-        &stub::local(address.port()),
+        &stub::fixed(&stub::local(address.port())),
         None,
         &shared,
         &receive,
@@ -204,7 +211,7 @@ fn a_failed_send_after_a_binary_frame_is_a_break() {
     let (server, stub) = stub::one(move |mut ws| {
         challenge(&mut ws);
         let _hello = next_text(&mut ws);
-        let welcome = br#"{"type":"welcome","protocol":13}"#;
+        let welcome = br#"{"type":"welcome","protocol":15}"#;
         let mut bytes = vec![0x81, welcome.len() as u8];
         bytes.extend(welcome);
         bytes.extend([0x02, 0x01, b'x']);
@@ -218,7 +225,14 @@ fn a_failed_send_after_a_binary_frame_is_a_break() {
     send.send(Command::Follow("x".repeat(3_000_000))).unwrap();
     let shared = Mutex::new(Shared::new());
     let started = Instant::now();
-    let line = net::run_with(&server, None, &shared, &receive, &|| {}, waits);
+    let line = net::run_with(
+        &stub::fixed(&server),
+        None,
+        &shared,
+        &receive,
+        &|| {},
+        waits,
+    );
     // The send failed at its deadline, not at the read of the mark.
     assert!(started.elapsed() >= waits.send, "{:?}", started.elapsed());
     stop.send(()).unwrap();
@@ -227,7 +241,7 @@ fn a_failed_send_after_a_binary_frame_is_a_break() {
 }
 
 /// A send that fails keeps the frame that the socket read before it: the
-/// reply to `sessions.live` came in the same read as the welcome, and the
+/// reply to `records.subscribe` came in the same read as the welcome, and the
 /// window gets it before the connection ends.
 #[test]
 fn a_failed_send_keeps_the_frames_read_before_it() {
@@ -243,14 +257,17 @@ fn a_failed_send_keeps_the_frames_read_before_it() {
     let (server, stub) = stub::one(move |mut ws| {
         challenge(&mut ws);
         let _hello = next_text(&mut ws);
-        let welcome = br#"{"type":"welcome","protocol":13}"#;
+        let welcome = br#"{"type":"welcome","protocol":15}"#;
         let mut bytes = vec![0x81, welcome.len() as u8];
         bytes.extend(welcome);
         // The subscribe of the follow takes id 0 at the welcome, and
-        // `sessions.live` id 1.
-        let live = LIVE.replace(r#""id":"0""#, r#""id":"1""#);
-        bytes.extend([0x81, 126, (live.len() >> 8) as u8, live.len() as u8]);
-        bytes.extend(live.as_bytes());
+        // `records.subscribe` id 1.
+        let record = r#"{"session":"s1","owner":{"id":"u1","name":"ada"},"project":null,"title":"","labels":[],"visibility":"private","archived":false,"created_at":1,"updated_at":1,"cwd":"/r","model":"fake/echo","prompt":"","active_at":1,"parent":null,"status":"idle"}"#;
+        let reply = format!(
+            r#"{{"type":"res","id":"1","ok":true,"result":{{"records":[{record}],"more":false}}}}"#
+        );
+        bytes.extend([0x81, 126, (reply.len() >> 8) as u8, reply.len() as u8]);
+        bytes.extend(reply.as_bytes());
         use std::io::Write;
         ws.get_mut().write_all(&bytes).unwrap();
         // Reads nothing more.
@@ -261,9 +278,18 @@ fn a_failed_send_keeps_the_frames_read_before_it() {
     // The window is gone: the thread ends at the end of the connection.
     drop(send);
     let shared = Mutex::new(Shared::new());
-    let line = net::run_with(&server, None, &shared, &receive, &|| {}, waits);
+    let line = net::run_with(
+        &stub::fixed(&server),
+        None,
+        &shared,
+        &receive,
+        &|| {},
+        waits,
+    );
     stop.send(()).unwrap();
     stub.join().unwrap();
     assert_eq!(line, "reconnecting");
-    assert_eq!(shared.lock().unwrap().live.len(), 1);
+    let shared = shared.lock().unwrap();
+    assert_eq!(shared.client.records().rows().len(), 1);
+    assert!(shared.records);
 }

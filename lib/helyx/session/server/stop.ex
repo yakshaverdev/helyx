@@ -7,15 +7,14 @@ defmodule Helyx.Session.Server.Stop do
 
   import Helyx.Session.Server.State, only: [ask: 4]
 
-  alias Helyx.Session.{Hands, Lock}
+  alias Helyx.Session.Hands
   alias Helyx.Session.Server.State
   alias Helyx.Session.Turn
 
   @load_hands_stop_ms 2_000
   @load_shutdown_ms 3_000
   @hands_stop_ms Hands.State.release_ms() + @load_hands_stop_ms
-  def shutdown_ms,
-    do: State.provider_close_ms() + @hands_stop_ms + Lock.release_ms() + @load_shutdown_ms
+  def shutdown_ms, do: State.provider_close_ms() + @hands_stop_ms + @load_shutdown_ms
 
   # The prepare Task runs under the task supervisor, not linked: it is killed
   # here. Each provider process gets a close after any request it has open: a
@@ -45,9 +44,6 @@ defmodule Helyx.Session.Server.Stop do
 
     # After the hands: no background Task writes to the folder any more.
     File.rm_rf(state.background_dir)
-    # Last, so no process of the session writes to the file once another OS
-    # process can take the lock.
-    Lock.release(State.lock(state))
     if left == [], do: :ok, else: {:error, {:not_released, left}}
   end
 

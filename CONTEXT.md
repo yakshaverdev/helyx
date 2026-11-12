@@ -66,6 +66,10 @@ _Avoid_: input, query
 The session state that a client gets when it subscribes, valid at one sequence number of the session instance.
 _Avoid_: state dump, sync
 
+**Session feed**:
+The notices that a Core sends to a watcher of it: the `Live` of each session at its open and at each change of status or model, and the events of the types that the watcher names (`docs/features/session-feed.md`).
+_Avoid_: subscription, broadcast, observer
+
 **Hands**:
 The process that owns a working directory, runs tools for a session, and hosts the provider process. In local mode it lives on the same node as the session. It may live on another node.
 _Avoid_: sandbox, executor, worker

@@ -1,6 +1,6 @@
 //! The read of the server file of a data folder, at its bounds.
 
-use helyx_desktop::settings::{MAX_FILE_BYTES, read};
+use helyx_desktop::settings::{MAX_FILE_BYTES, read, source};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
@@ -84,4 +84,28 @@ fn a_missing_folder_is_no_server() {
     let file = folder("file").join("plain");
     std::fs::write(&file, "x").unwrap();
     assert!(read(&file).unwrap_err().contains("is not a directory"));
+}
+
+/// The source of the network thread reads the folder again at each call, so a
+/// server that restarted at another port and with another token is found.
+#[test]
+fn the_source_reads_the_folder_again() {
+    let dir = folder("source");
+    std::fs::write(dir.join("server.json"), GOOD).unwrap();
+    let again = source(&dir);
+    let first = again().unwrap();
+    assert_eq!(first.url(), "ws://127.0.0.1:4000");
+    assert_eq!(first.local_parts().map(|(_, _, token)| token), Some("t"));
+    let restarted = r#"{"address":"127.0.0.1","port":5000,"token":"other"}"#;
+    std::fs::write(dir.join("server.json"), restarted).unwrap();
+    let second = again().unwrap();
+    assert_eq!(second.url(), "ws://127.0.0.1:5000");
+    assert_eq!(
+        second.local_parts().map(|(_, _, token)| token),
+        Some("other")
+    );
+    // A folder with no file is the error of the read, for the line.
+    std::fs::remove_file(dir.join("server.json")).unwrap();
+    assert_eq!(again().unwrap_err(), "no server runs for the data folder");
+    std::fs::remove_dir_all(dir).unwrap();
 }

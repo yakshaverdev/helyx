@@ -1,4 +1,4 @@
-//! The handshake of protocol 13 (rule O1 of `docs/features/wire-protocol.md`):
+//! The handshake of protocol 15 (rule O1 of `docs/features/wire-protocol.md`):
 //! the server sends `challenge`, the client sends `hello`, the server sends
 //! `welcome` or `refused`. Any other frame is a break.
 //!
@@ -17,7 +17,7 @@ use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 
 /// The protocol number of this client.
-pub const PROTOCOL: u64 = 13;
+pub const PROTOCOL: u64 = 15;
 
 /// The context text that both pairing handshakes sign.
 pub const CONTEXT: &str = "helyx-handshake-v1";

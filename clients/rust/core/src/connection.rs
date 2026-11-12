@@ -106,6 +106,9 @@ pub(crate) struct Connection {
     /// server holds none of them. A frame of one that was on the way is
     /// dropped.
     pub gone: HashSet<String>,
+    /// The records feed of the user is live on this connection: its reply
+    /// came and its `records.unsubscribe` did not.
+    pub records: bool,
 }
 
 impl Connection {
@@ -119,6 +122,7 @@ impl Connection {
             answers: HashMap::new(),
             replaced: HashMap::new(),
             gone: HashSet::new(),
+            records: false,
         }
     }
 

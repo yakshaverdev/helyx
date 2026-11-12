@@ -1,13 +1,12 @@
 defmodule Helyx.Hub.Store.SQLite.Schema do
   @moduledoc false
-  # The schema of the SQLite store, `user_version` 3 (`docs/features/hub.md`,
-  # "Store schema"). A file of version 1 gets the tables and the column of
-  # the event subscriptions (decision 17); a file of version 2 gets the
-  # peers table of the public listener (protocol 12, both kinds since
-  # protocol 13); a file of another version is refused.
+  # The schema of the SQLite store, `user_version` 4 (`docs/features/hub.md`,
+  # "Store schema"). A file of version 2 gets the parent columns of a record
+  # (decision 8) and the peers table of the public listener (protocol 14;
+  # both kinds since protocol 15); a file of version 3 gets the peers table;
+  # a file of another version is refused.
 
-  # The event subscriptions of decision 17, in a new file and in a file of
-  # version 1.
+  # The event subscriptions of decision 17, in a new file.
   @subscriptions """
   CREATE TABLE subscriptions (
     id TEXT PRIMARY KEY,
@@ -24,9 +23,9 @@ defmodule Helyx.Hub.Store.SQLite.Schema do
   CREATE INDEX subscriptions_session ON subscriptions (session_id);
   """
 
-  # The peers of the public listener (protocol 12, both kinds since
-  # protocol 13, `docs/features/remote-hands.md`, "Peers"), in a new file and
-  # in a file of version 2.
+  # The peers of the public listener (protocol 14, both kinds since protocol
+  # 15, `docs/features/remote-hands.md`, "Peers"), in a new file and in a file
+  # of version 2 or 3.
   @peers """
   CREATE TABLE peers (
     name TEXT NOT NULL,
@@ -38,7 +37,7 @@ defmodule Helyx.Hub.Store.SQLite.Schema do
   """
 
   @doc false
-  def version, do: 3
+  def version, do: 4
 
   @doc "The SQL of the peers table, for a new file and for the upgrade."
   @spec peers_sql() :: String.t()
@@ -82,7 +81,10 @@ defmodule Helyx.Hub.Store.SQLite.Schema do
       visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'hub')),
       archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      parent_id TEXT,
+      parent_kind TEXT CHECK (parent_kind IN ('child', 'thread')),
+      CHECK ((parent_id IS NULL) = (parent_kind IS NULL))
     ) STRICT;
     CREATE INDEX records_owner ON records (owner, updated_at);
     CREATE INDEX records_visibility ON records (visibility, updated_at);

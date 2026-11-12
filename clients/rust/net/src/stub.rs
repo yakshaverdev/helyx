@@ -46,8 +46,8 @@ CWMMEJulYXkNbh+QdirwxOYtxjuhRANCAATTXf9pYymDcZoLeMDaMLjZP4JzC/79
 xXkcGLzaS64P8KVGji+EOyYoS2LUEiv5SP8aKa5bO+/39Ts0sOMPyf+z
 -----END PRIVATE KEY-----";
 
-/// The reply of the server to `sessions.live`, the first request of a
-/// connection: one session, `s1`.
+/// The reply of the server to `sessions.live` on a server with no Hub: one
+/// session, `s1`. The tests give it the id of the request that they answer.
 pub const LIVE: &str = r#"{"type":"res","id":"0","ok":true,"result":{"sessions":[{"id":"s1","instance_id":"i1","cwd":"/r","model":"fake/echo","status":"idle"}]}}"#;
 
 /// The next text frame of the client: a ping or a pong is passed over.
@@ -81,7 +81,7 @@ pub fn welcome<S: Read + Write>(ws: &mut WebSocket<S>, token: &str) {
     let expected = proof(token, &NONCE);
     assert_eq!(
         hello,
-        format!(r#"{{"type":"hello","protocol":13,"proof":"{expected}"}}"#)
+        format!(r#"{{"type":"hello","protocol":15,"proof":"{expected}"}}"#)
     );
     assert!(!hello.contains(token));
     welcome_frame(ws);
@@ -89,7 +89,7 @@ pub fn welcome<S: Read + Write>(ws: &mut WebSocket<S>, token: &str) {
 
 /// The `welcome` frame of the server.
 pub fn welcome_frame<S: Read + Write>(ws: &mut WebSocket<S>) {
-    ws.send(Message::text(r#"{"type":"welcome","protocol":13}"#))
+    ws.send(Message::text(r#"{"type":"welcome","protocol":15}"#))
         .unwrap();
 }
 
@@ -322,4 +322,11 @@ pub fn tcp_one(serve: impl FnOnce(TcpStream) + Send + 'static) -> (u16, JoinHand
         serve(stream);
     });
     (port, stub)
+}
+
+/// The source of a test that gives `server` at each turn of the network
+/// thread: the fixed server of a host with no data folder.
+pub fn fixed(server: &Server) -> impl Fn() -> Result<Server, String> + Send + Sync + 'static {
+    let server = server.clone();
+    move || Ok(server.clone())
 }

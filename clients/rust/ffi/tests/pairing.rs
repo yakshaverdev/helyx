@@ -58,17 +58,40 @@ fn until(changes: &Receiver<Snapshot>, done: impl Fn(&Snapshot) -> bool) -> Snap
     }
 }
 
-/// Answers the two requests of the welcome: the live sessions and the first
-/// page of the saved ones.
+/// The id of the request in `text`.
+fn request_id(text: &str) -> String {
+    let value = helyx_client_core::json::decode(text).expect("a request");
+    value
+        .get("id")
+        .and_then(|id| id.as_str())
+        .expect("an id")
+        .to_owned()
+}
+
+/// Answers the requests of the welcome: the records subscription, refused on
+/// a server with no Hub, the first page of the saved sessions, and the live
+/// sessions that the refusal allows.
 fn welcome_answers(ws: &mut WebSocket<stub::TlsStream>) {
-    let live = stub::next_text(ws);
-    assert!(live.contains("sessions.live"), "{live}");
-    ws.send(Message::text(stub::LIVE)).unwrap();
+    let records = stub::next_text(ws);
+    assert!(records.contains("records.subscribe"), "{records}");
+    let id = request_id(&records);
+    ws.send(Message::text(format!(
+        r#"{{"type":"res","id":"{id}","ok":false,"error":{{"code":"unknown_op","text":"no Hub"}}}}"#
+    )))
+    .unwrap();
     let saved = stub::next_text(ws);
     assert!(saved.contains("sessions.saved"), "{saved}");
-    ws.send(Message::text(
-        r#"{"type":"res","id":"1","ok":true,"result":{"items":[],"next":null}}"#,
-    ))
+    let id = request_id(&saved);
+    ws.send(Message::text(format!(
+        r#"{{"type":"res","id":"{id}","ok":true,"result":{{"items":[],"next":null}}}}"#
+    )))
+    .unwrap();
+    let live = stub::next_text(ws);
+    assert!(live.contains("sessions.live"), "{live}");
+    let id = request_id(&live);
+    ws.send(Message::text(format!(
+        r#"{{"type":"res","id":"{id}","ok":true,"result":{{"sessions":[{{"id":"s1","instance_id":"i1","cwd":"/r","model":"fake/echo","status":"idle"}}]}}}}"#
+    )))
     .unwrap();
 }
 

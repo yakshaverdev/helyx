@@ -5,6 +5,10 @@
 pub mod ask;
 pub mod cli;
 pub mod composer;
+pub mod controls;
 pub mod input;
+pub mod records;
 pub use helyx_client_net as net;
+#[cfg(target_os = "macos")]
+pub mod notify;
 pub mod settings;

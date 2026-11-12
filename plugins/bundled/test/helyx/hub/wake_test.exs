@@ -12,7 +12,8 @@ defmodule Helyx.Hub.WakeTest do
 
   @moduletag :tmp_dir
 
-  setup context, do: serve(context)
+  setup context,
+    do: serve(context, if(ms = context[:max_live], do: [max_live_sessions: ms], else: []))
 
   defp settled?(core, id) do
     snapshot = Events.snapshot(%Helyx.Session{id: id, core: core})
@@ -34,6 +35,56 @@ defmodule Helyx.Hub.WakeTest do
     Events.wait_until(fn -> idle?(context.hub) end)
     poll(context.hub)
     assert idle?(context.hub) and length(woken(context.core, session.id)) == 1
+  end
+
+  # A scheduled prompt that meets the idle stop of the session loads it again
+  # and is not lost (docs/features/idle-unload.md). The timer is armed by the
+  # test and fires while the session is suspended, so the timer message is in
+  # the mailbox before the prompt of the delivery Task.
+  test "a scheduled prompt that meets the idle stop of the session loads it", context do
+    {:ok, session} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
+    id = due(context, context.owner, session.id)
+    pid = Helyx.Session.pid(session)
+
+    Helyx.Test.Idle.arm_timer(session)
+    :erlang.suspend_process(pid)
+    Process.sleep(Helyx.Test.Idle.idle_ms() + Helyx.Test.Idle.load_ms())
+    poll(context.hub)
+    Events.wait_until(fn -> Process.info(pid, :message_queue_len) == {:message_queue_len, 2} end)
+    :erlang.resume_process(pid)
+
+    wait_row(context.hub, id, &(&1.last_outcome == "delivered"))
+    assert [{"wake up", _origin}] = woken(context.core, session.id)
+  end
+
+  # An outcome after the decide writes only on the row that the decide left,
+  # whose `run` it moved: the retry and the refusal of a delivery whose load
+  # failed after the decide go through `{:wake_outcome, ...}`, not the
+  # start-row writes of `{:wake_retry, ...}` and `{:wake_refused, ...}`
+  # (docs/features/idle-unload.md, docs/features/hub.md, decision 12).
+  test "an outcome after the decide writes on the row that the decide left", context do
+    {:ok, session} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
+
+    # A retry: the row of the start, with a next try.
+    retry = due(context, context.owner, session.id)
+    row = row(context.hub, retry)
+    :ok = Helyx.Hub.call(context.hub, {:wake_decide, row})
+    %{run: run, last_outcome: "unconfirmed"} = row(context.hub, retry)
+    assert run == row.run + 1
+    :ok = Helyx.Hub.call(context.hub, {:wake_outcome, row, :back})
+    assert %{run: back, next_try_at: next} = row(context.hub, retry)
+    assert back == row.run and next > now()
+
+    # A refusal: the row of a refusal before the send, with no next try.
+    refused = due(context, context.owner, session.id)
+    row = row(context.hub, refused)
+    :ok = Helyx.Hub.call(context.hub, {:wake_decide, row})
+    :ok = Helyx.Hub.call(context.hub, {:wake_outcome, row, :refused})
+
+    assert %{last_outcome: "refused", next_try_at: nil, delivery_id: nil, run: run} =
+             row(context.hub, refused)
+
+    assert run == row.run + 1
   end
 
   test "a stopped session is resumed, enters the live set, and its record moves", context do

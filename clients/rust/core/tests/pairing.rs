@@ -221,14 +221,14 @@ fn the_hello_of_a_token_and_of_no_token() {
     assert_eq!(
         frame,
         decode(&format!(
-            r#"{{"type":"hello","protocol":13,"proof":"{}"}}"#,
+            r#"{{"type":"hello","protocol":15,"proof":"{}"}}"#,
             proof("secret", &NONCE)
         ))
         .unwrap()
     );
     assert_eq!(
         hello(Credential::none()),
-        decode(r#"{"type":"hello","protocol":13}"#).unwrap()
+        decode(r#"{"type":"hello","protocol":15}"#).unwrap()
     );
 }
 
@@ -244,7 +244,7 @@ fn the_pairing_hello_is_the_frame_of_the_server() {
     let expected = format!(
         concat!(
             r#"{{"client":"phone","pair":{{"proof":"{}","public_key":"{}","signature":"{}"}},"#,
-            r#""protocol":13,"role":"client","type":"hello"}}"#
+            r#""protocol":15,"role":"client","type":"hello"}}"#
         ),
         proof("bootstrap-token-fixed", &NONCE),
         PUBLIC_KEY,
@@ -263,7 +263,7 @@ fn the_hello_of_a_paired_client_is_the_frame_of_the_server() {
     });
     let expected = format!(
         concat!(
-            r#"{{"client":"phone","protocol":13,"role":"client","signature":"{}","#,
+            r#"{{"client":"phone","protocol":15,"role":"client","signature":"{}","#,
             r#""type":"hello"}}"#
         ),
         SIGNATURE

@@ -83,7 +83,10 @@ defmodule Helyx.Session.EndSignalTest do
       end)
 
       assert_receive :suspended
-      Task.start(fn -> Session.prompt(session, "hi") end)
+      # A product text takes no `user_text/2` lookup, so the mailbox gets the
+      # prompt, the stop, and the subscribe: one call each
+      # (docs/features/skills.md).
+      Task.start(fn -> Session.prompt(session, "hi", origin: %{kind: :product, id: "p1"}) end)
       await(fn -> queued.(1) end, "the prompt")
       Task.start(fn -> GenServer.stop(pid) end)
       await(fn -> queued.(2) end, "the stop")

@@ -45,8 +45,18 @@ pub struct Snapshot {
     pub follow_line: Option<String>,
     /// The session that the host follows.
     pub followed: Option<String>,
-    /// The live sessions of the server, from `sessions.live`.
+    /// The live sessions of the server, from `sessions.live` on a server with
+    /// no Hub.
     pub live: Vec<LiveSession>,
+    /// The records of the user's feed, in the order of the server: waiting
+    /// first, then the newest activity, then the session id. The list of a
+    /// server with a Hub.
+    pub records: Vec<Record>,
+    /// Whether the user owns more records than `records` holds.
+    pub records_more: bool,
+    /// Whether the connection has a records feed: false on a server with no
+    /// Hub, whose list is `live`.
+    pub records_feed: bool,
     /// The saved sessions, newest first.
     pub saved: Vec<SavedSession>,
     /// The `next` of the last page of saved sessions, when more exist.
@@ -66,6 +76,32 @@ pub struct LiveSession {
     pub cwd: String,
     pub model: String,
     pub running: bool,
+}
+
+/// One record of the user's feed, as the sidebar shows it.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct Record {
+    pub session: String,
+    pub title: String,
+    /// The first prompt of the session, uncut: a host cuts it for its row.
+    pub prompt: String,
+    pub cwd: String,
+    pub model: String,
+    pub status: Status,
+    /// The session of the parent, when the record has one.
+    pub parent: Option<String>,
+    /// The last activity, as the server counts it.
+    pub active_at: u64,
+}
+
+/// The derived status of a record: `waiting` while the session has an open
+/// ask, else the status of its live session, or `stopped`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum Status {
+    Idle,
+    Running,
+    Waiting,
+    Stopped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -141,6 +177,10 @@ pub struct SessionState {
     pub notices: Vec<String>,
     /// The open asks, oldest first.
     pub asks: Vec<Ask>,
+    /// The ask that the host answers now: the oldest open ask of a kind that
+    /// the host reads (`form` or `approval`), when one is open
+    /// (`docs/features/ios-app.md`, "The open ask").
+    pub answering: Option<String>,
     /// The transcript rows, oldest first, with each tool result paired to its
     /// call.
     pub rows: Vec<Row>,
@@ -167,6 +207,56 @@ pub struct Ask {
     pub tool: String,
     /// The request of the ask, as a JSON text.
     pub request: String,
+}
+
+/// How a host draws a UI block: the view that `vocabulary::View` reads from a
+/// block, as owned values, with the fallback text of the block. The host parses
+/// no JSON.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum BlockView {
+    /// A `form`, the request of an ask: its questions, as the core reads them.
+    /// The transcript shows `text` when the form is not the open ask.
+    Form {
+        text: String,
+        questions: Vec<FormQuestion>,
+    },
+    /// An `approval`: the tool of the call, its provider (none for a Helyx
+    /// tool), and the JSON text of its arguments. The transcript shows `text`
+    /// when the approval is not the open ask.
+    Approval {
+        text: String,
+        tool: String,
+        provider: Option<String>,
+        arguments: String,
+    },
+    /// Any other kind, or a block whose fields the core cannot read: the host
+    /// shows `text`. A text that is not a block at all has an empty `kind`.
+    Text { kind: String, text: String },
+}
+
+/// One question of a `form`.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FormQuestion {
+    pub question: String,
+    pub header: String,
+    pub options: Vec<FormOption>,
+    /// A single pick when false. The core reads an absent field as false.
+    pub multi_select: bool,
+}
+
+/// One option of a question of a `form`.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FormOption {
+    pub label: String,
+    pub description: String,
+}
+
+/// One item of the answer of a `form`, in the order of its questions: the
+/// labels that the user picked, and the text of the Other line, or none.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FormAnswerItem {
+    pub selected: Vec<String>,
+    pub other: Option<String>,
 }
 
 /// A UI block that the session shows: of a tool call, or of the turn when

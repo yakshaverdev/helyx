@@ -77,8 +77,8 @@ fn a_pairing_saves_the_state_before_the_first_frame() {
     let (port, stub) = net::stub::tls_one(move |mut ws| {
         let public = net::stub::pairing(&mut ws, token, &stub_pin, name);
         // The state is saved at the welcome, before any later frame.
-        let live = net::stub::next_text(&mut ws);
-        assert!(live.contains("sessions.live"), "{live}");
+        let records = net::stub::next_text(&mut ws);
+        assert!(records.contains("records.subscribe"), "{records}");
         assert!(
             thread_store.saved.load(Ordering::SeqCst),
             "the state is saved before the first request"
@@ -149,7 +149,14 @@ fn a_paired_connection_signs_the_new_nonce() {
     let (commands, receive) = channel();
     let thread_shared = shared.clone();
     let thread = std::thread::spawn(move || {
-        net::run_with(&server, None, &thread_shared, &receive, &|| {}, fast())
+        net::run_with(
+            &net::stub::fixed(&server),
+            None,
+            &thread_shared,
+            &receive,
+            &|| {},
+            fast(),
+        )
     });
     let (first, second) = stub.join().unwrap();
     // The signature of a later connection is of its own nonce.
@@ -188,7 +195,7 @@ fn a_wrong_pin_fails_before_any_frame() {
     let shared = Mutex::new(Shared::new());
     let (_commands, receive) = channel();
     let line = net::run_with(
-        &Server::paired(state),
+        &net::stub::fixed(&Server::paired(state)),
         None,
         &shared,
         &receive,
@@ -220,7 +227,7 @@ fn a_server_of_tls_12_only_is_refused() {
     let shared = Mutex::new(Shared::new());
     let (_commands, receive) = channel();
     let line = net::run_with(
-        &paired(port, "phone", Key::generate()),
+        &net::stub::fixed(&paired(port, "phone", Key::generate())),
         None,
         &shared,
         &receive,
@@ -283,7 +290,7 @@ fn a_revoked_app_stops_with_the_pair_again_line() {
     let shared = Mutex::new(Shared::new());
     let (_commands, receive) = channel();
     let line = net::run_with(
-        &paired(port, name, Key::generate()),
+        &net::stub::fixed(&paired(port, name, Key::generate())),
         None,
         &shared,
         &receive,
@@ -314,7 +321,7 @@ fn the_welcome_deadline_covers_the_tls_handshake_and_the_upgrade() {
     let (_commands, receive) = channel();
     let started = Instant::now();
     let line = net::run_with(
-        &paired(port, "phone", Key::generate()),
+        &net::stub::fixed(&paired(port, "phone", Key::generate())),
         None,
         &shared,
         &receive,
@@ -346,7 +353,7 @@ fn the_welcome_deadline_covers_the_tls_handshake_and_the_upgrade() {
     });
     let started = Instant::now();
     let line = net::run_with(
-        &paired(port, "phone", Key::generate()),
+        &net::stub::fixed(&paired(port, "phone", Key::generate())),
         None,
         &shared,
         &receive,

@@ -160,6 +160,26 @@ impl Connection {
         self.perform(Ok(Operation::abort(&session)))
     }
 
+    /// Stops `session`: a running turn aborts first, and the session ends.
+    /// Gives the number of the send, whose outcome comes in the snapshot.
+    pub fn stop(&self, session: String) -> Result<u64, NetError> {
+        self.perform(Ok(Operation::stop(&session)))
+    }
+
+    /// Switches `session` to `model` for its next turn. The core checks the
+    /// ref before it goes. Gives the number of the send, whose outcome comes
+    /// in the snapshot.
+    pub fn set_model(&self, session: String, model: String) -> Result<u64, NetError> {
+        self.perform(Operation::set_model(&session, &model))
+    }
+
+    /// Compacts `session` with `text` as the instructions, or with none when
+    /// the text is empty. Gives the number of the send, whose outcome comes
+    /// in the snapshot.
+    pub fn compact(&self, session: String, text: String) -> Result<u64, NetError> {
+        self.perform(Operation::compact(&session, &text))
+    }
+
     /// Answers the ask `ask_id` of `session`. `answer` is the answer as a JSON
     /// text, which the core checks before it goes. Gives the number of the
     /// send, whose outcome comes in the snapshot.
@@ -272,11 +292,15 @@ fn start(
         let _ = listener.on_snapshot(snapshot);
     };
     let thread = std::thread::spawn(move || {
+        // A binding host gives one server: every connection of the thread
+        // reaches it.
+        let source = move || Ok::<_, String>(server.clone());
+        let source: &helyx_client_net::Source = &source;
         match store {
             Some(store) => {
-                helyx_client_net::run(&server, Some(store.as_ref()), &shared, &receive, &notify)
+                helyx_client_net::run(source, Some(store.as_ref()), &shared, &receive, &notify)
             }
-            None => helyx_client_net::run(&server, None, &shared, &receive, &notify),
+            None => helyx_client_net::run(source, None, &shared, &receive, &notify),
         };
     });
     Arc::new(Connection {

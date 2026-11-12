@@ -84,8 +84,9 @@ defmodule Helyx.Provider.HarnessEpipeTest do
     """)
 
     core = :"core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [Codex]})
-    session = start(%{core: core, work: dir, sessions: Path.join(dir, "sessions")})
+    sessions = Path.join(dir, "sessions")
+    start_supervised!({Helyx.Core, name: core, plugins: [Codex], sessions_dir: sessions})
+    session = start(%{core: core, work: dir, sessions: sessions})
     :ok = Session.prompt(session, String.duplicate("x", 400_000))
 
     group = wait_for_pid(Path.join(dir, "group"))

@@ -51,7 +51,7 @@ An answer is the `res` of the request on the wire, and a term with no answer is 
 
 ## Codec on the wire
 
-The wire of ADR 0008 (`docs/features/wire-protocol.md`), protocol 13:
+The wire of ADR 0008 (`docs/features/wire-protocol.md`), protocol 15:
 
 - `hello` gets five fields: `role`, `"client"` (the default) or `"hands"`; `runner`, a `name`, required with the role `hands`; `client`, a `name`, required with the role `client`; `pair`, the pairing handshake of "Pairing and the public listener"; and `signature`, the handshake of a paired peer. A `hello` carries `pair` or `signature`, never both. A client is not a runner, so the name of a client is in `client`, never in `runner`.
 - A runner registers with one `req` `hands.register {runner, folder}`; the result is `{lease_ms}`.
@@ -175,7 +175,7 @@ A transport option `:hands_lease_ms` of `Helyx.Transport.WebSocket`, an integer 
 
 - `Helyx.Session.start/2` and `resume/2`: the option `:hands`, a runner name; the session file records it. The tool set comes from the capability report of the hands, local and remote. The `:provider_opts` of a session with `:hands` are a keyword list whose values encode as JSON, else the start fails before the session starts.
 - A public entry point through which a connection hands Core a remote hands (ADR 0012 §1). Name and shape in the entry-point slice.
-- `Helyx.Transport.WebSocket`: the roles `hands` and `client`, `hands.*`, the option `:hands_lease_ms`, the option `:public` for the second listener, and the pairing operations of "Pairing and the public listener". Protocol 13.
+- `Helyx.Transport.WebSocket`: the roles `hands` and `client`, `hands.*`, the option `:hands_lease_ms`, the option `:public` for the second listener, and the pairing operations of "Pairing and the public listener". Protocol 15.
 - `Helyx.Transport.WebSocket.Authority`: the optional callback `paired/4`, the credential of a paired client, which the Hub answers with the default owner.
 - `Helyx.Transport.WebSocket.TLS` (new): `ensure/1` and `pin/1` and `verify/2` of the certificate.
 - `Helyx.Transport.WebSocket.Pairing` (new): the links, the peer connections, the two handshakes, and the hands registrations.

@@ -38,11 +38,23 @@ defmodule Helyx.Core do
   configuration of `Helyx.Sessions` adds `:sessions_dir`, the folder of the
   session files, and `:model`, the default model ref; a path that is not
   absolute and valid, or a model that does not parse, refuses the start with
-  `{:invalid_option, key}`. Core runs at most 64 sessions
+  `{:invalid_option, key}`. `:idle_stop_ms` is the time with no work after
+  which a session of the Core stops, a positive integer or nil, default nil;
+  any other value refuses the start with `{:invalid_option, :idle_stop_ms}`
+  (`docs/features/idle-unload.md`). Core runs at most 64 sessions
   (`docs/features/server-management.md`).
 
   Several Core instances can run in one node under different names. Sessions
   and their subscribers are scoped to the Core that started them.
+
+  With `:sessions_dir`, Core makes the folder and takes the lock of the data
+  folder at its start (`docs/features/session-lock.md`). A second Core on the
+  folder gives `{:error, {:data_folder_locked, dir}}`; other errors are
+  `{:error, {:lock_failed, text}}` and `{:error, {:create_failed, reason}}`.
+  A failed start reaches a caller that does not trap exits as an exit signal,
+  so a caller that wants `{:error, {:data_folder_locked, dir}}` must trap
+  exits or start Core under a supervisor. If the lock ends while Core runs,
+  Core stops. Perl is required when `:sessions_dir` is given.
   """
 
   use Supervisor
@@ -52,7 +64,7 @@ defmodule Helyx.Core do
   # The live sessions of one Core (server-management.md, "Bounds").
   @max_sessions 64
 
-  @doc "Child spec for a product's supervision tree. Takes `name:`, `plugins:`, `recall_ms:`, `sessions_dir:`, and `model:`."
+  @doc "Child spec for a product's supervision tree. Takes `name:`, `plugins:`, `recall_ms:`, `sessions_dir:`, `model:`, and `idle_stop_ms:`."
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
     %{
@@ -68,9 +80,11 @@ defmodule Helyx.Core do
     name = Keyword.get(opts, :name, __MODULE__)
     plugins = Keyword.get(opts, :plugins, [])
     recall_ms = Keyword.get(opts, :recall_ms, @recall_ms)
+    idle_stop_ms = Keyword.get(opts, :idle_stop_ms)
 
     with :ok <- check(:sessions_dir, opts[:sessions_dir]),
          :ok <- check(:model, opts[:model]),
+         :ok <- check_idle_stop_ms(idle_stop_ms),
          {:ok, table} <- Helyx.Core.Plugins.resolve(plugins),
          {:ok, providers} <- providers(table),
          {:ok, ids} <- Helyx.Core.Plugins.provider_ids(providers),
@@ -85,10 +99,17 @@ defmodule Helyx.Core do
         hooks: hooks,
         recall_ms: recall_ms,
         sessions_dir: opts[:sessions_dir],
-        model: opts[:model]
+        model: opts[:model],
+        idle_stop_ms: idle_stop_ms
       ]
 
-      Supervisor.start_link(__MODULE__, {name, plugins, meta}, name: name)
+      case Supervisor.start_link(__MODULE__, {name, plugins, meta}, name: name) do
+        {:error, {:shutdown, {:failed_to_start_child, Helyx.Core.FolderLock, reason}}} ->
+          {:error, reason}
+
+        result ->
+          result
+      end
     end
   end
 
@@ -97,6 +118,18 @@ defmodule Helyx.Core do
       do: :ok,
       else: {:error, {:invalid_recall_ms, ms}}
   end
+
+  # The idle stop of a session, in ms: a positive integer up to the largest
+  # time that the timer takes, or nil for no rule (docs/features/idle-unload.md).
+  defp check_idle_stop_ms(nil), do: :ok
+
+  defp check_idle_stop_ms(ms) when is_integer(ms) and ms > 0 do
+    if ms <= Helyx.Session.Server.IdleStop.max_ms(),
+      do: :ok,
+      else: {:error, {:invalid_option, :idle_stop_ms}}
+  end
+
+  defp check_idle_stop_ms(_ms), do: {:error, {:invalid_option, :idle_stop_ms}}
 
   # The folder goes into file paths, as the cwd of a session does. A
   # relative folder would move with the working directory of the node.
@@ -127,25 +160,46 @@ defmodule Helyx.Core do
         plugin.child_spec(core: name)
       end
 
-    children =
-      [
-        # The child spec holds the plugin table, the provider ids, the recall
-        # limit, and the server configuration, so a restart keeps them.
-        {Registry, keys: :unique, name: sessions_registry(name), meta: meta},
-        {Task.Supervisor, name: task_supervisor(name)},
-        # The memory sync workers, apart from the sessions so that the cap
-        # counts sessions only (#707). It is before the session supervisor, so
-        # it stops after the sessions and takes the batches of their stops.
-        {DynamicSupervisor, name: sync_supervisor(name), strategy: :one_for_one},
-        # The session process loads a resumed transcript, so the start
-        # message holds no transcript for the supervisor to keep (#103, #589).
-        # The supervisor counts its children one start at a time, so
-        # concurrent starts cannot pass the cap.
-        {DynamicSupervisor,
-         name: session_supervisor(name), strategy: :one_for_one, max_children: @max_sessions}
-      ] ++ plugin_children
+    # The lock is first, so it is taken before any session and released after
+    # all of them; its end stops Core (docs/features/session-lock.md).
+    lock =
+      case Keyword.fetch!(meta, :sessions_dir) do
+        nil ->
+          []
 
-    Supervisor.init(children, strategy: :one_for_one)
+        dir ->
+          [
+            Supervisor.child_spec({Helyx.Core.FolderLock, {dir, name}},
+              restart: :temporary,
+              significant: true
+            )
+          ]
+      end
+
+    children =
+      lock ++
+        [
+          # The child spec holds the plugin table, the provider ids, the recall
+          # limit, and the server configuration, so a restart keeps them.
+          {Registry, keys: :unique, name: sessions_registry(name), meta: meta},
+          # The watchers of the session feed, one entry for each type that a
+          # watcher names (docs/features/session-feed.md). The supervisor stops
+          # its children in reverse order, so the feed outlives the sessions.
+          {Registry, keys: :duplicate, name: feed_registry(name)},
+          {Task.Supervisor, name: task_supervisor(name)},
+          # The memory sync workers, apart from the sessions so that the cap
+          # counts sessions only (#707). It is before the session supervisor, so
+          # it stops after the sessions and takes the batches of their stops.
+          {DynamicSupervisor, name: sync_supervisor(name), strategy: :one_for_one},
+          # The session process loads a resumed transcript, so the start
+          # message holds no transcript for the supervisor to keep (#103, #589).
+          # The supervisor counts its children one start at a time, so
+          # concurrent starts cannot pass the cap.
+          {DynamicSupervisor,
+           name: session_supervisor(name), strategy: :one_for_one, max_children: @max_sessions}
+        ] ++ plugin_children
+
+    Supervisor.init(children, strategy: :one_for_one, auto_shutdown: :any_significant)
   end
 
   @doc "Returns the plugins registered for an interface, in registration order."
@@ -177,7 +231,7 @@ defmodule Helyx.Core do
 
   @doc false
   # An option of the server configuration, or nil.
-  @spec config(name(), :sessions_dir | :model) :: String.t() | nil
+  @spec config(name(), :sessions_dir | :model | :idle_stop_ms) :: String.t() | pos_integer() | nil
   def config(name, key), do: meta!(name, key)
 
   # Every Core sets these meta keys at start, so `:error` gets the answer of a
@@ -196,6 +250,8 @@ defmodule Helyx.Core do
   def max_sessions, do: @max_sessions
   @doc false
   def sessions_registry(name), do: Module.concat(name, Sessions)
+  @doc false
+  def feed_registry(name), do: Module.concat(name, Feed)
   @doc false
   def task_supervisor(name), do: Module.concat(name, Tasks)
   @doc false

@@ -254,8 +254,11 @@ defmodule Helyx.Provider.ClaudeCode.HelyxToolsTest do
     test "in a session: the tool runs on the hands, and the transcript has one call and one result",
          %{bin: bin, work: work, sessions: sessions} do
       core = :"core_#{System.unique_integer([:positive])}"
+      sessions = Path.join(sessions, "tools")
 
-      start_supervised!({Helyx.Core, name: core, plugins: [ClaudeCode, Fake, Helyx.Tool.Bash]},
+      start_supervised!(
+        {Helyx.Core,
+         name: core, plugins: [ClaudeCode, Fake, Helyx.Tool.Bash], sessions_dir: sessions},
         id: :tools_core
       )
 

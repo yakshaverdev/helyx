@@ -1,94 +1,164 @@
-# Session lock
+# Data folder lock
 
-Ticket #579. One OS process at a time has a session open.
+Tickets #579, #589, #605, #629, #661, #833. One Core at a time holds a data
+folder.
 
 ## Goal
 
-User story: I open a session that another Helyx process already has open, for example a session that another OS process holds the lock of. The second open fails at once with one line, `helyx: could not start the agent: {:session_locked, "<id>"}`, and exit status 1, before the TUI draws. A session whose process crashed, or was killed with SIGKILL, opens normally.
+User story: I start a second Helyx server, or a product starts a second Core,
+on a data folder that a Core holds. The start fails with
+`{:error, {:data_folder_locked, dir}}`, and `helyx serve` prints
+`helyx: could not start the agent: another Helyx process holds the data folder
+<dir>`. One perl process runs for each Core, not one for each session. A Core
+whose process crashed, or was killed with SIGKILL, frees the folder.
 
-Since the revision of 2026-11-11 (`docs/features/print-mode.md`), a client of the server of the data folder does not meet this lock: the server owns its sessions, so a second TUI or a print run joins a session that runs instead of failing. The line stays for a lock that another OS process holds.
+Before this change, each session that had a file took a `flock` on
+`<id>.lock`. All clients now use one server, so a second OS process no longer
+opens session files, and the lock of each session became one lock for the data
+folder of each Core.
 
-Before this change, two processes could open one session. Both appended to the one session file, and with a harness model both continued one provider session.
+## Decisions
 
-Decisions (owner, 2026-10-14):
-
-1. **An OS file lock.** The lock is a `flock` with `LOCK_EX|LOCK_NB` on `<id>.lock`, next to the session file `<id>.jsonl`. A small perl program holds it: it opens the lock file, takes the lock, writes the result on stdout, and then waits on stdin. The program runs on a port that the session server process owns. When that process stops, crashes, or the node halts, the port closes, perl reads the end of its stdin and exits, and the kernel releases the lock. So there is no stale rule and no pid in the file. Perl is a requirement of Core when `:sessions_dir` is given; Erlang has no `flock`, and the bash tool requires perl already.
-2. **Core takes the lock.** The session server process of `Helyx.Session.start/2` and `Helyx.Session.resume/2` takes it when `:sessions_dir` is given, before `Helyx.Session.File` writes anything (a resume can append a newline), so the port of the lock has one owner for its whole life (#589). The take and the open of the file run in the session process after its `init/1`, in `handle_continue/2`, so the session supervisor does not wait for them, and `start/2` or `resume/2` waits for their result (#605). So every product and every worker (#578) gets it. `--list` reads without the lock. A held lock gives `{:error, {:session_locked, id}}`.
-3. **`--resume` with no id does not skip a busy session.** When the newest session of the folder is locked, the open fails with the line above. The user picks another session with `--session` or `--list`.
-4. **Release.** The lock lives as long as the session server process. A normal stop, a crash, and the halt of a print run that ends its session all release it, because the port closes; a print client that is killed with SIGKILL leaves its session open in the server, and the lock with it. The lock file stays on disk; only the `flock` on it counts.
-5. **Perl ends while the session runs.** The kernel releases the lock, and another process can then open the session. The session watches the port: when it closes, the session stops saving and goes on in memory, by the path of a write failure (`Helyx.Session.Server.Records.stop_saving/3`). It sends one `:notice` event, "the session lock is lost; the rest of this session is not saved", with the turn id of a turn that runs. It does not take the lock again: a second process may hold it by then, and the session cannot tell. It writes no more lines, so a second process that opens the session finds one writer and one chain (#629, joint review of 2026-10-16). The snapshot field `persisting` is false from then on, so a client that subscribes after the notice still tells the user: the TUI shows `Helyx.Reason.text(:not_saved)` at its mount, and print mode writes it to stderr. `persisting` is false also for a session with no file and after a write failure. Before #629, the session kept saving without the lock and the snapshot had `lock_lost` (#606).
-6. **File commands of the holder (#661).** After its answer, perl reads commands on stdin until a byte that is no command or the end of stdin: `w` with a path and data writes the file with mode 0600 through `<path>.tmp` (removed first, then made with `O_EXCL|O_NOFOLLOW`) and a rename, `r` with a path removes the file, where a file that is not there counts as removed, `m` with two paths renames the first to the second, and `c`, `a`, and `k` make, append to, and close the copy of a removal, which perl holds open (#833, `session-edit.md`). Each field is a 32-bit length and its bytes. Each command gets the line `done` or `fail <reason>`, read with the bound and the deadline of the answer of the take. `Helyx.Session.Lock.write_file/3`, `remove_file/2`, `rename_file/3`, `create_copy/2`, `append_copy/2`, and `close_copy/2` send them; the data of a write comes in a closure, so its text is in the one call that sends it. A session sends no command: its release sends `x`, which ends perl as before. The commands let a product keep a file that only the holder of the lock changes: perl holds the `flock` for its whole life, so no command runs after the lock has ended (`docs/features/serve.md`, decision 8).
+1. **The flock and its holder.** The lock is a `flock` with `LOCK_EX|LOCK_NB`
+   on `<sessions_dir>/core.lock`, held by the perl program of
+   `Helyx.Session.Lock` on a port. When the owner of the port ends, the port
+   closes, perl reads the end of its stdin and exits, and the kernel releases
+   the lock, so there is no stale rule and no pid in the file. Perl is a
+   requirement of Core when `:sessions_dir` is given.
+2. **Core takes the lock.** `Helyx.Core.FolderLock` is the first child of
+   `Helyx.Core`, and only when `:sessions_dir` is set, so the lock is taken
+   before the Registry and the session supervisor exist. A supervisor stops
+   its children in reverse order, so the lock is released after every session,
+   sync worker, and edit Task has stopped. A second Core on the folder, in this
+   node or in another OS process, fails at its start.
+3. **A lost lock stops Core.** When perl ends while Core runs, the child stops
+   with `{:data_folder_lock_lost, dir}`. Its child spec is `temporary` and
+   `significant`, and the Core supervisor has `auto_shutdown: :any_significant`,
+   so Core stops all its children and exits with `:shutdown`. Before it
+   stops, the child kills the sessions and the edit Tasks of the Core, so
+   none of them drains or saves into a folder that another Core may own.
+   There is no
+   "go on unsaved" mode for this cause. The `persisting` field of the snapshot
+   stays for a failed write.
+4. **A session writes only in the folder of its Core.** `:sessions_dir` of
+   `Helyx.Session.start/2` and `resume/2` is absent (no file) or equal to the
+   `:sessions_dir` of the Core; any other value gives
+   `{:error, {:invalid_option, :sessions_dir}}`.
+5. **A file edit excludes the sessions through the Registry.** The edit
+   registers `{:edit, id}`, then looks up the id. The session is in the
+   Registry under its id from before its `init/1`, and its open looks up
+   `{:edit, id}` after its own registration, so at least one of the two sees
+   the other. A session of the id, or another edit of the id, is
+   `{:error, :running}`; an open under an edit is `{:error, :editing}`. Both
+   sides write their own key first, then read the other's. The edit writes the
+   copy, the rename, and the removes in the BEAM, in its Task
+   (`docs/features/session-edit.md`).
+6. **File commands of the holder.** Only `w` (write a file with mode 0600
+   through a temporary file and a rename) and `r` (remove a file) stay, for
+   `helyx serve`, which keeps `server.lock` and `server.json`. The copy
+   commands and the rename command of the session edit go.
 
 ## Interface changes
 
-- `Helyx.Session.start/2` and `resume/2` with `:sessions_dir`: new errors `{:session_locked, id}`, `{:lock_failed, text}`, and `:open_timeout` (#665, an open past its deadline in Bounds). `text` is one sentence for each cause: perl is not on the PATH, the lock file cannot be opened (with the OS reason), or perl gave no answer in time.
-- With two Cores in one node, a resume of a session that the other Core holds now gives `{:session_locked, id}`. A second resume in the same Core gave `{:session_locked, id}` too, in place of `{:already_started, pid}`: the Registry rejects it before the `init/1`. Since #657 it attaches to the running session (`docs/features/server-management.md`).
-- A new `:notice` event text: the lock is lost (decision 5).
-- `Helyx.Session.Snapshot` has the field `persisting`, a boolean (decision 5, #629, which replaces `lock_lost` of #606). A client is a tolerant reader (ADR 0006). The client text is `Helyx.Reason.text(:not_saved)`.
-- `CodingAgent.error_text/1`: the errors of the lock reach a client as the text of `{:start_failed, text}` of the server, which `CodingAgent.error_text/1` prints after `could not start the agent: `. `text` is `Helyx.Reason.text/1` of the term, so `{:session_locked, "<id>"}`, `{:lock_failed, "<text>"}`, or `:open_timeout`.
-- New Core module `Helyx.Session.Lock` (`@moduledoc false`). Core cannot call `Helyx.Watchdog`, which is plugin code (ADR 0005).
+- New Core errors: `{:data_folder_locked, dir}`, `{:lock_failed, text}`, and
+  `{:create_failed, reason}`. `Helyx.Core` maps the failed start of its lock
+  child to them.
+- `Helyx.Session.Lock.take/1` gives `{:error, :locked}` in place of
+  `{:error, {:session_locked, name}}`.
+- Removed session errors: `{:session_locked, id}` and `{:lock_failed, text}`.
+  New open error: `:editing`.
+- Removed notice text: "the session lock is lost".
+- The `save` tuples of `Helyx.Session.Server.State` have two elements:
+  `{:saving, file}` and `{:stopped, unsaved_from}`. `State.lock/1` goes.
+- `Helyx.Session.Server.Stop.shutdown_ms/0` is 30,000 ms: the provider close
+  (5,000) plus the hands stop (22,000) plus the load shutdown (3,000). The
+  wire `stop` deadline stays 77,000 ms, 1,000 ms above the sum.
 
 ## Replaced mechanism
 
-Two writers on one session file (#266). The tree rules of the file stay: they read a file that two writers made before this change, or a copy by hand. What changes:
+The lock of each session. A test of each property of the old lock keeps it:
 
-1. Two Cores that resume one session in one `sessions_dir` no longer both run: the second gets `{:session_locked, id}`. Three tests used that state to make two writers or two instances of one id: "each Core writes its own branch" and "a subscribe to the id in another Core leaves the events of the first" (`test/helyx/session/instance_test.exs`), and "a resume of a branch with a fork below its label starts a fresh program session" (`test/helyx/session/provider_process_test.exs`). Each kept its property: the second Core resumes a hard link of the file in a second sessions folder (`Helyx.Test.SessionCase.link_session/2`), so both write the one file and each has its own lock file. #629 deletes the first and the third: the file is one chain, so a branch and a fork are no longer a state of the file. The second stays.
-2. "keeps no copy after a start and after a failed start" (`test/helyx/session/persistence_test.exs`) needs a start that fails in the supervisor. A second resume in one folder fails in the supervisor: the Registry rejects it before the `init/1`, so before the take, and the error is `{:session_locked, id}`. Since #589 the session process loads the transcript, so no copy of it passes through the supervisor.
-3. "resume after a crash mid-turn" (`test/helyx/session/persistence_test.exs`) kills the session and resumes it: the kill frees the lock only when perl exits, so the test waits for the free lock.
-4. `docs/features/session-instance.md`, "Two Cores", `docs/features/coding-agent.md`, "Session file", and `docs/features/print-mode.md`, "Accepted holes", change to say this.
-5. #589 moves the take into the `init/1` of the session process. `Lock.own/1`, which connected the port in the `init/1` and refused a port that had closed, and `Lock.unlink/1`, with the release of the caller around the start request, go. `Lock.hold/2` refuses a port that closed during the open in place of `own/1`. The test "a start request that exits frees the lock" becomes "a start request that exits takes no lock and writes nothing". A resume of a linked file of an id that the same Core runs gave `{:already_started, pid}` and gives `{:session_locked, id}`. The session supervisor no longer hibernates after each message (#103): the start message holds no transcript any more, and the two tests of #103 in `test/helyx/session/persistence_test.exs` stay as guards.
-6. #605 moves the take and the open out of the `init/1`, into `handle_continue/2`, so the session supervisor does not wait for them. The test "a caller killed during its open leaves a running session that holds the lock" goes: a session whose caller ended during the open stops after it, and "a caller that ends during its open leaves no session and no lock" (`test/helyx/session/lock_test.exs`) tests that. "a start does not wait for the open of another session" holds one open in its function and starts a second session.
+| Deleted test | Property that keeps it |
+| ------------ | ---------------------- |
+| `lock_test` "a session that another Core holds does not open, the same Core attaches, and its file is unchanged" | `folder_lock_test` "a second Core on one sessions folder fails at its start with :data_folder_locked" |
+| `lock_test` "the newest session of the folder is not skipped when it is locked" | The folder has one Core, so no second process holds a session of it |
+| `lock_test` "a normal stop frees the lock before it returns" | `folder_lock_test` "a stop of Core frees the folder for the next Core" |
+| `lock_test` "a killed session frees its lock" | The ownership row of a killed holder: the port closes, perl exits, the kernel frees the lock |
+| `lock_test` "perl killed while the session runs gives one notice, and the session stops saving" | `folder_lock_test` "a Core whose lock ends stops" |
+| `lock_test` "a start whose lock file cannot be opened fails and writes nothing" | `folder_lock_test` "a core.lock that is not a regular file fails the start, and no perl is left" |
+| `lock_test` "a resume whose lock file cannot be opened fails and changes nothing" | The same test; a Core cannot start on such a folder |
+| `lock_test` "the moved deadline of the load still kills" | `open_test` "the deadline of the load grows with the file", with one `Killer.arm` before the load |
+| `lock_test` "a stop past the release bound returns, and perl frees the lock when it ends" | `folder_lock_test` "a stop of Core frees the folder for the next Core", within the release bound |
+| `lock_test` "an open whose perl ends during it sends the exit of the port" | `folder_lock_test` "a Core whose lock ends stops" |
+| `lock_test` "a copy is made with mode 0600, appended to, and gets its mode at its close" | `sessions_edit_test` "a removal keeps the mode of the session file" |
+| `lock_test` "a file command after the end of the lock writes, renames, and removes nothing" | The BEAM writes the copy and the rename in the edit Task, which a dead process does not run |
+| `lock_test` "a lock path that is not a regular file fails, and no perl is left" | `folder_lock_test` "a core.lock that is not a regular file fails the start, and no perl is left" |
+| `sessions_edit_test` "a lock that another process holds is refused" | The Core lock: no other OS process writes the folder |
+| `sessions_edit_test` describe "a session that lost its lock" | `sessions_edit_test` "an edit in progress refuses a resume and a second edit, and then completes" |
+| `sessions_edit_test` describe "a removal whose lock holder ends" | A dead edit Task writes nothing; the Registry removes its key |
+| `print_test` "a session open in another process is one line and 1, with -p and without" | `folder_lock_test` test 1, and the one line of `CodingAgent.error_text/1` |
+| `attach_test` "a newest session that another OS process has open is not skipped" | A newest session with a model of an unknown provider is not skipped |
+
+`lock_test` became `open_test` for the tests that stay. `Lock.hold/2` and the
+copy commands went with the per-session lock.
 
 ## States
 
-| External state | What the open does | What the running session does |
-| -------------- | ------------------ | ----------------------------- |
-| perl not on the PATH | `{:lock_failed, text}`; the session file is not written (a start made its folders before the take) | not reached |
-| folder of the lock file missing | the take makes no folder (#683: `Helyx.Session.File.mkdir/2` makes them before a start, and a resume picked a file that exists), so a folder removed before the take gives `{:lock_failed, text}` with the OS reason; nothing is written | not reached |
-| perl does not start or ends before its answer | `{:lock_failed, text}` with its output; nothing is written | not reached |
-| no answer in the bound | the port closes, `{:lock_failed, text}`; nothing is written | not reached |
-| lock file cannot be opened, or is not a regular file | `{:lock_failed, text}` with the OS reason; nothing is written | not reached |
-| lock held by another process | `{:session_locked, id}`; nothing is written | not reached |
-| lock free | the session process takes the lock after its `init/1`, then writes or reads the file | holds the lock |
-| owner stops normally | not reached | `terminate/2` sends one byte, perl exits, and the stop waits for its exit within the bound. The lock is free when the stop returns, or, past the bound, the release is unconfirmed and perl frees the lock when it ends |
-| owner crashes or is killed | not reached | the port closes with the process; perl exits on the end of its stdin; the release is asynchronous |
-| node halts (print mode) | not reached | the OS closes the pipe; perl exits |
-| perl killed while the session runs | not reached | one `:notice`; the session stops saving and goes on in memory (decision 5). When the session handles the exit of the port before the first subscribe, the notice reaches no client; the snapshot of the later subscribe has `persisting: false`, and the client shows the not-saved text. The close of the port alone does not give that order: a subscribe already in the mailbox runs first, and its snapshot has `persisting: true` |
-| the open fails after the lock is taken (file error, model error) | the session releases the lock, sends the error to the caller, and stops; `start/2` or `resume/2` returns it | not reached |
-| perl ends during the open (the resume read can take long) | the open returns. The session traps exits from before the open, so it handles the exit of the port as in the row "perl killed while the session runs" and stops saving. A client call that is in the mailbox before that exit runs first: its snapshot can say `persisting: true`, and its write can append. After the exit, snapshots say `persisting: false` and nothing is saved. This is the same window as for a lock lost while the session runs (#639) | not reached |
-| the open raises (a bug) | the raise goes on, and the session process crashes. The port is linked to the session process and closes with it, so perl exits and frees the lock, as for a crash (#623). The caller gets the crash as an error value, `{:error, {exception, stacktrace}}`, in place of the raise (a probe of the review, `docs/reviews/2026-10-15-session-lock-owner.md`) | not reached |
-| the session crashes after the open (the hands do not start) | the port closes with the process, as for a crash of a running session. The caller gets the crash as an error value. No boundary makes the hands start fail, so a probe of the review shows it (`docs/reviews/2026-10-17-session-start-off-supervisor.md`). A new session leaves its file | not reached |
-| the Core or its session supervisor is gone at the start request | no session process starts, so no lock is taken and nothing is written; the caller exits | not reached |
-| the caller dies during the open | the session process owns the port, so the caller holds nothing. The session monitors the caller from its `init/1` and takes the lock only after a go message that the caller sends after its own monitor of the session; a caller that ends before the go leaves no take. When the open returns and the caller is gone, the session releases the lock and stops, so no process and no lock are left. The open runs to its end first, within its bounds below, so at most to the deadline of the open (#665). A new session leaves its file (#605) | not reached |
-| the open passes its deadline (a slow disk) | the session process is killed, as in the row of a crash: the port closes and perl frees the lock. The caller gets `{:error, :open_timeout}` (#665). Any other kill of the session before its open result gives the same error: a Core stop kills an open after the shutdown of the session process (31,000 ms), which a long load can pass (row "wait of the caller"; probe of the review of #834, round 4: a held load of a 40 MB file gave `:open_timeout` at 31,003 ms and freed the lock) | not reached |
-| the caller dies after the open, before `start/2` or `resume/2` returns | the session runs, as after a start that returned | not reached |
+| State | Core start | A running Core |
+| ----- | ---------- | -------------- |
+| the folder is free | Core makes the folder (`Helyx.Session.File.mkdir/1`) and takes `core.lock` | holds the lock |
+| another Core holds the folder | `{:error, {:data_folder_locked, dir}}`; nothing written | not reached |
+| the folder cannot be made | `{:error, {:create_failed, reason}}` | not reached |
+| perl not on the PATH | `{:error, {:lock_failed, "perl is not on the PATH; Helyx needs it for its file locks"}}` | not reached |
+| perl gives no answer, or its output breaks the bound | `{:error, {:lock_failed, text}}` | not reached |
+| `core.lock` cannot be opened, or is not a regular file | `{:error, {:lock_failed, text}}` with the OS reason; no perl is left | not reached |
+| perl ends while Core runs | not reached | the child stops with `{:data_folder_lock_lost, dir}`, and Core stops with `:shutdown` |
+| Core stops normally | not reached | `FolderLock.terminate/2` sends the byte that ends perl and waits for its exit within the release bound |
+| Core crashes or is killed | not reached | the port closes with the process; perl exits on the end of its stdin |
 
 ## Bounds
 
 | What | Bound | Over the bound |
 | ---- | ----- | -------------- |
-| wait for perl's answer at the take | 5000 ms (`Helyx.Session.Lock`) | the port closes; `{:lock_failed, "perl gave no answer in 5000 ms"}` |
-| wait of the session supervisor for a start | the `init/1` only: it traps exits and monitors the caller. The take and the open run after it (#605) | not reached |
-| wait of the session for the go of its caller | the life of the caller, which sends the go as soon as the start returns to it. The monitor of the caller ends the wait | not reached |
-| wait of the caller of `start/2` or `resume/2` | two deadlines (#834, decision of the owner of 2026-11-06). The take: 25,000 ms (`deadline_ms.open` of `Helyx.Session.Server.State`), counted from before the take. The load: after the take, under the lock, the session reads the size of the session file with one stat and restarts the deadline at `deadline_ms.open` plus 1 ms for each 1,000 bytes of the file, so the deadline of the load grows with the file, up to the longest wait of a `receive` (4,294,967,295 ms, about 49.7 days, a file of about 4.29 TB): the move caps it there, because a longer wait crashes the process that kills; a file that is not there (a new session) has size 0. The load is the create of the file or the read of a resume (`Helyx.Session.File.resume_picked/3`, which reads one line at a time with a line limit of 64 MiB and a heap cap of 1 GiB for the decode of one line). The rate of 1,000 bytes for each ms is about a third of the slowest content that a session writes, tool calls of dense small values at 3.0 to 3.9 MB/s (review of #834, round 3), so a file that a session wrote opens before its deadline with that margin for load; a file of text reads at about 213 MB/s. The session process arms a kill of itself before the take, moves it after the take, and cancels it after the open (#665). The cancel waits for the end of the process that kills, so no kill reaches a session after its open; `:timer.kill_after/1` cannot give this, because its kill can come after its cancel. A move that reaches the killing process after its deadline does nothing: the kill was sent. The checks before the start (tools, `pick/3`) and the start of the hands after the open are outside the deadlines. Other starts of the Core do not wait for the open. A stop of the Core waits for an open up to the shutdown of the session process (`Helyx.Session.Server.Stop.shutdown_ms/0`, 31,000 ms), then kills it: a load longer than that ends with the stop, and its caller gets `{:error, :open_timeout}`. A start whose open ends before the stop gets a session that then stops. Over the wire, `start` and `resume` have no deadline of their own: the client waits for the answer while the connection lives, and the TUI shows that it is loading (`docs/features/tui-attach.md`, decision 17; `docs/features/wire-protocol.md`, "Deadlines") | the kill ends the session process, so its port closes and perl exits on the end of its stdin and frees the lock, as for a crash; no hands exist yet. `start/2` or `resume/2` returns `{:error, :open_timeout}`. A caller that ended during the open leaves the session at most until the deadline. A decode of one long line runs in an unlinked process (`Helyx.Session.File.Reader`), which ends its decode of at most 64 MiB alone. A new session leaves its file, as for a crash. Accepted holes: a file operation of the session process that blocks in the OS (a create on a hung disk) holds the kill until it returns; a file edited by hand can read slower than the rate (integers of many digits, row "Session file on resume" of `docs/features/coding-agent.md`) and then gives `:open_timeout`; a file that grows after the stat reads more than its deadline counted |
-| perl output up to its answer line, the line included (startup warnings, such as a locale warning) | 4096 bytes; the answer line carries a random nonce, so no warning passes for it. The port reads in line mode (`{:line, 4096}`) and drops the `\n` or `\r\n` at the end of each line. The bound counts the bytes of each line read past, plus one byte for each line end, plus the line in hand; so a CRLF counts as one byte. The answer line is `<nonce> ok`, `<nonce> locked`, or `<nonce> error <reason>`, with `\n` or `\r\n` at its end. The last bytes of an output with no line end come after the exit status of perl, so the read goes on until the exit of the port, which the session server gets because it traps exits. Removed by the review of 2026-10-16: a CR before a line end in the output is no longer kept in the `:lock_failed` text | the port closes; `{:lock_failed, "perl wrote 4096 bytes with no answer in them"}` |
-| the open of the lock file | no wait: perl opens it with `O_NONBLOCK`, so a FIFO with no reader fails, and it refuses a file that is not regular (a FIFO, a device, a directory, or a symlink to one) | not reached: perl answers `error` and exits; `{:lock_failed, "cannot open the lock file: <reason>"}`, and no perl process is left |
-| wait for perl's exit at a release | 1000 ms (`Helyx.Session.Lock`), counted in `Helyx.Session.Server.Stop.shutdown_ms/0` | the port closes and the release is unconfirmed; perl frees the lock when it ends |
-| text of a `:lock_failed` reason | the answer line and output are within the 4096-byte bound above; the app line has the 4000-byte cap of `CodingAgent.error_text/1` | cut |
+| wait for perl's answer at the take | 5,000 ms and 4,096 bytes of output (`Helyx.Session.Lock`) | Core start fails with `{:lock_failed, text}` |
+| release of the lock at the Core stop | 1,000 ms (`Helyx.Session.Lock.release_ms/0`), inside the default worker shutdown of 5,000 ms | the port closes and the release is unconfirmed; perl frees the lock when it ends |
+| open deadline | one `Killer.arm` before the load: `deadline_ms.open` (25,000 ms) plus 1 ms for each 1,000 bytes of the file, from one stat before the load | the session is killed and the caller gets `{:error, :open_timeout}` |
+| a session of the Core | no perl, no lock take | not reached |
+| the edit exclusion | no wait: the Registry answers `{:error, :running}` or `{:error, :editing}` | not reached |
+| the edit's file calls | no bound of their own, as a session append | a hung disk holds the call |
+| `remove_message/3` up to its rename | 25,000 ms plus 3 ms for each 1,000 bytes of the file (`Helyx.Sessions`) | `{:error, :timeout}`, and the file did not change |
 
 ## Ownership
 
 | Resource | Created by | Held by | Released on normal end | Released when the holder crashes | Released on abort |
 | -------- | ---------- | ------- | ---------------------- | -------------------------------- | ----------------- |
-| perl process and its port | `Helyx.Session.Lock.hold/2`, in the session server after its `init/1` | the session server | `Stop.run/1` releases it and waits for the exit | the port is linked to the owner and closes with it; perl exits on the end of its stdin | an abort of a turn does not touch the lock |
-| `flock` on `<id>.lock` | perl | perl | perl's exit | the kernel, at perl's exit | not touched |
-| `<id>.lock` file | perl (`sysopen` with append, with no wait) | the disk | stays | stays | stays |
+| perl process and its port | `Helyx.Session.Lock.take/1` in `Helyx.Core.FolderLock` | `Helyx.Core.FolderLock` | `terminate/2` calls `Lock.release/1` and waits for the exit | the port is linked to the owner and closes with it; perl exits on the end of its stdin | an abort of a turn does not touch the lock |
+| `flock` on `<sessions_dir>/core.lock` | perl | perl | perl's exit | the kernel, at perl's exit | not touched |
+| `core.lock` file | perl (`sysopen` with append, with no wait) | the disk | stays | stays | stays |
 
-The port is opened in the session server process, so it has one owner from its open to its close, and the caller of `start/2` or `resume/2` never holds it. An earlier form took the lock in the caller and passed the port to the `init/1`; a caller killed between the two left the lock held until the node ended (#589).
+## Accepted holes
+
+- Both sides can refuse at once: `:running` for the edit and `:editing` for the
+  open. A retry passes.
+- The Registry removes the key of a process that ended after it handles the
+  exit. An edit just after a session stop can get `:running`, and a resume just
+  after the kill of an edit Task (the deadline, or a Core stop) can get
+  `:editing`.
+- A lost folder lock kills the sessions of the Core, but a write that runs at
+  that moment can still end, and a plugin can write at its stop. For
+  `helyx serve` the hole is closed in practice: `server.lock` stays held until
+  after the Core stop.
+- A removed `core.lock` lets a second Core lock a new file at the path while
+  the first holds the old one. A hard link that two folders share has one lock
+  for each folder, so an edit in one Core does not see a session of the other.
+- A program that writes the folder without Helyx (an edit by hand) is not seen.
 
 ## Out of scope
 
-- A lock on a network filesystem: `flock` on NFS is not reliable. Out of scope like the append rule of `docs/features/coding-agent.md`.
-- A retake of a lost lock (decision 5).
-- The survival of the session file across a power loss: out of scope, see "Durability" in `docs/features/coding-agent.md`, section "Session file".
-- A wait for a busy session, or a skip of it in `--resume` (decision 3).
+- A merge of `server.lock` into `core.lock`, and of `hub.db.lock`.
+- A change of the wire `stop` deadline (77,000 ms) in the Rust client and the
+  TUI.
+- A cleanup of old `<id>.lock` files on disk. Nothing reads them.
+- A lock on a network filesystem.
+- A wait of the open for an edit: the open refuses with `:editing`.
+- A wire request for edits.

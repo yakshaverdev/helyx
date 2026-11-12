@@ -59,6 +59,35 @@ defmodule Helyx.Event do
           | :ask_end
           | :ui_block
 
+  # Every type of `type/0`, in the order above. A watcher of the session feed
+  # names some of them (`Helyx.Sessions.watch/2`).
+  @types [
+    :turn_start,
+    :turn_end,
+    :message_start,
+    :message_update,
+    :message_end,
+    :tool_execution_end,
+    :queue_update,
+    :queue_dropped,
+    :model_change,
+    :tools_change,
+    :resume_id,
+    :steer_unconfirmed,
+    :compaction,
+    :notice,
+    :ask,
+    :ask_end,
+    :ui_block
+  ]
+
+  @doc """
+  Every event type. A name outside this list is refused by
+  `Helyx.Sessions.watch/2` (`docs/features/session-feed.md`).
+  """
+  @spec types() :: [type()]
+  def types, do: @types
+
   @type t :: %__MODULE__{
           type: type(),
           session_id: String.t(),

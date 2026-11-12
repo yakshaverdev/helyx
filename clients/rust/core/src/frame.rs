@@ -1,13 +1,14 @@
-//! The server frames of protocol 13 after the handshake: `res`, `event`, and
-//! `session_end`, each checked by the schema of `docs/features/wire-protocol.md`.
-//! A `res` is read by the op of its request, which the caller keeps by `id`.
-
+//! The server frames of protocol 15 after the handshake: `res`, `event`,
+//! `session_end`, and the records feed frames, each checked by the schema of
+//! `docs/features/wire-protocol.md`. A `res` is read by the op of its
+//! request, which the caller keeps by `id`.
 use crate::check::{
     Broken, Checked, boolean, field, id, int_key, list_of, object, one_of, string, string_or_null,
 };
 use crate::event::{Event, parse_event};
 use crate::json::Json;
 use crate::message::{Message, Snapshot};
+use crate::records::{self, Record, RecordFrame};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Subscribed {
@@ -52,6 +53,12 @@ pub enum Reply {
         /// exist no more (`more` of the wire).
         next: Option<String>,
     },
+    /// The records of the user, waiting first; `more` says that the user
+    /// owns more.
+    Records {
+        records: Vec<Record>,
+        more: bool,
+    },
     Empty,
 }
 
@@ -69,6 +76,10 @@ pub enum ServerFrame {
         sub: String,
         crashed: bool,
     },
+    /// A `record` or `records` frame of the records feed, or its end.
+    Record(RecordFrame),
+    /// The records subscription ended without the client's unsubscribe.
+    RecordsEnd,
 }
 
 pub const OPS: &[&str] = &[
@@ -87,6 +98,8 @@ pub const OPS: &[&str] = &[
     "compact",
     "stop",
     "answer",
+    "records.subscribe",
+    "records.unsubscribe",
 ];
 
 /// The error codes of the wire (`test/fixtures/wire/bounds.json`).
@@ -126,7 +139,7 @@ pub const ERROR_CODES: &[&str] = &[
     // The codes of the event subscriptions of a Hub (protocol 9, #921).
     "too_many_event_subscriptions",
     "unknown_subscription",
-    // The codes of the pairing of a runner (protocol 13, #927).
+    // The codes of the pairing of a runner (protocol 15, #927).
     "too_many_links",
     "no_public_listener",
 ];
@@ -169,6 +182,8 @@ pub fn parse(
             crashed: one_of(map, "reason", &["stopped", "crashed"], "session_end reason")?
                 == "crashed",
         }),
+        "record" | "records" => Ok(ServerFrame::Record(records::parse_frame(value)?)),
+        "records_end" => Ok(ServerFrame::RecordsEnd),
         _ => Err(Broken("frame type")),
     }
 }
@@ -218,6 +233,12 @@ fn parse_result(op: &str, map: &Json) -> Checked<Reply> {
         "history" => Reply::History {
             messages: list_of(map, "messages", "history", Message::parse)?,
             next: string_or_null(map, "next", "history next")?.map(str::to_owned),
+        },
+        // The first list and each full list of the records feed
+        // (`docs/features/live-records.md`).
+        "records.subscribe" => Reply::Records {
+            records: list_of(map, "records", "records.subscribe", records::parse_record)?,
+            more: boolean(map, "more", "records.subscribe more")?,
         },
         _ => Reply::Empty,
     })

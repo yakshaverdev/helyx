@@ -9,6 +9,7 @@ use helyx_desktop::cli::{self, Launch};
 use helyx_desktop::net::{FileStore, Server, Store};
 use helyx_desktop::settings;
 use std::ffi::OsString;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 fn main() {
@@ -28,7 +29,9 @@ fn local(folder: Option<std::path::PathBuf>) {
         stop("no data folder: give one, or set HOME");
     };
     match settings::read(&folder) {
-        Ok(server) => start(server, None),
+        // The window reads the folder again before each connection, so a
+        // restarted server is found.
+        Ok(server) => start(Some(folder), server, None),
         Err(line) => stop(&line),
     }
 }
@@ -40,7 +43,7 @@ fn pair(link: helyx_client_core::link::Link) {
         stop("no home folder: set HOME");
     };
     match Server::pair(&link, &store) {
-        Ok(server) => start(server, Some(Arc::new(store))),
+        Ok(server) => start(None, server, Some(Arc::new(store))),
         Err(line) => stop(&line),
     }
 }
@@ -51,7 +54,7 @@ fn remote(name: &str) {
         stop("no home folder: set HOME");
     };
     match store.load(name) {
-        Ok(Some(state)) => start(Server::paired(state), None),
+        Ok(Some(state)) => start(None, Server::paired(state), None),
         Ok(None) => stop(&format!("no saved state for {name}; pair it with --pair")),
         Err(line) => stop(&line),
     }
@@ -63,11 +66,11 @@ fn stop(line: &str) -> ! {
 }
 
 #[cfg(target_os = "macos")]
-fn start(server: Server, store: Option<Arc<dyn Store>>) {
-    ui::run(server, store);
+fn start(folder: Option<PathBuf>, server: Server, store: Option<Arc<dyn Store>>) {
+    ui::run(folder, server, store);
 }
 
 #[cfg(not(target_os = "macos"))]
-fn start(_server: Server, _store: Option<Arc<dyn Store>>) {
+fn start(_folder: Option<PathBuf>, _server: Server, _store: Option<Arc<dyn Store>>) {
     stop("the window runs on macOS only");
 }
