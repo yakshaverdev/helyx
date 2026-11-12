@@ -7,35 +7,14 @@
 
 use helyx_client_core::json::{Json, decode};
 use std::io::Read;
-use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+
+/// The server of the network layer: the address, the port, and the token of
+/// its handshake.
+pub use helyx_client_net::Server;
 
 /// The bytes of the server file.
 pub const MAX_FILE_BYTES: u64 = 4_096;
-
-/// The server of a data folder. `Debug` leaves out the token.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Server {
-    pub address: IpAddr,
-    pub port: u16,
-    pub token: String,
-}
-
-impl std::fmt::Debug for Server {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Server({})", self.url())
-    }
-}
-
-impl Server {
-    /// The URL of the WebSocket, as `CodingAgent.Serve.url/2` writes it.
-    pub fn url(&self) -> String {
-        match self.address {
-            IpAddr::V4(ip) => format!("ws://{ip}:{}", self.port),
-            IpAddr::V6(ip) => format!("ws://[{ip}]:{}", self.port),
-        }
-    }
-}
 
 /// The default data folder of the server, `~/.helyx/sessions`.
 pub fn default_folder() -> Option<PathBuf> {
