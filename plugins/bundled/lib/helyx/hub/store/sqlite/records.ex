@@ -40,8 +40,10 @@ defmodule Helyx.Hub.Store.SQLite.Records do
   def put_record(db, record, max, deadline),
     do: transaction(db, deadline, fn -> put_new(db, record, max) end)
 
-  # A new row, unless its owner holds `max` rows; none for nil.
+  # A new row, unless its owner holds `max` rows; none for nil, and no cap for
+  # `:none` (the rows of the default owner).
   defp put_new(_db, nil, _max), do: :ok
+  defp put_new(db, record, :none), do: insert(db, record)
 
   defp put_new(db, record, max) do
     with {:ok, n} <- count_records(db, record.owner), do: insert(db, record, n < max)
@@ -52,29 +54,53 @@ defmodule Helyx.Hub.Store.SQLite.Records do
 
   # The id is new: Core made it for this start, so the only row it can have is
   # the feed row of the same start, which can come first (hub.md, decision 8).
+  # A thread link goes in the upsert; a start with no link keeps the parent
+  # that the feed wrote, such as the child link of the header.
   defp insert(db, r) do
     run(
       db,
       "INSERT INTO records (session_id, owner, cwd, model, prompt, active_at, " <>
-        "created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) " <>
+        "created_at, updated_at, parent_id, parent_kind) " <>
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9) " <>
         "ON CONFLICT(session_id) DO UPDATE SET owner = excluded.owner, " <>
-        "cwd = excluded.cwd, model = excluded.model",
-      [r.session_id, r.owner, r.cwd, r.model, r.prompt, r.active_at, r.created_at]
+        "cwd = excluded.cwd, model = excluded.model, " <>
+        "parent_id = COALESCE(excluded.parent_id, parent_id), " <>
+        "parent_kind = COALESCE(excluded.parent_kind, parent_kind)",
+      [
+        r.session_id,
+        r.owner,
+        r.cwd,
+        r.model,
+        r.prompt,
+        r.active_at,
+        r.created_at,
+        Map.get(r, :parent_id),
+        Map.get(r, :parent_kind)
+      ]
     )
   end
 
   # The row of a Live of the feed: a new row of the default owner, or the
   # model and `active_at` of the row that the session has. The owner, title,
-  # labels, project, prompt, and `created_at` of a row stay.
+  # labels, project, prompt, `created_at`, and parent of a row stay.
   def seen_record(db, record, deadline) do
     transaction(db, deadline, fn ->
       run(
         db,
         "INSERT INTO records (session_id, owner, cwd, model, prompt, active_at, " <>
-          "created_at, updated_at) VALUES (?1, ?2, ?3, ?4, '', ?5, ?5, ?5) " <>
+          "created_at, updated_at, parent_id, parent_kind) " <>
+          "VALUES (?1, ?2, ?3, ?4, '', ?5, ?5, ?5, ?6, ?7) " <>
           "ON CONFLICT(session_id) DO UPDATE SET model = excluded.model, " <>
           "active_at = excluded.active_at",
-        [record.session_id, record.owner, record.cwd, record.model, record.active_at]
+        [
+          record.session_id,
+          record.owner,
+          record.cwd,
+          record.model,
+          record.active_at,
+          Map.get(record, :parent_id),
+          Map.get(record, :parent_kind)
+        ]
       )
     end)
   end
@@ -98,9 +124,20 @@ defmodule Helyx.Hub.Store.SQLite.Records do
     run(
       db,
       "INSERT INTO records (session_id, owner, cwd, model, prompt, active_at, " <>
-        "created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) " <>
+        "created_at, updated_at, parent_id, parent_kind) " <>
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9) " <>
         "ON CONFLICT(session_id) DO NOTHING",
-      [r.session_id, r.owner, r.cwd, r.model, r.prompt, r.active_at, r.created_at]
+      [
+        r.session_id,
+        r.owner,
+        r.cwd,
+        r.model,
+        r.prompt,
+        r.active_at,
+        r.created_at,
+        Map.get(r, :parent_id),
+        Map.get(r, :parent_kind)
+      ]
     )
   end
 

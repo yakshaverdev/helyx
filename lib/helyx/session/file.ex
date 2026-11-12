@@ -41,15 +41,27 @@ defmodule Helyx.Session.File do
     @moduledoc """
     What `resume_picked/3` restores
     (`Helyx.Session.Transcript.label/0`, `Helyx.Session.Totals.of/2`,
-    docs/features/mcp-client.md).
+    docs/features/mcp-client.md). `parent` is the link of a child to the tool
+    call that started it, from the header, or nil
+    (`docs/features/agent-tool.md`).
     """
     @enforce_keys [:file, :model, :messages]
-    defstruct [:file, :model, :messages, :summary, :compacted, resume_ids: %{}, activated: []]
+    defstruct [
+      :file,
+      :model,
+      :messages,
+      :parent,
+      :summary,
+      :compacted,
+      resume_ids: %{},
+      activated: []
+    ]
 
     @type t :: %__MODULE__{
             file: Helyx.Session.File.t(),
             model: String.t(),
             messages: [Message.t()],
+            parent: Helyx.Sessions.Live.parent(),
             summary: Helyx.Summary.t() | nil,
             compacted: Helyx.Session.Totals.compaction() | nil,
             resume_ids: %{String.t() => Helyx.Session.Transcript.label()},
@@ -215,6 +227,7 @@ defmodule Helyx.Session.File do
         file: %__MODULE__{path: path, leaf: read.leaf},
         model: read.model,
         messages: read.messages,
+        parent: read.parent,
         summary: read.summary,
         compacted: read.compacted,
         resume_ids: read.resume_ids,

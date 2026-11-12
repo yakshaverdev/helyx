@@ -179,13 +179,32 @@ defmodule Helyx.Hub.Store.SQLite do
     end
   end
 
+  # The version of the file, and the upgrade of a file of version 2. A file of
+  # another version is refused (decision 9).
   defp version(db) do
     case one(db, "PRAGMA user_version", []) do
       {:ok, [@version]} -> :ok
       {:ok, [0]} -> empty(db)
+      {:ok, [2]} -> upgrade_2(db)
       {:ok, [n]} -> {:error, {:store_version, n}}
       {:error, _} = error -> error
     end
+  end
+
+  # SQLite cannot add a table check, so the pair rule of `parent_id` and
+  # `parent_kind` holds in the store code here and in the schema of a new
+  # file; every write sets both.
+  defp upgrade_2(db) do
+    transaction(db, :infinity, fn ->
+      with :ok <- exec(db, "ALTER TABLE records ADD COLUMN parent_id TEXT"),
+           :ok <-
+             exec(
+               db,
+               "ALTER TABLE records ADD COLUMN parent_kind TEXT " <>
+                 "CHECK (parent_kind IN ('child', 'thread'))"
+             ),
+           do: exec(db, "PRAGMA user_version = #{@version}")
+    end)
   end
 
   # A file of version 0 is new only when it holds no schema: a database of

@@ -3,6 +3,7 @@ defmodule Helyx.Hub.RecordsTest do
 
   alias Helyx.Hub
   alias Helyx.Provider.Fake
+  alias Helyx.Test.Events
   alias Helyx.Test.WireClient, as: Client
   alias Helyx.Transport.WebSocket
 
@@ -18,7 +19,11 @@ defmodule Helyx.Hub.RecordsTest do
     File.mkdir_p!(data)
     File.chmod!(data, 0o700)
     core = :"core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [Fake], sessions_dir: data}, id: :core)
+
+    start_supervised!(
+      {Helyx.Core, name: core, plugins: [Fake, Helyx.Test.Tool.Block], sessions_dir: data},
+      id: :core
+    )
 
     hub_opts =
       [core: core, default_owner: "owner", server_token: fn -> @server_token end] ++
@@ -26,7 +31,7 @@ defmodule Helyx.Hub.RecordsTest do
 
     hub = start_supervised!(Supervisor.child_spec({Hub, hub_opts}, id: :hub))
     transport = start_supervised!({WebSocket, core: core, port: 0, authority: Hub.authority(hub)})
-    %{hub: hub, port: WebSocket.port(transport)}
+    %{hub: hub, port: WebSocket.port(transport), core: core}
   end
 
   defp store(%{store: store}), do: [store: store]
@@ -139,8 +144,7 @@ defmodule Helyx.Hub.RecordsTest do
 
       assert %{"session" => ^session, "owner" => %{"id" => ^ann_id, "name" => "ann"}} = record
 
-      assert %{"stored" => true, "visibility" => "private", "labels" => [], "title" => ""} =
-               record
+      assert %{"visibility" => "private", "labels" => [], "title" => ""} = record
 
       owner = open(context.port)
       own = start(owner)
@@ -149,7 +153,6 @@ defmodule Helyx.Hub.RecordsTest do
       assert %{
                "result" => %{
                  "record" => %{
-                   "stored" => true,
                    "created_at" => created_at,
                    "owner" => %{"name" => "owner"}
                  }
@@ -157,6 +160,131 @@ defmodule Helyx.Hub.RecordsTest do
              } = req(owner, "hub.records.get", %{"session" => own})
 
       assert is_integer(created_at)
+    end
+
+    test "a record shows cwd, model, prompt, active_at, parent and status", context do
+      owner = open(context.port)
+      session = start(owner)
+
+      assert %{"ok" => true} =
+               req(owner, "prompt", %{"session" => session, "text" => "first words"})
+
+      Events.wait_until(fn ->
+        %{"result" => %{"record" => record}} =
+          req(owner, "hub.records.get", %{"session" => session})
+
+        record["status"] == "idle" and record["prompt"] == "first words"
+      end)
+
+      assert %{"result" => %{"record" => record}} =
+               req(owner, "hub.records.get", %{"session" => session})
+
+      assert %{
+               "cwd" => cwd,
+               "model" => "fake/echo",
+               "prompt" => "first words",
+               "active_at" => active_at,
+               "parent" => nil,
+               "status" => "idle"
+             } = record
+
+      assert cwd == File.cwd!()
+      assert is_integer(active_at)
+      refute Map.has_key?(record, "stored")
+    end
+
+    test "status is running during a turn, idle after it, stopped after the stop", context do
+      name = :"status_#{context.core}"
+      Process.register(self(), name)
+      model = "status_#{System.unique_integer([:positive])}"
+
+      block = %Helyx.Message.ToolCall{
+        id: "c1",
+        name: "block",
+        arguments: %{"to" => Atom.to_string(name)}
+      }
+
+      # `Helyx.Test.Tool.Block` sends `{:blocked, session id}` to the name in
+      # its arguments and holds the turn open.
+      :ok =
+        Fake.script(context.core, model, [
+          [block],
+          ["done"]
+        ])
+
+      owner = open(context.port)
+
+      %{"result" => %{"session" => session}} =
+        req(owner, "start", %{"cwd" => File.cwd!(), "model" => "fake/#{model}"})
+
+      assert %{"ok" => true} = req(owner, "prompt", %{"session" => session, "text" => "go"})
+      assert_receive {:blocked, _}
+
+      Events.wait_until(fn -> status(owner, session) == "running" end)
+      assert %{"ok" => true} = req(owner, "abort", %{"session" => session})
+      Events.wait_until(fn -> status(owner, session) == "idle" end)
+
+      assert %{"ok" => true} = req(owner, "stop", %{"session" => session})
+      Events.wait_until(fn -> status(owner, session) == "stopped" end)
+    end
+
+    defp status(socket, session) do
+      %{"result" => %{"record" => %{"status" => status}}} =
+        req(socket, "hub.records.get", %{"session" => session})
+
+      status
+    end
+
+    test "a child of the agent tool has parent kind child", context do
+      owner = open(context.port)
+      parent = start(owner)
+      link = %{session_id: parent, call_id: "call-1"}
+
+      {:ok, child} =
+        Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo", parent: link)
+
+      Events.wait_until(fn ->
+        record = record(owner, child.id)
+        record["parent"] == %{"session" => parent, "kind" => "child"}
+      end)
+
+      assert %{"status" => "idle"} = record(owner, child.id)
+    end
+
+    # The repair path writes the row of a child that the feed did not reach,
+    # with the link of its header.
+    test "a get of a found child writes its row with the parent link", context do
+      owner = open(context.port)
+      parent = start(owner)
+      link = %{session_id: parent, call_id: "call-1"}
+
+      {:ok, child} =
+        Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo", parent: link)
+
+      Events.wait_until(fn -> record(owner, child.id)["parent"] != nil end)
+      assert %{"ok" => true} = req(owner, "hub.records.delete", %{"session" => child.id})
+
+      Events.wait_until(fn ->
+        record = record(owner, child.id)
+        record["parent"] == %{"session" => parent, "kind" => "child"}
+      end)
+    end
+
+    defp record(socket, session) do
+      %{"result" => %{"record" => record}} =
+        req(socket, "hub.records.get", %{"session" => session})
+
+      record
+    end
+
+    test "a record has no stored key", context do
+      owner = open(context.port)
+      session = start(owner)
+
+      assert %{"result" => %{"record" => record}} =
+               req(owner, "hub.records.get", %{"session" => session})
+
+      refute Map.has_key?(record, "stored")
     end
 
     test "update: the fields and their bounds; a hub record is read by others", context do
@@ -267,33 +395,23 @@ defmodule Helyx.Hub.RecordsTest do
       assert %{"result" => %{"record" => record}} =
                req(owner, "hub.records.get", %{"session" => session})
 
-      assert %{"stored" => true, "title" => "", "owner" => %{"name" => "owner"}} = record
+      assert %{"title" => "", "owner" => %{"name" => "owner"}} = record
 
       assert %{"error" => %{"code" => "session_not_found"}} =
                req(ann, "hub.records.get", %{"session" => session})
     end
 
-    # The write of the row fails while the read works: the session exists, so
-    # the answer is the record of the default owner without the stored row,
-    # not a failed operation (decision 8).
+    # The write of the row fails while the read works. The record no longer
+    # has a `stored` field to tell a stored row from one the store does not
+    # hold, so the get answers `failed` rather than a record that it cannot
+    # read back (decision 8).
     @tag store: NoRowWrite
-    test "get: a found session whose row the store did not write answers the default owner's record",
-         context do
+    test "get: a found session whose row the store did not write answers failed", context do
       owner = open(context.port)
       session = start(owner)
 
-      assert %{"result" => %{"record" => record}} =
+      assert %{"error" => %{"code" => "failed"}} =
                req(owner, "hub.records.get", %{"session" => session})
-
-      assert %{
-               "session" => ^session,
-               "stored" => false,
-               "owner" => %{"name" => "owner"},
-               "title" => "",
-               "labels" => [],
-               "created_at" => nil,
-               "updated_at" => nil
-             } = record
     end
   end
 
@@ -329,10 +447,10 @@ defmodule Helyx.Hub.RecordsTest do
       path = copy_header(context, running, id, %{"model" => "fake/\u0007echo"})
       File.rm!(path)
 
-      assert %{"result" => %{"record" => %{"stored" => true}}} =
+      assert %{"result" => %{"record" => %{"session" => ^running}}} =
                req(owner, "hub.records.get", %{"session" => running})
 
-      assert %{"result" => %{"record" => %{"stored" => true}}} =
+      assert %{"result" => %{"record" => %{"title" => "t"}}} =
                update(owner, running, %{"title" => "t"})
 
       missing = req(owner, "hub.records.get", %{"session" => @missing})
@@ -361,7 +479,7 @@ defmodule Helyx.Hub.RecordsTest do
 
       ok = start(owner)
 
-      assert %{"result" => %{"record" => %{"stored" => true}}} =
+      assert %{"result" => %{"record" => %{"title" => "t"}}} =
                update(owner, ok, %{"title" => "t"})
 
       assert {:ok, _} = Hub.users(hub)

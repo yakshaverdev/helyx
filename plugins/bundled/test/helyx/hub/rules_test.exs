@@ -13,7 +13,15 @@ defmodule Helyx.Hub.RulesTest do
     for id <- ~w(owner ann bob),
         do: :ok = SQLite.add_user(db, %{id: id, name: id, created_at: 1}, 64, :infinity)
 
-    state = %{store: SQLite, db: db, default_owner_id: "owner", server_token: nil, core: nil}
+    state = %{
+      store: SQLite,
+      db: db,
+      default_owner_id: "owner",
+      server_token: nil,
+      core: nil,
+      live: %{}
+    }
+
     on_exit(fn -> SQLite.close(db) end)
     %{state: state, db: db, connection: connection(db)}
   end
@@ -139,8 +147,8 @@ defmodule Helyx.Hub.RulesTest do
 
     # The rows of the sessions of the default owner have no cap: the session
     # files bound them (hub.md, decision 8).
-    assert {:ok, %{stored: true}} = update.("DERIVED1xxxx")
-    assert {:ok, %{stored: true}} = update.("DERIVED2xxxx")
+    assert {:ok, %{session: "DERIVED1xxxx"}} = update.("DERIVED1xxxx")
+    assert {:ok, %{session: "DERIVED2xxxx"}} = update.("DERIVED2xxxx")
     assert {:ok, %{owner: "owner", cwd: "/w"}} = SQLite.record(db, "DERIVED2xxxx")
   end
 

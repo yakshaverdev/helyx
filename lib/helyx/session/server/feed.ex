@@ -19,7 +19,8 @@ defmodule Helyx.Session.Server.Feed do
       instance_id: state.instance_id,
       cwd: state.cwd,
       model: ModelRef.to_string(state.model),
-      status: if(Flow.idle?(state.phase), do: :idle, else: :running)
+      status: if(Flow.idle?(state.phase), do: :idle, else: :running),
+      parent: state.parent
     }
   end
 

@@ -67,6 +67,14 @@ The order rules:
 `Helyx.Event.types/0` gives every event type, the source of the check in
 `watch/2`.
 
+`Helyx.Sessions.Live` also carries `parent`: nil, or the session id and call
+id of the tool call that started a child session
+(`docs/features/agent-tool.md`). A start takes it from its `:parent` option,
+and a resume from the `parent` of the session file's header; a link that does
+not pass its check is dropped, so a damaged header link costs the session no
+resume. `Helyx.Hub` writes it into the record of the session
+(`hub.md`, decision 8). The wire `live_session` does not carry it.
+
 `Helyx.Session.Server.State` gains `fed`, the key of the last `Live` that the
 feed sent, or nil. It is internal.
 
@@ -92,8 +100,9 @@ None in Core. The Core code path that lists sessions for one consumer
 The Hub changes are in `hub.md`: the rows that Hub writes at a start and at the
 scan of `sessions.saved`, the live set that holds every session of the Core,
 and the removal of `Hub.Records.derived_view/2`, `new_row/4`, `without_row/3`,
-`Hub.Saved.merge/4`, and `Hub.Live.seed/2`. The wire does not change, and the
-store schema does not change.
+`Hub.Saved.merge/4`, and `Hub.Live.seed/2`. The feed itself changes neither
+the wire nor the store schema; the record shape of the wire is E.2
+(`hub.md`, `wire-protocol.md`, protocol 11).
 
 ## Bounds
 
@@ -121,5 +130,5 @@ store schema does not change.
 - A stop notice: the monitor of the session process gives the end.
 - The `starters` actor semantics of `coordinator.md`, decision 3.
 - A reconcile scan at the start of Hub: the seed and the repair path cover it.
-- Wire changes and the record shape: E.2.
-- Removal of the `stored` field: E.2.
+- The record shape on the wire: `docs/features/hub.md` and
+  `docs/features/wire-protocol.md`, protocol 11.

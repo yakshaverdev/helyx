@@ -3,8 +3,10 @@ defmodule Helyx.Tool.SessionCreate do
   The coordinator tool `session_create`: starts an independent session
   that Hub owns, for the user of the calling session, in a folder with a
   mode of the product, and sends it a first prompt. The session is not a
-  child: it has no parent link and outlives the call. The start goes
-  through `Helyx.Hub.start_session/3`, so the caps of the user hold.
+  child: it has no parent link in Core, and its record names the calling
+  session as a thread (`docs/features/coordinator.md`). It outlives the
+  call. The start goes through `Helyx.Hub.start_session/3`, so the caps of
+  the user hold.
 
   The optional `worktree` argument starts the session in a new git worktree
   on its own branch, and a checked-in setup script runs there first. See
@@ -122,13 +124,16 @@ defmodule Helyx.Tool.SessionCreate do
     if File.dir?(nested), do: nested, else: worktree.path
   end
 
-  # The model of the mode, else the model of the calling turn.
+  # The model of the mode, else the model of the calling turn. The thread
+  # link names the calling session: a thread is a coordinator concept, so it
+  # lives in the Hub row and in no header (docs/features/coordinator.md).
   defp start(env, cwd, mode_opts) do
     opts = [
       cwd: cwd,
       model: mode_opts[:model] || env.context.model,
       model_context: mode_opts[:model_context],
-      tools: mode_opts[:tools]
+      tools: mode_opts[:tools],
+      thread_of: env.context.session_id
     ]
 
     # The start and its record run in a process that a kill of the call

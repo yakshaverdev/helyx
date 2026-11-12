@@ -82,6 +82,7 @@ defmodule Helyx.Session do
         model: ref,
         provider: provider,
         cwd: cwd,
+        parent: parent,
         idle_stop_ms: Helyx.Core.config(core, :idle_stop_ms)
       }
 
