@@ -114,7 +114,7 @@ defmodule Helyx.Session.TurnRecordTest do
     bare = %{"type" => "system_prompt", "id" => "b", "parent_id" => "a", "system" => 7}
     File.write!(path, [JSON.encode!(big), "\n", JSON.encode!(bare), "\n"], [:append])
 
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+    {:ok, resumed, _} = Session.resume(core, sessions_dir: dir)
     {:ok, _, _} = Session.subscribe(resumed)
     assert final_text(turn(resumed, "two")) == "same"
 

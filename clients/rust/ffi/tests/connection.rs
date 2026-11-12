@@ -1,11 +1,14 @@
 //! The surface of the bindings, proven without Swift: the object of the
 //! bindings against the stub server of the network layer, with a listener
 //! implemented in Rust. It connects, lists the live sessions and the records
-//! of the feed, sends a prompt and takes its reply, and ends the connection at
-//! its drop.
+//! of the feed, sends a prompt and takes its reply and the failed outcome of a
+//! refused one, and ends the connection at its drop, also when the listener
+//! releases it.
 
 use helyx_client_core::json::{Json, decode};
-use helyx_client_ffi::{Connection, NetError, NetListener, RequestState, Snapshot, Status};
+use helyx_client_ffi::{
+    Connection, NetError, NetListener, RequestState, SendOutcome, Snapshot, Status,
+};
 use helyx_client_net::stub;
 use std::net::TcpStream;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -228,6 +231,117 @@ fn the_snapshot_carries_the_records_feed() {
     assert_eq!(snapshot.records[1].session, "s2");
     assert_eq!(snapshot.records[1].status, Status::Idle);
     assert_eq!(snapshot.records[1].parent, None);
+    drop(connection);
+    stub.join().unwrap();
+}
+
+/// The listener of a test that releases the last handle of the connection in
+/// its callback, which runs on the thread of the network layer.
+struct Releaser {
+    connection: Mutex<Option<Arc<Connection>>>,
+    dropped: Sender<()>,
+}
+
+impl NetListener for Releaser {
+    fn on_snapshot(&self, _snapshot: Snapshot) -> Result<(), NetError> {
+        if let Some(connection) = self.connection.lock().unwrap().take() {
+            drop(connection);
+            let _ = self.dropped.send(());
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn a_drop_on_the_network_thread_returns() {
+    let (dropped, at_drop) = channel();
+    let (go, at_go) = channel();
+    let listener = Arc::new(Releaser {
+        connection: Mutex::new(None),
+        dropped,
+    });
+    let (server, stub) = stub::one(move |mut ws| {
+        // The host holds its handle before the first snapshot comes.
+        at_go.recv().unwrap();
+        stub::welcome(&mut ws, "tok-q4");
+        let asked = request(&mut ws);
+        ws.send(Message::text(live(&id_of(&asked)))).unwrap();
+        let saved = request(&mut ws);
+        ok(&mut ws, &id_of(&saved), r#"{"items":[],"next":null}"#);
+        let _ = ws.close(None);
+        let _ = ws.flush();
+    });
+    let connection = Connection::new(
+        server.address.to_string(),
+        server.port,
+        server.token.clone(),
+        listener.clone(),
+    )
+    .unwrap();
+    // From here the listener holds the only handle of the connection.
+    *listener.connection.lock().unwrap() = Some(connection.clone());
+    drop(connection);
+    go.send(()).unwrap();
+    // The callback drops the connection on the network thread: its drop must
+    // return there, not wait for the thread that runs it.
+    at_drop
+        .recv_timeout(LOAD_MARGIN)
+        .expect("the drop on the network thread returns");
+    stub.join().unwrap();
+}
+
+#[test]
+fn a_refused_operation_reports_a_failed_outcome_with_its_number() {
+    let (changes, snapshots) = channel();
+    let listener = Arc::new(Collect {
+        changes: Mutex::new(changes),
+    });
+    let (server, stub) = stub::one(|mut ws| {
+        stub::welcome(&mut ws, "tok-q4");
+        // The requests of the welcome: the records subscription, refused on
+        // a server with no Hub, then the first page of the saved sessions,
+        // and the live sessions that the refusal allows.
+        let records = request(&mut ws);
+        assert_eq!(
+            records.get("op").and_then(Json::as_str),
+            Some("records.subscribe")
+        );
+        error(&mut ws, &id_of(&records), "unknown_op");
+        let saved = request(&mut ws);
+        ok(&mut ws, &id_of(&saved), r#"{"items":[],"next":null}"#);
+        let asked = request(&mut ws);
+        ws.send(Message::text(live(&id_of(&asked)))).unwrap();
+        // The live list after the refused operation carries its outcome.
+        let asked = request(&mut ws);
+        ws.send(Message::text(live(&id_of(&asked)))).unwrap();
+        assert!(ws.read().is_err());
+    });
+    let connection = Connection::new(
+        server.address.to_string(),
+        server.port,
+        server.token.clone(),
+        listener.clone(),
+    )
+    .unwrap();
+    until(&snapshots, |snapshot| !snapshot.live.is_empty());
+    // A session id that no request takes: the client refuses it before it
+    // goes, and the snapshot reports the failed outcome of its number.
+    let huge = "x".repeat(helyx_client_core::parts::REQUEST_BYTES);
+    let send = connection.prompt(huge, "a text".into()).unwrap();
+    assert_eq!(send, 1);
+    connection.live_sessions().unwrap();
+    let snapshot = until(&snapshots, |snapshot| {
+        (snapshot.outcomes.iter()).any(|outcome| outcome.send == send)
+    });
+    let outcome = (snapshot.outcomes.iter())
+        .find(|outcome| outcome.send == send)
+        .unwrap();
+    assert_eq!(
+        outcome.outcome,
+        SendOutcome::Failed {
+            reason: "the request is over its size".into()
+        }
+    );
     drop(connection);
     stub.join().unwrap();
 }

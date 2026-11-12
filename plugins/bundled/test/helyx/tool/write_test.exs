@@ -34,6 +34,55 @@ defmodule Helyx.Tool.WriteTest do
     assert File.read!(Path.join(dir, "a.txt")) == "new"
   end
 
+  test "the result carries a diff of the overwritten file", %{tmp_dir: dir, run: run} do
+    File.write!(Path.join(dir, "a.txt"), "old\n")
+
+    result = run.(%{"path" => "a.txt", "content" => "new\n"})
+    refute result.is_error
+    assert Helyx.Message.text(result) == "Wrote a.txt"
+
+    assert [%{"kind" => "diff"} = block] = result.ui_blocks
+    assert block["added"] == 1
+    assert block["removed"] == 1
+    assert [hunk] = block["hunks"]
+    assert hunk["lines"] == ["-old", "+new"]
+  end
+
+  test "a new file is all added lines", %{run: run} do
+    result = run.(%{"path" => "new.txt", "content" => "a\nb\n"})
+    refute result.is_error
+
+    assert [block] = result.ui_blocks
+    assert block["added"] == 2
+    assert block["removed"] == 0
+    assert [hunk] = block["hunks"]
+    assert hunk["lines"] == ["+a", "+b"]
+  end
+
+  test "an old file that is not UTF-8 gives a block without hunks", %{tmp_dir: dir, run: run} do
+    File.write!(Path.join(dir, "raw.bin"), <<255, 254>>)
+
+    result = run.(%{"path" => "raw.bin", "content" => "new"})
+    refute result.is_error
+    assert Helyx.Message.text(result) == "Wrote raw.bin"
+
+    assert [block] = result.ui_blocks
+    assert block["hunks"] == []
+    assert block["cut"] == true
+
+    assert block["text"] ==
+             "raw.bin: written; the old file is not shown (binary file, 2 bytes)"
+
+    assert File.read!(Path.join(dir, "raw.bin")) == "new"
+  end
+
+  test "an error result carries no block", %{tmp_dir: dir, run: run} do
+    File.write!(Path.join(dir, "file"), "")
+    result = run.(%{"path" => "file/a.txt", "content" => "x"})
+    assert result.is_error
+    assert result.ui_blocks == []
+  end
+
   test "a path under a file is an error result", %{tmp_dir: dir, run: run} do
     File.write!(Path.join(dir, "file"), "")
     result = run.(%{"path" => "file/a.txt", "content" => "x"})

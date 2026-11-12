@@ -90,7 +90,7 @@ defmodule Helyx.Session.PersistenceTest do
     {:ok, live, _ref} = Session.subscribe(session)
     stop_session(session, &GenServer.stop/1)
 
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+    {:ok, resumed, _} = Session.resume(core, sessions_dir: dir)
     {:ok, snapshot, _ref} = Session.subscribe(resumed)
 
     usages = Enum.map(live.messages, & &1.usage)
@@ -112,7 +112,7 @@ defmodule Helyx.Session.PersistenceTest do
 
     stop_session(session, &GenServer.stop/1)
 
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+    {:ok, resumed, _} = Session.resume(core, sessions_dir: dir)
     assert resumed.id == session.id
     {:ok, _, _} = Session.subscribe(resumed)
 
@@ -150,7 +150,7 @@ defmodule Helyx.Session.PersistenceTest do
       assert final_text(collect_until(:turn_end)) == "user:hello\nassistant:so far\nuser:next"
 
       stop_session(session, &GenServer.stop/1)
-      {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+      {:ok, resumed, _} = Session.resume(core, sessions_dir: dir)
       {:ok, _, _} = Session.subscribe(resumed)
       :ok = Session.prompt(resumed, "again")
 
@@ -187,12 +187,12 @@ defmodule Helyx.Session.PersistenceTest do
       sup: sup,
       limit: limit
     } do
-      {:ok, session} = Session.resume(core, sessions_dir: dir)
+      {:ok, session, _} = Session.resume(core, sessions_dir: dir)
       await(fn -> memory(sup) < limit end, "supervisor memory under #{limit}")
 
       # The Registry rejects the second start in the supervisor, before the
       # init, and the resume attaches (docs/features/server-management.md).
-      assert {:ok, ^session} = Session.resume(core, sessions_dir: dir)
+      assert {:ok, ^session, _} = Session.resume(core, sessions_dir: dir)
       await(fn -> memory(sup) < limit end, "supervisor memory under #{limit}")
     end
 
@@ -249,7 +249,7 @@ defmodule Helyx.Session.PersistenceTest do
     ]
 
     written = File.read!(file.path)
-    {:ok, session} = Session.resume(core, sessions_dir: dir)
+    {:ok, session, _} = Session.resume(core, sessions_dir: dir)
     assert File.read!(file.path) == written
 
     # The provider request has the result of the reused id, right after it.
@@ -264,7 +264,7 @@ defmodule Helyx.Session.PersistenceTest do
     # The turn appended after the open call; the next resume puts the
     # result right after the call again, not at the end, and only once.
     written = File.read!(file.path)
-    {:ok, session} = Session.resume(core, sessions_dir: dir)
+    {:ok, session, _} = Session.resume(core, sessions_dir: dir)
     assert File.read!(file.path) == written
     {:ok, snapshot, _} = Session.subscribe(session)
     roles_texts = Enum.map(snapshot.messages, &{&1.role, Helyx.Message.text(&1)})
@@ -285,7 +285,7 @@ defmodule Helyx.Session.PersistenceTest do
     |> Helyx.Test.SessionFile.append_message(Helyx.Message.user("next"))
     |> Helyx.Session.File.append_resume_id("claude-code", "h1")
 
-    {:ok, session} = Session.resume(core, sessions_dir: dir)
+    {:ok, session, _} = Session.resume(core, sessions_dir: dir)
     state = :sys.get_state(Session.pid(session))
     assert length(state.transcript) == 3
     assert state.resume_ids == %{"claude-code" => {"h1", 1, nil}}
@@ -311,7 +311,7 @@ defmodule Helyx.Session.PersistenceTest do
     repaired = [{:user, "hi"}, {:assistant, ""}, {:tool_result, "answer"}, {:user, "next"}]
 
     written = File.read!(file.path)
-    {:ok, session} = Session.resume(core, sessions_dir: dir)
+    {:ok, session, _} = Session.resume(core, sessions_dir: dir)
     assert File.read!(file.path) == written
     assert :sys.get_state(Session.pid(session)).resume_ids == %{"claude-code" => {"h1", 1, nil}}
 
@@ -338,7 +338,7 @@ defmodule Helyx.Session.PersistenceTest do
                     %Event{type: :message_end, data: %{message: %{role: :assistant}}}}
 
     stop_session(session, &Process.exit(&1, :kill))
-    {:ok, _} = Session.resume(core, sessions_dir: dir)
+    {:ok, _, _} = Session.resume(core, sessions_dir: dir)
 
     resumed = %Session{id: session.id, core: core}
     {:ok, _, _} = Session.subscribe(resumed)
@@ -367,7 +367,7 @@ defmodule Helyx.Session.PersistenceTest do
       content: [call]
     })
 
-    {:ok, session} = Session.resume(core, sessions_dir: dir)
+    {:ok, session, _} = Session.resume(core, sessions_dir: dir)
     :ok = Session.prompt(session, "again")
     assert_receive {:conn, :init, proc, {"hang", _tools, opts}}
     assert opts[:resume_id] == nil

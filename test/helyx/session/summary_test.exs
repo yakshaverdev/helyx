@@ -75,7 +75,7 @@ defmodule Helyx.Session.SummaryTest do
     assert length(kept_messages) == 2
     Helyx.Test.SessionCase.stop_session(session, &GenServer.stop/1)
 
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir, id: session.id)
+    {:ok, resumed, _} = Session.resume(core, sessions_dir: dir, id: session.id)
     {:ok, _, _} = Session.subscribe(resumed)
     assert %Helyx.Summary{text: "the summary", first_kept_id: ^kept} = state(resumed).summary
     assert state(resumed).compacted == {kept, nil}

@@ -128,7 +128,7 @@ defmodule Helyx.Session.Server.FeedTest do
     :ok = Sessions.stop(session)
 
     # A stop sends no notice; the resume opens a new instance.
-    assert {:ok, resumed} = Sessions.resume(core, id: session.id)
+    assert {:ok, resumed, _} = Sessions.resume(core, id: session.id)
     assert_receive {:helyx_feed, pid, %Live{instance_id: other}}
 
     assert pid == Session.pid(resumed)

@@ -8,11 +8,14 @@
 //! the turn. A `form` or an `approval` of an ask is answered here
 //! (`ask::Panel`), by its keys or its buttons.
 
+mod diff;
+
 use gpui::{
     AnyElement, App, Application, Bounds, ClipboardItem, Context, FocusHandle, FontWeight,
     KeyDownEvent, ListAlignment, ListState, SharedString, Window, WindowBounds, WindowOptions, div,
     list, prelude::*, px, rgb, size,
 };
+use helyx_client_core::attention::{Seen, attention};
 use helyx_client_core::fold::State;
 use helyx_client_core::frame::{LiveSession, SavedSession};
 use helyx_client_core::json::Json;
@@ -29,6 +32,7 @@ use helyx_desktop::composer::{SendId, SendOutcome};
 use helyx_desktop::controls::confirm_stop;
 use helyx_desktop::input::{Focus, Input, Intent, Press};
 use helyx_desktop::net::{self, Command, RequestLine, RequestState, Shared};
+use helyx_desktop::notify;
 use helyx_desktop::records::{saved_only, texts};
 use helyx_desktop::settings::Server;
 use std::collections::HashMap;
@@ -80,19 +84,31 @@ struct Desktop {
     /// Whether a stop was answered `ok` and the live list of a server with no
     /// Hub is due again.
     live_due: bool,
+    /// The facts of the state of the followed session that the last frame
+    /// saw, from which a change posts a notification while the window is not
+    /// active. The state itself holds the transcript, so it is not kept.
+    seen: Option<Seen>,
     /// The window holds the keys, so the root takes every press.
     focus: FocusHandle,
 }
 
-/// Opens the window and runs the network thread for `server`.
-pub fn run(server: Server) {
-    let shared = Arc::new(Mutex::new(Shared::new(server.token.clone())));
+/// Opens the window and runs the network thread for `folder`. The first
+/// connection uses `server`, which the start read; each later one reads the
+/// folder again, so a restarted server is found (`settings::source`).
+pub fn run(folder: std::path::PathBuf, server: Server) {
+    let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, receive) = channel();
     // One slot: a change that finds it full is in the next redraw anyway.
     let (changed, changes) = sync_channel::<()>(1);
     let thread_shared = shared.clone();
     std::thread::spawn(move || {
-        net::run(&server, &thread_shared, &receive, &|| {
+        let first = Mutex::new(Some(server));
+        let again = helyx_desktop::settings::source(&folder);
+        let source = move || match first.lock().unwrap().take() {
+            Some(server) => Ok(server),
+            None => again(),
+        };
+        net::run(&source, &thread_shared, &receive, &|| {
             let _ = changed.try_send(());
         })
     });
@@ -126,6 +142,7 @@ pub fn run(server: Server) {
                     armed: None,
                     stop_send: None,
                     live_due: false,
+                    seen: None,
                     focus: focus.clone(),
                 }
             });
@@ -409,7 +426,7 @@ fn text(message: &Message) -> String {
 }
 
 impl Render for Desktop {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.settle();
         self.default_cwd();
         let (
@@ -423,6 +440,8 @@ impl Render for Desktop {
             saved,
             saved_next,
             requests,
+            seen,
+            posted,
         ) = {
             let shared = self.shared();
             let state = shared
@@ -435,6 +454,15 @@ impl Render for Desktop {
                 .as_deref()
                 .and_then(|session| net::follow_line(session, &shared.client.follow(session)?))
                 .unwrap_or_else(|| shared.line.clone());
+            // The facts of the state and the attention of its change are read
+            // under the lock; the notification goes after it.
+            let seen = state.map(Seen::of);
+            let posted = match (self.seen.as_ref(), state) {
+                (Some(before), Some(after)) if !window.is_window_active() => {
+                    attention(before, after)
+                }
+                _ => None,
+            };
             (
                 shared.records,
                 shared.client.records().rows().to_vec(),
@@ -446,8 +474,14 @@ impl Render for Desktop {
                 shared.saved.clone(),
                 shared.saved_next.clone(),
                 shared.requests.clone(),
+                seen,
+                posted,
             )
         };
+        self.seen = seen;
+        if let Some(posted) = posted {
+            notify::post(&posted);
+        }
         // The count of the list and the rows that it draws are one snapshot.
         let shown = self.items();
         if shown.len() != self.transcript.item_count() {
@@ -1202,11 +1236,11 @@ impl Desktop {
     }
 }
 
-/// A UI block: a `form` and an `approval` natively, any other kind, and a
-/// known kind whose fields the app cannot read, as its fallback text; a mark
-/// when it was cut. `note` is the line of an ask: whether this window answers
-/// it now, later, or not at all, since an ask that it cannot read stays open
-/// for another client (ADR 0011 §4).
+/// A UI block: a `form`, an `approval`, and a `diff` natively, any other
+/// kind, and a known kind whose fields the app cannot read, as its fallback
+/// text; a mark when it was cut. `note` is the line of an ask: whether this
+/// window answers it now, later, or not at all, since an ask that it cannot
+/// read stays open for another client (ADR 0011 §4).
 fn ui_block(block: &UiBlock, note: Option<&'static str>) -> AnyElement {
     // The text of an ask has no size check in the client: the bound of a
     // block holds when it is drawn.
@@ -1214,6 +1248,7 @@ fn ui_block(block: &UiBlock, note: Option<&'static str>) -> AnyElement {
     let body = match &block.view {
         View::Form(form) => form_body(form),
         View::Approval(approval) => approval_body(&block.text, approval),
+        View::Diff(diff) => diff::body(diff, &block.text),
         View::Text => div().child(format!("▪ {text}")),
     };
     let cut = block.cut || (block.view == View::Text && more);

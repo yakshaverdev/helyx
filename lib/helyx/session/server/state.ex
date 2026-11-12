@@ -74,6 +74,10 @@ defmodule Helyx.Session.Server.State do
     # The current idle timer (`:erlang.start_timer/3`, see
     # `Connect.arm_idle/1`), or nil.
     idle: nil,
+    # The Core option of the idle stop, in ms, or nil
+    # (docs/features/idle-unload.md), and its timer, of the pattern of `idle`.
+    idle_stop_ms: nil,
+    idle_stop: nil,
     # The instructions of a compaction that waits for the end of the wait, or
     # nil (docs/features/harness-compaction.md).
     pending_compact: nil,
@@ -124,6 +128,8 @@ defmodule Helyx.Session.Server.State do
           provider_ms: %{reply: pos_integer(), close: pos_integer(), idle: pos_integer()},
           deadline_ms: %{prepare: pos_integer(), open: pos_integer()},
           idle: reference() | nil,
+          idle_stop_ms: pos_integer() | nil,
+          idle_stop: reference() | nil,
           pending_compact: String.t() | nil,
           summary: Helyx.Summary.t() | nil,
           summary_call: Helyx.Session.Server.Summary.t() | nil,

@@ -146,10 +146,10 @@ defmodule Helyx.Session.ProviderProcessTest do
       resume = &Session.resume(core, [id: session.id, provider_opts: &1] ++ opts)
       assert resume.(two: 2) == {:error, :provider_opts_differ}
       assert resume.([]) == {:error, :provider_opts_differ}
-      assert resume.(one: 1) == {:ok, session}
+      assert resume.(one: 1) == {:ok, session, :attached}
 
       Helyx.Test.SessionCase.stop_session(session, &GenServer.stop/1)
-      assert {:ok, resumed} = resume.(two: 2)
+      assert {:ok, resumed, :started} = resume.(two: 2)
       {:ok, _, _} = Session.subscribe(resumed)
 
       assert final_text(turn(resumed, "one")) == "echo:prepared|one"
