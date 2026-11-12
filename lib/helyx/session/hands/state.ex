@@ -51,6 +51,11 @@ defmodule Helyx.Session.Hands.State do
     end)
   end
 
+  # The places that the hands hold for live background runs, from every Task:
+  # a call that took a place and gave no start answer yet, and a run. The idle
+  # stop asks before it unloads (docs/features/idle-unload.md).
+  def live_runs(state), do: live_runs(state, nil)
+
   def put(state, ref, entry), do: %{state | tasks: Map.put(state.tasks, ref, entry)}
 
   # The turn Task `pid` that runs a chain, with the id that its hook Tasks stand

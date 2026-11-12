@@ -1,4 +1,4 @@
-//! The value checks of the schema of protocol 13 (`docs/features/wire-protocol.md`,
+//! The value checks of the schema of protocol 15 (`docs/features/wire-protocol.md`,
 //! "Codec"). A check returns `Err(Broken)` for a value that the schema does not
 //! allow: the frame is a contract break of the server.
 

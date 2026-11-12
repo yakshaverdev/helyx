@@ -20,7 +20,9 @@ defmodule Helyx.Transport.WebSocket do
   address that is not loopback needs one of the two. The authority closes a
   connection with `4401` (no credential), `4503` (no answer at the `hello`),
   or `4403` (its access changed, also through `close/2`). With no authority,
-  an operation whose name starts with `hub.` answers `unknown_op`. An
+  an operation whose name starts with `hub.` and the records feed's
+  `records.subscribe` answer `unknown_op`, and `records.unsubscribe` answers
+  `unknown_sub` (no subscription exists). An
   authority may also export `webhook/3`: the server then answers
   `POST /hooks/<id>` with the status that the authority decides, after it
   read the body within 1,048,576 bytes; with no authority, or one without
@@ -55,8 +57,8 @@ defmodule Helyx.Transport.WebSocket do
 
   # The protocol number and the SHA-256 of the schema in
   # `docs/features/wire-protocol.md`; a schema change needs a new number.
-  @protocol 13
-  @schema_sha256 "77847d3351afb5dd28549b53370bfe4682c1c1201a3ea635e93dc1aa59648026"
+  @protocol 15
+  @schema_sha256 "21275cebe45ee80ed963b2e1feb4d91f023f246484db3157dbef0de89123deb3"
 
   @max_connections Helyx.Transport.WebSocket.Bounds.get("connections")
   # The webhook endpoint of a Hub (decision 17): one request reads at most

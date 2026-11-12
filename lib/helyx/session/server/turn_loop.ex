@@ -13,7 +13,7 @@ defmodule Helyx.Session.Server.TurnLoop do
   import Helyx.Session.Server.Flow, only: [is_turn: 1]
 
   alias Helyx.Session.{Id, Queue, Turn}
-  alias Helyx.Session.Server.{Compaction, Connect, Prepare, Records, Settle, State}
+  alias Helyx.Session.Server.{Compaction, Connect, IdleStop, Prepare, Records, Settle, State}
   alias Helyx.Session.Server.Flow
   alias Helyx.Session.Server.Flow.{Connecting, Dying, Idle, Live, Preparing, Sending, Up, Waiting}
   alias Helyx.Session.Server.{Steering, Summary, Wait}
@@ -189,6 +189,9 @@ defmodule Helyx.Session.Server.TurnLoop do
   def handle({:need_context, _turn_id}, state), do: state
   def handle({:provider_reply, _from, _kind, _reply}, state), do: state
   def handle({:timeout, _ref, :idle_close}, state), do: state
+  # The idle stop of a session that is not idle any more, or an old ref
+  # (docs/features/idle-unload.md).
+  def handle({:timeout, _ref, :idle_stop}, state), do: state
   def handle({:DOWN, _ref, :process, _pid, _reason}, state), do: state
 
   # The answer of the hands to the cleanup request (`Wait.cleanup/2`).
@@ -334,10 +337,11 @@ defmodule Helyx.Session.Server.TurnLoop do
 
   # With no turn and no wait, a provider process of another model than the
   # session's closes before the next turn starts (a provider or a model
-  # switch); otherwise the queues start the next turn.
+  # switch); otherwise the queues start the next turn. A session that this
+  # leaves with no work arms its idle stop (docs/features/idle-unload.md).
   def settle(%State{phase: %Idle{}} = state) do
     with %State{phase: %Idle{}} = state <- close_switched(state) do
-      Connect.arm_idle(start_queued(state))
+      state |> start_queued() |> Connect.arm_idle() |> IdleStop.arm()
     end
   end
 

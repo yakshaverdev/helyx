@@ -51,7 +51,8 @@ defmodule Helyx.Provider.OpenAI do
          {:ok, key} <- key(endpoint.key_env) do
       request = request(endpoint, model, context, opts, key, req_options)
       mask = mask(key)
-      events = request |> chunks() |> Events.events(info)
+      meta = %{provider: endpoint.id, model: model}
+      events = request |> chunks(meta) |> Events.events(info)
       {:ok, Stream.map(events, &text_error(&1, endpoint.id, key, mask))}
     end
   end
@@ -216,26 +217,40 @@ defmodule Helyx.Provider.OpenAI do
   # consumer halts. A transport error while streaming raises, which fails the
   # turn as `{:task_exit, reason}`. Elements are binaries or one
   # `{:error, reason}` tuple.
-  defp chunks(req), do: Stream.flat_map([req], &post(&1, 0))
+  defp chunks(req, meta), do: Stream.flat_map([req], &post(&1, 0, meta))
 
   # Only a 200 yields body chunks, so no chunk reaches the session before a
   # retry. The wait runs in the model Task, so an abort kills it at once.
   @max_retries 3
   @max_server_delay_ms 60_000
 
-  defp post(req, retries) do
-    case Req.post(req) do
-      {:ok, %Req.Response{status: 200, body: body}} -> body
-      result -> fail_or_retry(req, result, retries)
+  # One attempt event per call of `Req.post/1`: the attempt number, the
+  # status or the transport error, the time to the headers, and the retry
+  # decision. The event goes after the decision and before any wait.
+  defp post(req, retries, meta) do
+    started = System.monotonic_time()
+    result = Req.post(req)
+    duration = System.monotonic_time() - started
+
+    case result do
+      {:ok, %Req.Response{status: 200, body: body}} ->
+        emit(meta, retries, result, duration, :ok, nil)
+        body
+
+      result ->
+        delay = delay(result, retries)
+        {decision, wait_ms} = decision(delay, retries)
+        emit(meta, retries, result, duration, decision, wait_ms)
+        fail_or_retry(req, result, retries, delay, meta)
     end
   end
 
-  defp fail_or_retry(req, result, retries) do
-    case delay(result, retries) do
+  defp fail_or_retry(req, result, retries, delay, meta) do
+    case delay do
       {:wait, ms} when retries < @max_retries ->
         cancel(result)
         Process.sleep(ms)
-        post(req, retries + 1)
+        post(req, retries + 1, meta)
 
       # Fails at once: the body is not read, so it cannot stall the error.
       {:too_long, status, ms} ->
@@ -250,6 +265,35 @@ defmodule Helyx.Provider.OpenAI do
         [{:error, reason(result)}]
     end
   end
+
+  # The decision of a delay result, and the wait that it takes. A wait with
+  # no retries left is the give-up: no wait follows it.
+  defp decision({:wait, ms}, retries) when retries < @max_retries, do: {:wait, ms}
+  defp decision({:wait, _ms}, _retries), do: {:give_up, nil}
+  defp decision({:too_long, _status, ms}, _retries), do: {:too_long, ms}
+  defp decision(:none, _retries), do: {:fail, nil}
+
+  # No content: ids, counts, and codes only.
+  defp emit(meta, attempt, result, duration, decision, wait_ms) do
+    :telemetry.execute(
+      [:helyx, :provider, :attempt],
+      %{duration: duration},
+      Map.merge(meta, %{
+        attempt: attempt,
+        status: status(result),
+        error: error(result),
+        decision: decision,
+        wait_ms: wait_ms
+      })
+    )
+  end
+
+  defp status({:ok, %Req.Response{status: status}}), do: status
+  defp status(_result), do: nil
+
+  defp error({:error, %Req.TransportError{reason: reason}}) when is_atom(reason), do: reason
+  defp error({:error, _reason}), do: :other
+  defp error(_result), do: nil
 
   defp cancel({:ok, resp}), do: Req.cancel_async_response(resp)
   defp cancel({:error, _}), do: :ok

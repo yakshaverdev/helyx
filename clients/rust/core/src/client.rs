@@ -15,12 +15,16 @@ use crate::handshake::{Step, Token};
 use crate::json::{self, Json, Limits};
 use crate::operation::{self, Operation};
 use crate::reconcile::subscribe_fits;
+use crate::records::{Feed, RecordFrame};
 use crate::seq::Seq;
 use std::collections::HashMap;
 use std::time::Duration;
 
 pub use crate::connection::{MAX_IN_FLIGHT, Refusal};
 pub use crate::follow::{Follow, Hold, Wait};
+
+/// The close code of a token that the server refused.
+pub const UNAUTHORIZED: u16 = 4401;
 
 /// What the client tells the host.
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +42,11 @@ pub enum Output {
     },
     /// The state of this session changed.
     Changed(String),
+    /// The records feed changed: its reply, a change, or a full list.
+    RecordsChanged,
+    /// The records subscription ended without the client's unsubscribe: the
+    /// rows stay, and the host subscribes again.
+    RecordsEnded,
     /// The session ended; its state stays, and no subscribe for it goes on
     /// this connection until the host states its intent again or a `history`
     /// reply says that the instance that ended was replaced (`Follow::Held`).
@@ -83,34 +92,45 @@ pub struct Closed {
 
 #[derive(Debug)]
 pub struct Client {
-    token: Option<Token>,
     limits: Limits,
     pub(crate) sessions: HashMap<String, Session>,
     /// The statements of the host, for all sessions: each takes the next
     /// number, so no two share one, those of a forgotten session neither.
     statements: u64,
     pub(crate) connection: Option<Connection>,
+    /// The records feed of the user, from its last reply, its changes, and
+    /// its full lists. It outlives a connection, as a session state does.
+    records: Feed,
     /// A connection of the client took the handshake: a fact of the frames
     /// of the server, which outlives the connection (`closed`).
     welcomed: bool,
 }
 
 impl Client {
-    /// A client that proves `token` at each handshake, or sends no proof.
-    pub fn new(token: Option<String>) -> Client {
-        Client::with_limits(token, json::WIRE)
+    /// A client with no connection: each `connect` gives it the token of that
+    /// connection.
+    pub fn new() -> Client {
+        Client::with_limits(json::WIRE)
     }
 
     /// A client with other decode bounds, for tests.
-    pub fn with_limits(token: Option<String>, limits: Limits) -> Client {
+    pub fn with_limits(limits: Limits) -> Client {
         Client {
-            token: token.map(Token::new),
             limits,
             sessions: HashMap::new(),
             statements: 0,
             connection: None,
+            records: Feed::default(),
             welcomed: false,
         }
+    }
+
+    /// The records feed of the user, from its reply and its changes
+    /// (`docs/features/live-records.md`). The host sends
+    /// `Operation::records_subscribe()` after a welcome, and
+    /// `Operation::records_unsubscribe()` to end it.
+    pub fn records(&self) -> &Feed {
+        &self.records
     }
 
     /// The state of `session`, when the client has followed it.
@@ -133,20 +153,24 @@ impl Client {
         idle
     }
 
-    /// Starts a new connection: the host has opened the socket.
-    pub fn connect(&mut self) {
-        self.connection = Some(Connection::new(self.token.clone()));
+    /// Starts a new connection: the host has opened the socket. The
+    /// handshake proves `token`, the token of the server of this connection,
+    /// or sends no proof. The state of the followed sessions stays.
+    pub fn connect(&mut self, token: Option<String>) {
+        self.connection = Some(Connection::new(token.map(Token::new)));
     }
 
     /// The socket ended, with its close code or none for a lost connection,
     /// or the host could not open one (a failed connect or upgrade). Once a
     /// connection of the client took the handshake, any end reconnects,
-    /// `4408` (the slow end) and a failed open too, but a break and a
-    /// refusal; before it, every end stops, as the first connect of the TUI
-    /// does (`docs/features/tui-attach.md`, decision 10). The host's
+    /// `4408` (the slow end) and a failed open too, but a break, a refusal,
+    /// and `4401`: the server refused the token, and the next connection
+    /// would send the same one. Before it, every end stops, as the first
+    /// connect of the TUI does (`docs/features/tui-attach.md`, decision 10).
+    /// The host's
     /// requests that were in flight lose their replies: they come back in
     /// `unknown`, and none of them goes again (ADR 0006 §4).
-    pub fn closed(&mut self, _code: Option<u16>) -> Closed {
+    pub fn closed(&mut self, code: Option<u16>) -> Closed {
         let connection = self.connection.take();
         let ended = connection
             .as_ref()
@@ -156,7 +180,7 @@ impl Client {
                 .map(|(id, request)| (id.clone(), request.op))
                 .collect()
         });
-        let next = match self.welcomed && !ended {
+        let next = match self.welcomed && !ended && code != Some(UNAUTHORIZED) {
             true => Next::Reconnect,
             false => Next::Stop,
         };
@@ -412,7 +436,31 @@ impl Client {
                 c.stop(session.clone(), Stop::Ended(instance), s.stated());
                 Ok(vec![Output::Ended { session, crashed }])
             }
+            ServerFrame::Record(frame) => self.record(frame),
+            ServerFrame::RecordsEnd => {
+                let c = self.connection.as_mut().expect("a connection");
+                if !c.records {
+                    return Err(Broken("records end"));
+                }
+                c.records = false;
+                self.records.end();
+                Ok(vec![Output::RecordsEnded])
+            }
         }
+    }
+
+    /// A `record` or `records` frame: it is a break before the
+    /// `records.subscribe` reply or after the `records.unsubscribe` reply.
+    fn record(&mut self, frame: RecordFrame) -> Checked<Vec<Output>> {
+        let c = self.connection.as_mut().expect("a connection");
+        if !c.records {
+            return Err(Broken("record frame"));
+        }
+        match frame {
+            RecordFrame::Change(change) => self.records.applied(change),
+            RecordFrame::Full { records, more } => self.records.full(records, more),
+        }
+        Ok(vec![Output::RecordsChanged])
     }
 
     fn reply(
@@ -458,6 +506,21 @@ impl Client {
                 let stated = request.stated.expect("an unsubscribe names its statement");
                 Ok(self.unsubscribed(session, sub, stated, result))
             }
+            // The records feed: its reply replaces the list, and the
+            // unsubscribe ends it on the connection.
+            ("records.subscribe", _, Ok(Reply::Records { records, more })) => {
+                c.records = true;
+                self.records = Feed::subscribed(records, more);
+                Ok(vec![Output::RecordsChanged])
+            }
+            ("records.unsubscribe", _, result) => {
+                // A refusal such as `busy` leaves the server subscription
+                // live, so its frames still apply; only an ok reply ends it.
+                if result.is_ok() {
+                    c.records = false;
+                }
+                Ok(vec![Output::Reply { id, result }])
+            }
             // The session started again: the instance that the page named
             // was replaced, so an end of it holds no more.
             // Only a page of the instance of the state is recorded: a page of
@@ -477,6 +540,12 @@ impl Client {
             }
             (_, _, result) => Ok(vec![Output::Reply { id, result }]),
         }
+    }
+}
+
+impl Default for Client {
+    fn default() -> Client {
+        Client::new()
     }
 }
 

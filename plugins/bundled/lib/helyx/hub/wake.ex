@@ -29,6 +29,8 @@ defmodule Helyx.Hub.Wake do
   # put off.
   @retry_s 30
 
+  def poll_ms, do: @poll_ms
+
   def init(state) do
     {:ok, sup} = Task.Supervisor.start_link()
     Map.put(state, :wake, %{sup: sup, tasks: %{}, poll: nil})
@@ -215,6 +217,18 @@ defmodule Helyx.Hub.Wake do
     before = Map.take(row, [:at, :run, :delivery_id, :due_at, :last_at, :last_outcome])
     changes = Map.put(before, :next_try_at, now() + @retry_s)
     state.store.update_schedule(state.db, row.id, sent, changes, deadline)
+  end
+
+  # The session took nothing and the wake-up ends refused after the decide:
+  # the row of a refusal before the send, on the row as the decide left it
+  # (decisions 8 and 11, and `Helyx.Hub.Delivery.abandoned/3`).
+  defp answered(state, row, sent, :refused, deadline) do
+    at = now()
+
+    case state.store.update_schedule(state.db, row.id, sent, refused(row, at), deadline) do
+      :ok -> settle(state, row, "refused", at, deadline)
+      other -> other
+    end
   end
 
   # The prompt call went out with no answer that proves the session took

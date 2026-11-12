@@ -19,6 +19,23 @@ defmodule CodingAgent.Attach do
   # The TCP connect and the handshake of one attempt.
   @connect_ms 5_000
 
+  # The wait of a start that this client makes, for the file of the server
+  # and its handshake. A server that runs answers within `Serve.wait_ms/0`,
+  # the read of its file, but a start runs first the boot of a VM and of
+  # Core (a launcher) or of Core, the Hub, and the transport (this VM). On
+  # the precommit host of 2026-11-11, under the load of the other projects,
+  # the server of a print run in this VM wrote its file 4.7 s after the
+  # start, and 2.7 s in a second run: the 5,000 ms of `Serve.wait_ms/0`
+  # failed the attach at random, and the print run ended before its turn.
+  # This bound is three times that, and holds the steps of a start, each
+  # 5,000 ms (`docs/features/serve.md`, Bounds): the lock, the remove of a
+  # stale file, and the write of the file.
+  @start_ms 15_000
+
+  @doc "The bound of the wait for a server that this client starts, in milliseconds."
+  @spec start_ms() :: pos_integer()
+  def start_ms, do: @start_ms
+
   @doc """
   Connects to the server of the data folder `dir`. Returns
   `{:ok, socket, ws}` after `welcome`, with the socket owned by the caller
@@ -32,7 +49,7 @@ defmodule CodingAgent.Attach do
   @spec connect(Path.t()) ::
           {:ok, :gen_tcp.socket(), term()} | :none | {:error, String.t()}
   def connect(dir) do
-    with :ok <- folder(dir), do: attempt(dir, deadline(), :none)
+    with :ok <- folder(dir), do: attempt(dir, deadline(Serve.wait_ms()), :none)
   end
 
   @doc """
@@ -50,10 +67,11 @@ defmodule CodingAgent.Attach do
           {:ok, :gen_tcp.socket(), term()} | {:error, String.t()}
   def start(dir, launcher) do
     log = Path.join(dir, "server.log")
+    free = {:starting, "the server did not start; see #{log}"}
 
     with :ok <- Serve.mkdir(dir),
          :ok <- spawn_server(launcher, log),
-         do: attempt(dir, deadline(), {:starting, "the server did not start; see #{log}"})
+         do: attempt(dir, deadline(@start_ms), free)
   end
 
   @doc """
@@ -92,14 +110,15 @@ defmodule CodingAgent.Attach do
     server = Serve.start([sessions_dir: dir, model: model, ip: {127, 0, 0, 1}, port: 0], output)
 
     try do
-      fun.(attempt(dir, deadline(), {:serving, server}))
+      fun.(attempt(dir, deadline(@start_ms), {:serving, server}))
     after
       Serve.stop(server)
       StringIO.close(output)
     end
   end
 
-  defp deadline, do: System.monotonic_time(:millisecond) + Serve.wait_ms()
+  # The last attempt that starts, and the bound that the line names.
+  defp deadline(ms), do: %{at: System.monotonic_time(:millisecond) + ms, ms: ms}
 
   # perl forks the server and exits at once; the child leaves the session
   # of the terminal (`setsid`), so it is in a new process group too, and
@@ -207,39 +226,40 @@ defmodule CodingAgent.Attach do
   # `free` is the answer to a free lock: `:none`, or for a server that the
   # client started `{:starting, reason}`, an attempt again, and for the
   # server of this VM `{:serving, task}`, an attempt again while it runs.
-  defp attempt(dir, deadline, free) do
+  # `wait` is the last attempt that starts and the bound that a line names.
+  defp attempt(dir, wait, free) do
     case {test_lock(dir), free} do
-      {true, _free} -> read(dir, deadline, free)
+      {true, _free} -> read(dir, wait, free)
       {false, :none} -> :none
-      {false, {:starting, text}} -> again(dir, deadline, free, text)
-      {false, {:serving, task}} -> serving(dir, deadline, free, Task.yield(task, 0))
+      {false, {:starting, text}} -> again(dir, wait, free, text)
+      {false, {:serving, task}} -> serving(dir, wait, free, Task.yield(task, 0))
       {error, _free} -> error
     end
   end
 
   # The server of this VM gives its line when it ended: no server comes.
-  defp serving(dir, deadline, free, nil),
-    do: again(dir, deadline, free, "the server did not start")
+  defp serving(dir, wait, free, nil),
+    do: again(dir, wait, free, "the server did not start")
 
-  defp serving(_dir, _deadline, _free, {:ok, {:error, text}}),
+  defp serving(_dir, _wait, _free, {:ok, {:error, text}}),
     do: {:error, "could not start a server: " <> text}
 
   # The stop of the VM, or of the supervisor, ends a server with `:ok`.
-  defp serving(_dir, _deadline, _free, {:ok, :ok}),
+  defp serving(_dir, _wait, _free, {:ok, :ok}),
     do: {:error, "could not start a server: the server stopped"}
 
-  defp serving(_dir, _deadline, _free, {:exit, reason}),
+  defp serving(_dir, _wait, _free, {:exit, reason}),
     do: {:error, "could not start a server: " <> Helyx.Reason.text(reason)}
 
-  defp read(dir, deadline, free) do
+  defp read(dir, wait, free) do
     case Serve.read_file(dir) do
-      {:ok, ip, port, token} when is_function(token) -> open(dir, deadline, free, ip, port, token)
-      {:ok, _ip, _port, nil} -> again(dir, deadline, free, "the server file holds no token")
-      :error -> again(dir, deadline, free, "no valid server file")
+      {:ok, ip, port, token} when is_function(token) -> open(dir, wait, free, ip, port, token)
+      {:ok, _ip, _port, nil} -> again(dir, wait, free, "the server file holds no token")
+      :error -> again(dir, wait, free, "no valid server file")
     end
   end
 
-  defp open(dir, deadline, free, ip, port, token) do
+  defp open(dir, wait, free, ip, port, token) do
     case Wire.connect(ip, port, token, @connect_ms) do
       {:ok, socket, ws} ->
         {:ok, socket, ws}
@@ -255,17 +275,17 @@ defmodule CodingAgent.Attach do
            "the server broke the wire contract"}
 
       {:error, text} ->
-        again(dir, deadline, free, text)
+        again(dir, wait, free, text)
     end
   end
 
   # The deadline is checked after the sleep, so no attempt starts past it.
-  defp again(dir, deadline, free, text) do
+  defp again(dir, %{at: at, ms: ms} = wait, free, text) do
     Process.sleep(@poll_ms)
 
-    if System.monotonic_time(:millisecond) < deadline,
-      do: attempt(dir, deadline, free),
-      else: {:error, "could not attach to the server of #{dir} in #{Serve.wait_ms()} ms: #{text}"}
+    if System.monotonic_time(:millisecond) < at,
+      do: attempt(dir, wait, free),
+      else: {:error, "could not attach to the server of #{dir} in #{ms} ms: #{text}"}
   end
 
   # A non-blocking take of the lock: `true` when a server holds it. A take
@@ -283,7 +303,7 @@ defmodule CodingAgent.Attach do
             Lock.release(lock)
             false
 
-          {:error, {:session_locked, _}} ->
+          {:error, :locked} ->
             true
 
           {:error, {:lock_failed, text}} ->

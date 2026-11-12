@@ -17,7 +17,10 @@ defmodule Helyx.TUI.SecondClientTest do
 
   setup do
     core = :"core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [Gated.Loop, Gate]})
+    dir = Path.join(System.tmp_dir!(), "helyx-#{core}")
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    start_supervised!({Helyx.Core, name: core, plugins: [Gated.Loop, Gate], sessions_dir: dir})
     gate = Gate.open()
     {:ok, session} = Helyx.Test.SavedSession.start(core, "gated/#{gate}")
     {:ok, snapshot, _} = Session.subscribe(session)

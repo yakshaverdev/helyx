@@ -18,7 +18,13 @@ defmodule Helyx.TUI.ViewModelSnapshotTest do
 
   setup context do
     core = :"core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [Fake, Gate, Gated.Connected]})
+    dir = Path.join(System.tmp_dir!(), "helyx-#{core}")
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    start_supervised!(
+      {Helyx.Core, name: core, plugins: [Fake, Gate, Gated.Connected], sessions_dir: dir}
+    )
+
     Map.merge(context, %{core: core, gate: Gate.open()})
   end
 

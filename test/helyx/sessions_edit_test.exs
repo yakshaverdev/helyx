@@ -9,9 +9,7 @@ defmodule Helyx.SessionsEditTest do
   alias Helyx.{Message, Session, Sessions}
   alias Helyx.Session.File, as: SessionFile
   alias Helyx.Session.File.Edit
-  alias Helyx.Session.Lock
   alias Helyx.Test.Memory
-  alias Helyx.Test.PerlSignal
   alias Helyx.Test.SessionFile, as: Saved
 
   @moduletag :tmp_dir
@@ -93,32 +91,12 @@ defmodule Helyx.SessionsEditTest do
       assert File.read!(path) == before
     end
 
-    test "a lock that another process holds is refused", %{core: core, tmp_dir: dir} do
-      {id, path} = saved(dir, [msg(:user, "a")])
-      parent = self()
-
-      holder =
-        spawn(fn ->
-          Process.flag(:trap_exit, true)
-          {:ok, _lock} = Lock.take(path)
-          send(parent, :held)
-          Process.sleep(:infinity)
-        end)
-
-      assert_receive :held, 5_000
-      assert Sessions.delete(core, id) == {:error, :running}
-      assert Sessions.remove_message(core, id, "x") == {:error, :running}
-      assert File.exists?(path)
-      Process.exit(holder, :kill)
-    end
-
-    test "removes a left copy first and keeps the lock file; a failed remove keeps the file",
+    test "removes a left copy first; a failed remove keeps the file",
          %{core: core, tmp_dir: dir} do
       {id, path} = saved(dir, [msg(:user, "a")])
       File.write!(path <> ".tmp", "left")
       assert Sessions.delete(core, id) == :ok
       refute File.exists?(path <> ".tmp")
-      assert File.exists?(Path.rootname(path) <> ".lock")
 
       {id, path} = saved(dir, [msg(:user, "a")])
       File.mkdir_p!(Path.join(path <> ".tmp", "x"))
@@ -273,7 +251,7 @@ defmodule Helyx.SessionsEditTest do
       # A resume reads the records and keeps none: no entry is invalid.
       log =
         ExUnit.CaptureLog.capture_log(fn ->
-          {:ok, session} = Sessions.resume(core, id: id)
+          {:ok, session, _} = Sessions.resume(core, id: id)
           :ok = Sessions.stop(session)
         end)
 
@@ -410,11 +388,80 @@ defmodule Helyx.SessionsEditTest do
       {id, _path} = saved(dir, [a, b])
 
       assert {:ok, [_]} = Sessions.remove_message(core, id, b.id)
-      {:ok, session} = Sessions.resume(core, id: id)
+      {:ok, session, _} = Sessions.resume(core, id: id)
 
       assert_receive {:sync, entries, _opts}, 5_000
       assert Enum.map(entries, & &1.message.id) == [a.id]
       :ok = Sessions.stop(session)
+    end
+  end
+
+  describe "exclusion and the copy" do
+    test "an edit in progress refuses a resume and a second edit, and then completes",
+         %{core: core, tmp_dir: dir} do
+      {id, path} = big_session(dir)
+      [first | _] = resumed(dir, id)
+      registry = Helyx.Core.sessions_registry(core)
+      parent = self()
+
+      # The gate is the killer of the edit: it ignores `:cancel`, so the work
+      # waits at its disarm, after the key is registered and before the
+      # rename. No poll can then race an unregister.
+      gate =
+        spawn(fn ->
+          receive do
+            {:release, from} -> send(from, :released)
+          end
+        end)
+
+      spawn(fn ->
+        result =
+          Edit.run(core, nil, fn _killer ->
+            Edit.remove_message({core, id, path}, @cwd, first.id, gate)
+          end)
+
+        send(parent, {:removed, result})
+      end)
+
+      await(fn -> Registry.lookup(registry, {:edit, id}) != [] end, "the edit to hold its key")
+
+      assert Sessions.resume(core, id: id) == {:error, :editing}
+      assert Sessions.delete(core, id) == {:error, :running}
+
+      send(gate, {:release, self()})
+      assert_receive :released
+      assert_receive {:removed, {:ok, ids}}, 10_000
+      assert first.id in ids
+
+      assert {:ok, session, _} = Sessions.resume(core, id: id)
+      :ok = Sessions.stop(session)
+    end
+
+    test "a removal keeps the mode of the session file", %{core: core, tmp_dir: dir} do
+      [a, b] = [msg(:user, "keep"), msg(:user, "gone")]
+      {id, path} = saved(dir, [a, b])
+      File.chmod!(path, 0o640)
+
+      assert Sessions.remove_message(core, id, b.id) == {:ok, [b.id]}
+
+      assert Bitwise.band(File.stat!(path).mode, 0o777) == 0o640
+      refute File.exists?(path <> ".tmp")
+      assert ids(resumed(dir, id)) == [a.id]
+    end
+
+    test "a copy left at the path is removed first, also when it is a symlink",
+         %{core: core, tmp_dir: dir} do
+      [a, b] = [msg(:user, "keep"), msg(:user, "gone")]
+      {id, path} = saved(dir, [a, b])
+      target = Path.join(dir, "target")
+      File.write!(target, "keep")
+      File.ln_s!(target, path <> ".tmp")
+
+      assert Sessions.remove_message(core, id, b.id) == {:ok, [b.id]}
+
+      assert File.read!(target) == "keep"
+      assert ids(resumed(dir, id)) == [a.id]
+      refute File.exists?(path <> ".tmp")
     end
   end
 
@@ -484,150 +531,6 @@ defmodule Helyx.SessionsEditTest do
       assert_receive {:removed, {:error, :timeout}}, 60_000
       assert_receive {:DOWN, ^ref, :process, ^task, :killed}
       assert File.read!(path) == before
-    end
-  end
-
-  describe "a session that lost its lock" do
-    # The edit waits at the Task supervisor of its Core, so before its take;
-    # a resume takes the lock, its perl ends, and the session goes on in
-    # memory, registered. The edit then takes the free lock (Codex gate of
-    # #833).
-    test "is refused after the take, and the file does not change", %{tmp_dir: dir} do
-      dir = Path.join(dir, "lost")
-      core = :"core_#{System.unique_integer([:positive])}"
-
-      start_supervised!(
-        {Helyx.Core, name: core, plugins: [Helyx.Test.Provider], sessions_dir: dir},
-        id: core
-      )
-
-      first = msg(:user, "one")
-      {id, path} = saved(dir, [first, msg(:user, "two")])
-      parent = self()
-
-      for {name, call} <- [
-            remove: fn -> Sessions.remove_message(core, id, first.id) end,
-            delete: fn -> Sessions.delete(core, id) end
-          ] do
-        sup = Process.whereis(Helyx.Core.task_supervisor(core))
-        true = :erlang.suspend_process(sup)
-        spawn(fn -> send(parent, {name, call.()}) end)
-
-        await(
-          fn -> Process.info(sup, :message_queue_len) == {:message_queue_len, 1} end,
-          "the edit to wait"
-        )
-
-        {:ok, session} = Sessions.resume(core, id: id)
-        pid = Session.pid(session)
-        lock_path = Path.rootname(path) <> ".lock"
-        lock = Helyx.Session.Server.State.lock(:sys.get_state(pid))
-        PerlSignal.send!(PerlSignal.pid(lock, lock_path), "KILL", lock_path)
-
-        await(
-          fn -> Helyx.Session.Server.State.lock(:sys.get_state(pid)) == nil end,
-          "the session to lose its lock"
-        )
-
-        before = File.read!(path)
-
-        true = :erlang.resume_process(sup)
-        assert_receive {^name, {:error, :running}}, 5_000
-        assert File.read!(path) == before
-        :ok = Sessions.stop(session)
-      end
-    end
-  end
-
-  describe "a removal whose lock holder ends" do
-    # The removal waits for perl's answer to a command on its copy; perl
-    # answers and then ends, so the lock is free, and a delete takes it and
-    # removes the file and the copy. The removal goes on in its Task, which
-    # traps exits, and must write no copy after that (Codex gate of #833,
-    # round 2). The hold is at the first command after the read: the create
-    # of the copy (`c`), or `r` of an old copy in the code before the fix.
-    test "leaves no copy after a delete, held at the create of the copy",
-         %{core: core, tmp_dir: dir} do
-      lose_lock(core, dir, [])
-    end
-
-    # The hold is at the first append to the copy: the copy is made and the
-    # session file is open in the Task, so a write of the copy that does
-    # not go through perl would make the copy again after the delete.
-    test "leaves no copy after a delete, held at an append to the copy",
-         %{core: core, tmp_dir: dir} do
-      lose_lock(core, dir, [{Edit, :flush}])
-    end
-
-    # perl stops after its answer to the take, so the Task, after its read
-    # of the file, waits at its first command; each frame of `then` lets
-    # perl answer that command and stops it again, so the Task waits at its
-    # next command, the one in `frame`. At the last hold perl answers and
-    # is killed, and a delete runs before the Task goes on.
-    defp lose_lock(core, dir, then) do
-      text = String.duplicate("x", 1_000)
-      {id, path} = saved(dir, for(n <- 1..3_000, do: msg(:user, text <> "#{n}")))
-      tmp = path <> ".tmp"
-      [first | _] = resumed(dir, id)
-      task = held_task(core, :removed, fn -> Sessions.remove_message(core, id, first.id) end)
-
-      # perl starts in some ms; the Task waits for its answer to the take.
-      # The port is in the list before the VM has started perl, and it
-      # reports the os pid 0 until then: `PerlSignal.pid/2` waits for the
-      # pid and checks it (a `kill -STOP 0` froze a precommit run).
-      true = :erlang.resume_process(task)
-      port = poll_until(fn -> lock_port(task) end)
-      true = :erlang.suspend_process(task)
-      lock_path = Path.rootname(path) <> ".lock"
-      perl = PerlSignal.pid(port, lock_path)
-      on_exit(fn -> PerlSignal.continue(perl, lock_path) end)
-      if in_frames?(task, {Lock, :read_answer}), do: answered(task)
-      refute File.exists?(tmp)
-      PerlSignal.send!(perl, "STOP", lock_path)
-      true = :erlang.resume_process(task)
-      waits_at(task, {Edit, :replace})
-
-      for frame <- then do
-        PerlSignal.send!(perl, "CONT", lock_path)
-        answered(task)
-        PerlSignal.send!(perl, "STOP", lock_path)
-        true = :erlang.resume_process(task)
-        waits_at(task, frame)
-      end
-
-      PerlSignal.send!(perl, "CONT", lock_path)
-      answered(task)
-      PerlSignal.send!(perl, "KILL", lock_path)
-      Saved.await_lock_free(path)
-
-      assert Sessions.delete(core, id) == :ok
-      true = :erlang.resume_process(task)
-      assert_receive {:removed, {:error, _reason}}, 10_000
-      refute File.exists?(path)
-      refute File.exists?(tmp)
-    end
-
-    # The Task waits for the answer of a command that `frame` sent, and is
-    # held there.
-    defp waits_at(task, frame) do
-      poll_until(fn -> in_frames?(task, {Lock, :read_answer}) and in_frames?(task, frame) end)
-      true = :erlang.suspend_process(task)
-    end
-
-    # The held Task has the answer of perl in its mailbox.
-    defp answered(task),
-      do: poll_until(fn -> Process.info(task, :message_queue_len) != {:message_queue_len, 0} end)
-
-    defp lock_port(task) do
-      case for(p <- Port.list(), Port.info(p, :connected) == {:connected, task}, do: p) do
-        [port] -> port
-        [] -> false
-      end
-    end
-
-    defp in_frames?(task, frame) do
-      {:current_stacktrace, stack} = Process.info(task, :current_stacktrace)
-      frame in for({module, function, _arity, _location} <- stack, do: {module, function})
     end
   end
 end

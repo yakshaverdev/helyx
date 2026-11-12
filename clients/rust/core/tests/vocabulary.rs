@@ -9,7 +9,8 @@ use helyx_client_core::frame::{self, OPS, Reply, ServerFrame, Subscribed};
 use helyx_client_core::json::{self, Json};
 use helyx_client_core::message::{Ask, Message};
 use helyx_client_core::vocabulary::{
-    Approval, Choice, MAX_ARGUMENTS_BYTES, Question, UiBlock, View, head,
+    Approval, Choice, DiffLine, LineKind, MAX_ARGUMENTS_BYTES, MAX_DIFF_LINES, Question,
+    SHOWN_DIFF_LINES, UiBlock, View, head,
 };
 use serde_json::{Value, json};
 
@@ -289,4 +290,179 @@ fn an_ask_draws_the_block_of_its_request_only_when_it_has_a_kind() {
         .block()
         .unwrap();
     assert_eq!((block.text.as_str(), block.view), ("pick one", View::Text));
+}
+
+/// A `diff` block with the fallback text `the text` and the fields of `fields`.
+fn diff_block(fields: Value) -> Value {
+    let mut block = json!({"kind": "diff", "text": "the text"});
+    block
+        .as_object_mut()
+        .unwrap()
+        .extend(fields.as_object().unwrap().clone());
+    block
+}
+
+fn diff_view(fields: Value) -> View {
+    read(diff_block(fields)).view
+}
+
+/// A hunk of `n` context lines, from line 1.
+fn context_hunk(n: usize) -> Value {
+    json!({
+        "old_start": 1, "old_lines": n, "new_start": 1, "new_lines": n,
+        "lines": Value::Array((0..n).map(|_| json!(" x")).collect())
+    })
+}
+
+#[test]
+fn a_diff_reads_its_hunks_and_the_line_numbers_of_each_line() {
+    let View::Diff(diff) = diff_view(json!({
+        "path": "lib/a.ex",
+        "added": 2,
+        "removed": 2,
+        "hunks": [
+            {"old_start": 10, "old_lines": 2, "new_start": 10, "new_lines": 2,
+             "lines": [" a", "-b", "+c"]},
+            {"old_start": 20, "old_lines": 2, "new_start": 22, "new_lines": 2,
+             "lines": [" d", "-e", "+f"]}
+        ]
+    })) else {
+        panic!()
+    };
+    assert_eq!(diff.path, "lib/a.ex");
+    assert_eq!((diff.added, diff.removed), (2, 2));
+    assert_eq!(
+        diff.hunks[0].lines,
+        [
+            DiffLine {
+                kind: LineKind::Context,
+                text: "a".into(),
+                old: Some(10),
+                new: Some(10),
+            },
+            DiffLine {
+                kind: LineKind::Removed,
+                text: "b".into(),
+                old: Some(11),
+                new: None,
+            },
+            DiffLine {
+                kind: LineKind::Added,
+                text: "c".into(),
+                old: None,
+                new: Some(11),
+            },
+        ]
+    );
+    assert_eq!((diff.hunks[1].old_start, diff.hunks[1].new_start), (20, 22));
+    assert_eq!(
+        diff.hunks[1].lines,
+        [
+            DiffLine {
+                kind: LineKind::Context,
+                text: "d".into(),
+                old: Some(20),
+                new: Some(22),
+            },
+            DiffLine {
+                kind: LineKind::Removed,
+                text: "e".into(),
+                old: Some(21),
+                new: None,
+            },
+            DiffLine {
+                kind: LineKind::Added,
+                text: "f".into(),
+                old: None,
+                new: Some(23),
+            },
+        ]
+    );
+}
+
+#[test]
+fn a_diff_with_no_hunk_reads() {
+    let View::Diff(diff) = diff_view(json!({
+        "path": "lib/a.ex", "added": 0, "removed": 0, "hunks": []
+    })) else {
+        panic!()
+    };
+    assert!(diff.hunks.is_empty());
+    let (shown, more) = diff.shown();
+    assert!(shown.is_empty());
+    assert_eq!(more, 0);
+}
+
+#[test]
+fn a_diff_that_the_client_cannot_read_shows_its_text() {
+    let unreadable = [
+        // No path.
+        json!({"added": 0, "removed": 0, "hunks": []}),
+        // A negative count.
+        json!({"path": "p", "added": -1, "removed": 0, "hunks": []}),
+        // A line with no sign.
+        json!({"path": "p", "added": 0, "removed": 0, "hunks": [
+            {"old_start": 1, "old_lines": 1, "new_start": 1, "new_lines": 1, "lines": ["x"]}
+        ]}),
+        // A hunk with no old start.
+        json!({"path": "p", "added": 0, "removed": 0, "hunks": [
+            {"old_lines": 1, "new_start": 1, "new_lines": 1, "lines": [" a"]}
+        ]}),
+        // Lines that are not a list.
+        json!({"path": "p", "added": 0, "removed": 0, "hunks": [
+            {"old_start": 1, "old_lines": 1, "new_start": 1, "new_lines": 1, "lines": " a"}
+        ]}),
+    ];
+    for fields in unreadable {
+        let block = read(diff_block(fields.clone()));
+        assert_eq!(block.view, View::Text, "{fields}");
+        assert_eq!(block.text, "the text", "{fields}");
+    }
+}
+
+#[test]
+fn a_diff_reads_at_most_the_line_bound() {
+    let read_lines = |first: usize, second: usize| {
+        diff_view(json!({
+            "path": "p", "added": 0, "removed": 0,
+            "hunks": [context_hunk(first), context_hunk(second)]
+        }))
+    };
+    let View::Diff(diff) = read_lines(MAX_DIFF_LINES - 1, 1) else {
+        panic!()
+    };
+    let lines: usize = diff.hunks.iter().map(|hunk| hunk.lines.len()).sum();
+    assert_eq!(lines, MAX_DIFF_LINES);
+    assert_eq!(read_lines(MAX_DIFF_LINES, 1), View::Text);
+}
+
+#[test]
+fn a_diff_shows_its_first_lines_and_counts_the_rest() {
+    let shown = |n: usize| {
+        let View::Diff(diff) = diff_view(json!({
+            "path": "p", "added": 0, "removed": 0, "hunks": [context_hunk(n)]
+        })) else {
+            panic!()
+        };
+        let (shown, more) = diff.shown();
+        let lines: usize = shown.iter().map(|(_, lines)| lines.len()).sum();
+        (lines, more)
+    };
+    assert_eq!(shown(SHOWN_DIFF_LINES), (SHOWN_DIFF_LINES, 0));
+    assert_eq!(shown(SHOWN_DIFF_LINES + 1), (SHOWN_DIFF_LINES, 1));
+}
+
+#[test]
+fn a_multibyte_line_keeps_its_text() {
+    let View::Diff(diff) = diff_view(json!({
+        "path": "p", "added": 1, "removed": 0, "hunks": [
+            {"old_start": 1, "old_lines": 0, "new_start": 1, "new_lines": 1, "lines": ["+é𝄞"]}
+        ]
+    })) else {
+        panic!()
+    };
+    let line = &diff.hunks[0].lines[0];
+    assert_eq!(line.kind, LineKind::Added);
+    assert_eq!(line.text, "é𝄞");
+    assert_eq!((line.old, line.new), (None, Some(1)));
 }

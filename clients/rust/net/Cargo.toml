@@ -1,0 +1,23 @@
+[package]
+name = "helyx-client-net"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The network layer of the Helyx client kit: the WebSocket thread, its waits, and its reconnect rules"
+publish = false
+
+[dependencies]
+helyx-client-core = { path = "../core" }
+# The seam of the feature `stub`: a test caps the send buffer of the socket.
+socket2 = { version = "0.6", optional = true }
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+
+# The test support of this crate and of the bindings, which no host build
+# holds: the stub server on the loopback, and the small send buffer that a
+# test gives its socket (docs/features/client-kit.md, "The network layer").
+[features]
+stub = ["dep:socket2"]
+
+# The tests of this crate drive the stub, which the feature builds.
+[dev-dependencies]
+helyx-client-net = { path = ".", features = ["stub"] }

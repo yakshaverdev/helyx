@@ -90,14 +90,14 @@ defmodule Helyx.TUI.Composer do
 
   @doc """
   What Enter sends: `:empty`, a slash command (`Helyx.TUI.Command`), or
-  the message, with its paste markers expanded and a skill command
-  expanded by `expand` (`Command.parse/2`). The composer does not change.
+  the message, with its paste markers expanded. The composer does not
+  change.
   """
-  @spec submit(t(), Command.expand()) :: :empty | Command.t() | {:message, String.t()}
-  def submit(%__MODULE__{} = composer, expand \\ fn _text -> nil end) do
+  @spec submit(t()) :: :empty | Command.t() | {:message, String.t()}
+  def submit(%__MODULE__{} = composer) do
     case ExRatatui.textarea_get_value(composer.input) do
       "" -> :empty
-      value -> value |> Paste.expand(composer.pastes) |> Command.parse(expand)
+      value -> value |> Paste.expand(composer.pastes) |> Command.parse()
     end
   end
 
