@@ -6,7 +6,8 @@ defmodule Helyx.Tool.Edit do
   NFKC, quote, dash, line end, and trailing space normalization; only the
   matched range changes, and the new text takes the file's line ends. A BOM
   is text, so an `old_text` that names it replaces it. See
-  `docs/features/fuzzy-edit.md`.
+  `docs/features/fuzzy-edit.md`. The result carries a `diff` UI block of the
+  change, over the changed lines and their context (`docs/features/diff-blocks.md`).
   """
 
   @behaviour Helyx.Tool
@@ -51,9 +52,71 @@ defmodule Helyx.Tool.Edit do
 
       with {:ok, text} <- read(full, path),
            {:ok, from, to, new} <- locate(text, args["old_text"], new, path),
+           block = diff(path, text, from, to, new),
            :ok <- write(full, splice(text, from, to, new), path) do
-        {:ok, "Edited #{path}"}
+        {:ok, "Edited #{path}", [block]}
       end
+    end
+  end
+
+  defp diff(path, text, from, to, new) do
+    {old_window, new_window, first} = window(text, from, to, new)
+    Helyx.Diff.block(path, old_window, new_window, first)
+  end
+
+  # The whole lines of the changed range with the context lines around them:
+  # a whole-file diff of a large file costs more than the change it shows,
+  # and the window keeps the hunk starts as file line numbers.
+  defp window(text, from, to, new) do
+    {start, line, starts} = start_of_line(text, from)
+    stop = next_line(text, if(to > from, do: to - 1, else: from))
+    tail = context_after(text, stop)
+    before = if starts == [], do: start, else: elem(List.last(starts), 0)
+
+    {binary_part(text, before, tail - before),
+     binary_part(text, before, from - before) <> new <> binary_part(text, to, tail - to),
+     line - length(starts)}
+  end
+
+  # The byte offset of the start of the line that holds `p`, its line number,
+  # and the starts of the context lines before it, newest first. One walk
+  # from the start holds no offset table.
+  defp start_of_line(text, p) do
+    p = min(p, max(byte_size(text) - 1, 0))
+    start_of_line(text, 0, 1, p, [])
+  end
+
+  defp start_of_line(text, start, line, p, starts) do
+    next = next_line(text, start)
+
+    if next > start and next <= p,
+      do:
+        start_of_line(
+          text,
+          next,
+          line + 1,
+          p,
+          Enum.take([{start, line} | starts], Helyx.Diff.context_lines())
+        ),
+      else: {start, line, starts}
+  end
+
+  # The offset after the next line end at or after `offset`.
+  defp next_line(text, offset) do
+    case :binary.match(text, "\n", scope: {offset, byte_size(text) - offset}) do
+      {at, 1} -> at + 1
+      :nomatch -> byte_size(text)
+    end
+  end
+
+  defp context_after(text, offset), do: context_after(text, offset, Helyx.Diff.context_lines())
+
+  defp context_after(_text, offset, 0), do: offset
+
+  defp context_after(text, offset, count) do
+    case next_line(text, offset) do
+      ^offset -> offset
+      next -> context_after(text, next, count - 1)
     end
   end
 

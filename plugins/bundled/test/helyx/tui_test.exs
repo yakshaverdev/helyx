@@ -1476,6 +1476,14 @@ defmodule Helyx.TUITest do
 
     defp last_answer(state), do: Helyx.Message.text(List.last(ViewModel.cells(state.vm)))
 
+    defp last_prompt(state) do
+      state.vm
+      |> ViewModel.cells()
+      |> Enum.filter(&match?(%Helyx.Message{role: :user}, &1))
+      |> List.last()
+      |> Helyx.Message.text()
+    end
+
     test "a valid ref switches provider for the next turn, and back", %{core: core} do
       state = mounted(core, "switch", [["from fake"]])
       assert status_text(state) =~ "fake/switch"
@@ -1523,21 +1531,23 @@ defmodule Helyx.TUITest do
       assert_no_event(state, core)
     end
 
-    test "a line that starts with /model but has no separator shows usage and is never sent",
-         %{core: core} do
-      state = mounted(core, "plain", [["ok"]])
+    test "a line that starts with /model but has no separator is a message as typed", %{
+      core: core
+    } do
+      state = mounted(core, "plain", [["ok"], ["ok"], ["ok"]])
 
-      for text <- ["/models are fun", "/model-x"] do
-        ExRatatui.textarea_set_value(state.composer.input, "")
-        state = submit(state, text)
-        assert {:notice, "usage: /model" <> _} = List.last(ViewModel.cells(state.vm))
-        assert ExRatatui.textarea_get_value(state.composer.input) != ""
-      end
+      state =
+        Enum.reduce(["/models are fun", "/model-x"], state, fn text, state ->
+          ExRatatui.textarea_set_value(state.composer.input, "")
+          state = state |> submit(text) |> drain()
+          assert ExRatatui.textarea_get_value(state.composer.input) == ""
+          assert last_prompt(state) == text
+          state
+        end)
 
-      refute_received {:helyx_event, _sub, _event}
       assert_no_event(state, core)
 
-      # A slash elsewhere, or another first word, is a message.
+      # A slash elsewhere, or another first word, is a message too.
       ExRatatui.textarea_set_value(state.composer.input, "")
       state = state |> submit("see /model") |> drain()
       assert last_answer(state) == "ok"
@@ -1656,13 +1666,15 @@ defmodule Helyx.TUITest do
       assert_no_event(state, core)
     end
 
-    test "with no separator shows usage and is never sent", %{core: core} do
-      state = mounted(core, "compact_usage", [])
+    test "with no separator is a message as typed", %{core: core} do
+      state = mounted(core, "compactly", [["ok"]])
       state = submit(state, "/compactly")
-      assert {:notice, "usage: /compact [instructions]"} = List.last(ViewModel.cells(state.vm))
-      assert ExRatatui.textarea_get_value(state.composer.input) == "/compactly"
-      refute_received {:helyx_event, _sub, _event}
-      assert_no_event(state, core)
+      assert ExRatatui.textarea_get_value(state.composer.input) == ""
+
+      state = drain(state)
+
+      assert [prompt, _answer] = ViewModel.cells(state.vm)
+      assert Helyx.Message.text(prompt) == "/compactly"
     end
   end
 
@@ -1686,16 +1698,22 @@ defmodule Helyx.TUITest do
       assert_no_event(state, core)
     end
 
-    test "with an argument, or no separator, shows its usage", %{core: core} do
-      # The composer is a NIF resource, so each text gets its own mount.
-      for {text, i} <- Enum.with_index(["/help me", "/helpful"]) do
-        state = submit(mounted(core, "help_usage_#{i}", []), text)
-        assert {:notice, "usage: /help"} = List.last(ViewModel.cells(state.vm))
-        assert ExRatatui.textarea_get_value(state.composer.input) == text
-        assert_no_event(state, core)
-      end
-
+    test "with an argument shows its usage", %{core: core} do
+      text = "/help me"
+      state = submit(mounted(core, "help_usage", []), text)
+      assert {:notice, "usage: /help"} = List.last(ViewModel.cells(state.vm))
+      assert ExRatatui.textarea_get_value(state.composer.input) == text
+      assert_no_event(state, core)
       refute_received {:helyx_event, _sub, _event}
+    end
+
+    test "a longer word is a message as typed", %{core: core} do
+      state = mounted(core, "helpful", [["ok"]])
+      state = state |> submit("/helpful") |> drain()
+
+      assert ExRatatui.textarea_get_value(state.composer.input) == ""
+      assert [prompt, _answer] = ViewModel.cells(state.vm)
+      assert Helyx.Message.text(prompt) == "/helpful"
     end
   end
 

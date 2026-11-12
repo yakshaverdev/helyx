@@ -65,9 +65,27 @@ An input block: the request of an ask (ADR 0011 §4). The approval gate, `Helyx.
 - Fallback: a client that cannot render an approval shows `text` and gives no answer; the ask stays open for another client, and the limit of the gate or the abort ends it.
 - Answer: `%{"decision" => "allow"}` or `%{"decision" => "deny"}`. Any other answer is a deny.
 
+### `diff`
+
+A result block: `edit` and `write` send it with their result (`docs/features/diff-blocks.md`).
+
+- Fields: `path`, the path argument of the call as the model gave it, cut at `Helyx.Diff.max_path_bytes/0` bytes at a character boundary; `added` and `removed`, the counts of the `+` and the `-` lines of the whole change, also when the hunks are cut; and `hunks`, 0 or more, each of `old_start`, `old_lines`, `new_start`, `new_lines`, and `lines`. Each line is one sign of `" "`, `"-"`, or `"+"`, then the line without its line end; a line over `Helyx.Diff.line_bytes/0` is cut at a character boundary with ` …` appended. `added` and `removed` are absent when no diff was made: a write that cannot read the old file, and a change over a bound of `Helyx.Diff`. A change of only a line end or of the final newline has no hunk, and its `text` says so.
+- `text`: the unified diff. It is the header `--- a/<path>` and `+++ b/<path>`, then for each hunk `@@ -o,ol +n,nl @@` and its lines. A client shows it as the fallback.
+- `cut: true` when the emitter left out lines or cut a line. The emitter also cuts at `Helyx.Diff.budget_bytes/0` bytes of lines, counted once although each line is in `text` and in `hunks`, so a block stays near 50 KB and under the 65,536-byte bound of `Helyx.UIBlock.check/1` in most cases. The session cuts a block that is still over the bound to `{kind, text, cut: true}`, and a client then shows the text.
+- Fallback: a client that cannot render `diff` shows `text`.
+
+### `todo`
+
+The plan of the current task. The `todo` tool sends the block with its result, not as the request of an ask (`docs/features/todo-tool.md`).
+
+- Fields: `items`, a list of 1 to `Helyx.Tool.Todo.max_items/0` items, each with `text` of 1 to `Helyx.Tool.Todo.max_item_bytes/0` bytes and no new line, and `status` (`pending`, `in_progress`, or `done`), with at most one item `in_progress`.
+- `text`: one line for each item, `[x] <text>` for done, `[>] <text>` for in progress, `[ ] <text>` for pending, then a line `<done>/<total> done`.
+- Fallback: a client that cannot render a `todo` shows `text`, which reads as the checklist.
+- No answer: the block rides on a result, so no client sends anything back.
+
 ### Later kinds
 
-The candidates after `form` and `approval` are `choice`, `diff`, `table`, `progress`, and `link`. Each gets its entry here with the ticket that builds it.
+The candidates after `form`, `approval`, `diff`, and `todo` are `choice`, `table`, `progress`, and `link`. Each gets its entry here with the ticket that builds it.
 
 ### Rendering in the TUI
 

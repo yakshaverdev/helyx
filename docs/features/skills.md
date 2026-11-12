@@ -22,10 +22,12 @@ Decisions 1 to 3 are the owner's (2026-10-17). Decisions 4 to 8 are the orchestr
 3. **Name clash.** The project skill wins over the user skill, and the nearer project folder wins over a farther one. Each hidden skill gives one notice line. Reason: the repository decides its own workflows.
 4. **Format.** The Agent Skills specification is the contract. The file starts with a YAML frontmatter between two `---` lines. `name` has 1 to 64 characters of `a-z0-9-`, no hyphen at the start or the end, no `--`, and equals the folder name. `description` is a string of 1 to 1,024 characters (Unicode code points). The optional keys are `license`, `compatibility`, `metadata`, and `allowed-tools`; Helyx reads none of them. Another key is ignored, with no notice. A skill that breaks a rule is dropped with a notice, and the other skills load: the smallest unit is rejected. The frontmatter reader is `Helyx.Skills.Frontmatter`, not a full YAML parser: it reads only the keys that Helyx uses, `name` and `description`, so no other key can make a scan slow or large. It accepts a strict subset of YAML and rejects any other text, so it is never wider than YAML. See "The frontmatter reader" below.
 5. **Catalog.** `Helyx.ModelContext.Default` adds a `## Skills` section to the system prompt of every provider, from the helper module `Helyx.Skills` in `plugins/bundled`, with no Core change to the catalog. It holds one line that tells the model to load a skill with the skill tool when a task matches, then one line per skill: `- name: description`, with each line break of the description as a space. The section is there only when the context's tools hold a tool named `skill` and the scan found a skill, so a product without the tool gets no instruction it cannot follow.
-6. **User command.** `/name args` in the TUI and in print mode (`-p "/implement 730"`). A known skill name expands to the text that the skill tool gives on a first load, then, when the arguments are not empty, a blank line and the arguments as plain text. There are no placeholders. The expanded text is the user message, so the load counts as a load for the note of decision 2. A TUI command (`/model`, `/compact`, `/new`, `/resume`, `/help`) wins over a skill of the same name. A word that starts with a command name, such as `/models`, gives the usage of that command as before, unless the whole word is a skill name. A `/word` that is neither is sent as plain text. Print mode has no TUI commands, so there every known skill name expands.
+6. **User command.** `/name args` in the TUI and in print mode (`-p "/implement 730"`). The server expands a known skill name to the text that the skill tool gives on a first load, then, when the arguments are not empty, a blank line and the arguments as plain text (`Helyx.ModelContext.user_text/2`). There are no placeholders. The expanded text is the user message, so the load counts as a load for the note of decision 2. A TUI command (`/model`, `/compact`, `/new`, `/resume`, `/help`) wins over a skill of the same name, because the client sends it before the server expands anything. A command name with no separator after it, such as `/models` or `/newsletter`, is sent as typed: the client cannot know the skills of the server, and the server expands the word when it is a skill. Any other `/word` is sent as plain text. Print mode has no TUI commands, so every known skill name expands there.
 7. **Nested skills.** A skill text can tell the model to load another skill. There is no call stack and no depth count.
 8. **No installer.** `npx skills` installs into `.agents/skills`, with its own `skills-lock.json`. Helyx only reads the folders.
 9. **Child sessions.** A child session of the agent tool has the skill tool and the skill list when its parent has the skill tool. By `docs/features/agent-tool.md`, a child gets the tools of its parent but `agent`, the working folder of its parent, and the system prompt that the same ModelContext plugin builds, and decision 5 puts the list there when the tools hold `skill`. The child has a fresh context, so its transcript is its own: a skill that the parent loaded gives the full text on the first load in the child, and the note of decision 2 counts only the loads of the child. A child has no user command, because no client drives it. Reason: the agent tool gives a child what the parent has, and a skill that the task of the child needs must load there.
+
+The decision of 2026-11-11 moves the expansion from the clients to the server. The server expands, through `Helyx.ModelContext.user_text/2`, so a client on another machine needs no skills folder. The scan notices stay in the clients.
 
 ## Interface changes
 
@@ -37,7 +39,7 @@ The skill tool must know what the session loaded, and only the session holds it.
 
 ### `Helyx.Skills` (helper, `plugins/bundled`)
 
-- `scan(cwd, home)`: the skills of the folders of decision 1, the catalog text, and the notices. The ModelContext calls it at each context build, the tool at each call, the TUI at mount and at each submitted `/word`, and print mode twice (for the notices and for the expansion).
+- `scan(cwd, home)`: the skills of the folders of decision 1, the catalog text, and the notices. The ModelContext calls it at each context build and at each user text for a skill command, the tool at each call, the TUI at mount, and print mode once for the notices.
 - `text(skill)`: the load text:
 
   ```text
@@ -50,7 +52,11 @@ The skill tool must know what the session loaded, and only the session holds it.
 
   The frontmatter stays, so a line number in the cut notice is a line of `SKILL.md`, and the read tool continues at that offset.
 - `loaded?(messages, name)`: true when a user message starts with the first line `<skill name="NAME">`, or a tool result of the tool `skill` that is not an error starts with it.
-- `expand(text, cwd, home)`: the text of decision 6, or nil when the text is not `/name` of a known skill.
+- `expand(text, cwd, home)`: the text of decision 6, or nil when the text is not `/name` of a known skill. `Helyx.ModelContext.Default.user_text/2` calls it for the server.
+
+### `Helyx.ModelContext.user_text/2` (Core interface)
+
+An optional callback of `Helyx.ModelContext`. `Helyx.Session.prompt/3`, `steer/3`, and `follow_up/3` call it for each text of the user origin, after the text checks, and send the returned text in its place; the returned text takes the checks again. `opts` has `:core`, `:session_id`, and `:cwd`. The call runs in the process of the caller of the session API, not in the session process, so the deadline of the caller bounds it. A text of another origin, such as one of product code or a hook, is not passed. `Helyx.ModelContext.Default.user_text/2` returns `Helyx.Skills.expand(text, cwd, home) || text`.
 
 ### The frontmatter reader
 
@@ -125,15 +131,15 @@ The texts come first, newest first, then the lines, newest first. A skill gets i
 
 ### TUI and print mode
 
-- `Helyx.TUI.Command.parse/2` takes an expand function; `Helyx.TUI.Composer.submit/2` passes it. The TUI passes `Helyx.Skills.expand/3` with its working directory.
+- `Helyx.TUI.Command.parse/1` sends a command name with no separator after it, as in `/models`, as a message typed, and leaves the expansion to the server.
 - The TUI shows each notice of the scan as a notice cell at mount.
 - The call line of a `skill` call with a string `name` is `⚙ skill: <name>`, cut as every call line (`Helyx.TUI.CallLine.line/2`).
-- Print mode expands the prompt (after the piped input joins it) and writes each notice of the scan on stderr before the session id.
+- Print mode writes each notice of the scan on stderr before the session id, and sends the prompt as given; the server expands a skill command.
 - `CodingAgent` registers `Helyx.Tool.Skill`.
 
 ## Replaced mechanism
 
-The TUI command rule: a command name with no separator after it, as in `/models`, gave the usage of the command. Now it gives the usage only when the whole word is not a skill name; else the skill expands. The tests of the old rule stay. No other mechanism changes.
+The clients expanded the `/name` command from their own disk: the TUI in `Helyx.TUI.Composer.submit/2` and print mode in `CodingAgent.Print.skills/3`. Now the server expands the text that a client sends, in `Helyx.ModelContext.user_text/2`. The TUI command rule changed with it: a command name with no separator after it, as in `/models`, gave the usage of the command, or, when the whole word was a skill name, the skill. Now it is a message as typed, because the client cannot know the skills of the server. The tests of the old rule are updated.
 
 ## Bounds
 
@@ -150,23 +156,23 @@ The TUI command rule: a command name with no separator after it, as in `/models`
 | one notice line | at most 1,024 bytes (`@max_notice_bytes`, `Helyx.Text.cap/3`); the TUI and print mode cut it again as every notice | cut on a character boundary |
 | load text | `Helyx.Text.truncate/2` of the file (2,000 lines or 51,200 bytes, with its notice), the header, and the folder line capped at 4,096 bytes: at most about 56 KiB, under `Helyx.Message.max_result_bytes/0` (65,536), so the hands never cut it and its first line stays first | cut by `truncate/2` with a notice that names the next offset |
 | skill name from the model | a string, else an error; a name that the scan does not hold is an error that echoes at most 64 bytes of it | error result |
-| user command | the composer text or the print prompt; the expanded text is under 64 KiB plus the arguments, and `Helyx.Session` checks the 4 MiB bound of a message | the session refuses it |
+| user command | the composer text or the print prompt; the expanded text is under 64 KiB plus the arguments, and `Helyx.Session` checks the 4 MiB bound of the text that `user_text/2` returns | the session refuses it |
 | `Helyx.Tool.transcript/0` | the messages that `Helyx.Summary.kept/2` keeps, all of them with no summary, one copy per call; the call has no deadline, because the session never waits for a tool Task | none; the session holds it already. The call exits when the session ends |
 | skills after a summary | at most 5 texts (`@max_carried`) and 32,768 bytes for the whole message (`@max_carried_bytes`), checked where the message text is joined; each part counts its bytes and the two bytes before it | the skill gets its line; from the first line that does not fit, the rest are left out |
 | the scan for loads after a summary | one pass over the transcript at each build with a summary, one `\A` match of the first text of each message, and one search for `\n</skill>` in each user message that is a candidate for one of the 5 texts | none: the session holds the transcript already |
 
-When the scan runs and what it costs: at each context build (the start of each turn, and before each model call of `Helyx.Provider.Loop`), at each skill tool call, at TUI mount, at each submitted `/word` in the TUI, and twice in print mode. So an edit to a skill takes effect at the next scan. On a folder of 200 skills of 2,046 bytes each, with a folded description, one scan with the frontmatter reader took a median of 56.5 ms (max 282.0 ms) in one run of 20 scans and 22.6 ms (max 46.2 ms) in a second, on the development machine at a load average of 5 to 7 (2026-10-18, `docs/devlogs/2026-10-18-skills.md`). The worst case reads 200 files of 64 KiB, 12.5 MiB.
+When the scan runs and what it costs: at each context build (the start of each turn, and before each model call of `Helyx.Provider.Loop`), at each skill tool call, at each user text of a session whose ModelContext expands it (`Helyx.ModelContext.Default.user_text/2`), at TUI mount, and once in print mode for the notices. So an edit to a skill takes effect at the next scan. On a folder of 200 skills of 2,046 bytes each, with a folded description, one scan with the frontmatter reader took a median of 56.5 ms (max 282.0 ms) in one run of 20 scans and 22.6 ms (max 46.2 ms) in a second, on the development machine at a load average of 5 to 7 (2026-10-18, `docs/devlogs/2026-10-18-skills.md`). The worst case reads 200 files of 64 KiB, 12.5 MiB.
 
 Accepted:
 
 - A file can change between the stat and the read of `Helyx.Text.read_file/2`; the read itself reads at most 65,537 bytes, so a file that grew after the stat is still dropped.
 - Folder identity by inode assumes a POSIX filesystem.
-- The scan, the tool, and the TUI read the skills of the machine that runs them. With a remote client, the TUI notices and the `/name` command read the client's disk, and the catalog and the tool read the server's disk.
-- `Helyx.ModelContext.Default` takes the home folder from its `:home` option; the tool and the clients use `System.user_home!/0`. No product sets `:home`; a product that does gets a catalog that the tool does not match.
+- The scan, the tool, and the server read the skills of the machine that runs them. With a remote client, the TUI notices and the print notices read the client's disk; the `/name` command, the catalog, and the tool read the server's disk.
+- `Helyx.ModelContext.Default` takes the home folder from its `:home` option, for the catalog and for the user command; the tool and the clients use `System.user_home!/0`. No product sets `:home`; a product that does gets a catalog and a user command that the tool does not match.
 - A parent folder that other users can write (such as `/tmp`) can add project skills when the walk reaches it with no git root.
 - After a native compaction of a harness, the harness can have dropped a loaded skill while the Helyx transcript still holds it; the note then tells the model to read `SKILL.md`.
-- A user command always expands to the full text, also when the session loaded the skill already: the client holds no transcript, and the user asked for the skill again.
-- The TUI user cell and the recall of an earlier prompt show the expanded text, not `/name args`.
+- A user command always expands to the full text, also when the session loaded the skill already: `user_text/2` holds no transcript, and the user asked for the skill again.
+- The TUI user cell and the recall of an earlier prompt show the expanded text of the session, not `/name args`.
 - After a summary, a user message that starts with a `<skill name="...">` line that the user typed counts as a load, as it does for the note of decision 2.
 - After a summary, the arguments of a `/name args` that hold a `\n</skill>` line go into the carried text up to that line.
 - With the five texts at the bound, the lines of older skills can be left out: then the summary is the only trace of them.
