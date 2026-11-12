@@ -53,7 +53,8 @@ defmodule Helyx.ModelContext.Default do
   The docs and session sections: `docs/features/agent-self-knowledge.md`.
   The skills section and the skills carried after a summary
   (`opts[:summary]`): `docs/features/skills.md`. The context files and
-  their caps: `docs/features/context-files.md`.
+  their caps: `docs/features/context-files.md`. `user_text/2` expands the
+  user command of a skill: `docs/features/skills.md`.
   """
 
   @behaviour Helyx.ModelContext
@@ -91,6 +92,15 @@ defmodule Helyx.ModelContext.Default do
       nil -> messages
       text -> before ++ [Helyx.Message.user(text) | kept]
     end
+  end
+
+  # The text of a user command `/name args` of a skill of cwd, else the text
+  # as it is (`Helyx.Skills.expand/3`, docs/features/skills.md).
+  @impl true
+  def user_text(text, opts) do
+    cwd = Path.expand(Keyword.fetch!(opts, :cwd))
+    home = Path.expand(opts[:home] || System.user_home!())
+    Helyx.Skills.expand(text, cwd, home) || text
   end
 
   defp docs_section(root) do

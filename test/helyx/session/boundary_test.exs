@@ -434,7 +434,7 @@ defmodule Helyx.Session.BoundaryTest do
 
       stop_session(session, &GenServer.stop/1)
 
-      {:ok, resumed} = Session.resume(core, sessions_dir: dir, id: session.id)
+      {:ok, resumed, _} = Session.resume(core, sessions_dir: dir, id: session.id)
       assert {:ok, %{model: "other/any"}, _} = Session.subscribe(resumed)
       :ok = Session.prompt(resumed, "hello")
       assert final_text(collect_until(:turn_end)) == "from other"

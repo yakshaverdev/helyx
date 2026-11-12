@@ -1138,7 +1138,7 @@ defmodule Helyx.Session.UIBlocksTest do
       refute Map.has_key?(second, "ui_blocks")
 
       Helyx.Test.SessionCase.stop_session(turn.session, &GenServer.stop/1)
-      {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+      {:ok, resumed, _} = Session.resume(core, sessions_dir: dir)
       {:ok, snapshot, _} = Session.subscribe(resumed)
 
       assert [[%{"n" => n}], []] =

@@ -557,7 +557,7 @@ defmodule Helyx.Session.ToolSourceTest do
     assert id == session.id
     :ok = Helyx.Sessions.stop(session)
 
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir, id: id)
+    {:ok, resumed, _} = Session.resume(core, sessions_dir: dir, id: id)
     assert_receive {:source_up, _src, %{session_id: ^id}}
     assert Process.alive?(Session.pid(resumed))
   end

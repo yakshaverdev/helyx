@@ -251,7 +251,7 @@ defmodule Helyx.SessionsEditTest do
       # A resume reads the records and keeps none: no entry is invalid.
       log =
         ExUnit.CaptureLog.capture_log(fn ->
-          {:ok, session} = Sessions.resume(core, id: id)
+          {:ok, session, _} = Sessions.resume(core, id: id)
           :ok = Sessions.stop(session)
         end)
 
@@ -388,7 +388,7 @@ defmodule Helyx.SessionsEditTest do
       {id, _path} = saved(dir, [a, b])
 
       assert {:ok, [_]} = Sessions.remove_message(core, id, b.id)
-      {:ok, session} = Sessions.resume(core, id: id)
+      {:ok, session, _} = Sessions.resume(core, id: id)
 
       assert_receive {:sync, entries, _opts}, 5_000
       assert Enum.map(entries, & &1.message.id) == [a.id]
@@ -433,7 +433,7 @@ defmodule Helyx.SessionsEditTest do
       assert_receive {:removed, {:ok, ids}}, 10_000
       assert first.id in ids
 
-      assert {:ok, session} = Sessions.resume(core, id: id)
+      assert {:ok, session, _} = Sessions.resume(core, id: id)
       :ok = Sessions.stop(session)
     end
 

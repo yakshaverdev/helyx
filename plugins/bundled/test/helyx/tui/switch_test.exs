@@ -149,7 +149,8 @@ defmodule Helyx.TUI.SwitchTest do
   test "the commands take no argument" do
     assert Command.parse("/new") == {:new, ""}
     assert Command.parse(" /resume ") == {:resume, ""}
-    assert Command.parse("/newer") == {:usage, :new}
+    # A command name with no separator after it is a message as typed.
+    assert Command.parse("/newer") == {:message, "/newer"}
     # A usage notice needs no request, so the link has no connection.
     session = %Helyx.TUI.Link{conn: nil, id: "s"}
     assert Command.parse("/new x") == {:usage, :new}
@@ -250,7 +251,7 @@ defmodule Helyx.TUI.SwitchTest do
     refute_received {:helyx_end, ^other_sub, _}
 
     # A client that comes later finds the session live and attaches to it.
-    assert {:ok, again} = Helyx.Sessions.resume(core, id: old.id)
+    assert {:ok, again, _} = Helyx.Sessions.resume(core, id: old.id)
     assert Session.pid(again) == old_pid
   end
 

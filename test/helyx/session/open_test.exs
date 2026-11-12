@@ -198,7 +198,7 @@ defmodule Helyx.Session.OpenTest do
     Process.sleep(2 * @load_open_ms)
     assert Process.alive?(pid)
     send(pid, :go)
-    assert_receive {:started, {:ok, %Session{}}}
+    assert_receive {:started, {:ok, %Session{}, _}}
   end
 
   # A `receive` waits at most 4,294,967,295 ms; a longer deadline would
@@ -211,7 +211,7 @@ defmodule Helyx.Session.OpenTest do
     {:monitored_by, watchers} = Process.info(pid, :monitored_by)
     assert Enum.any?(watchers, &(is_pid(&1) and &1 != caller and Process.alive?(&1)))
     send(pid, :go)
-    assert_receive {:started, {:ok, %Session{}}}
+    assert_receive {:started, {:ok, %Session{}, _}}
   end
 
   @tag :slow
@@ -240,7 +240,7 @@ defmodule Helyx.Session.OpenTest do
     assert {:ok, _} = Task.await(other, Helyx.Test.Events.wait_ms())
 
     send(pid, :go)
-    assert_receive {:started, {:ok, %Session{}}}
+    assert_receive {:started, {:ok, %Session{}, _}}
     assert_receive {:DOWN, _ref, :process, ^caller, :normal}
   end
 

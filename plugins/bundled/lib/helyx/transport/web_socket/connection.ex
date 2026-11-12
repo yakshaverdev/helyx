@@ -210,12 +210,23 @@ defmodule Helyx.Transport.WebSocket.Connection do
 
     with {:ok, call} <- Ops.check(state.core, op, params) do
       reply = fn -> Outbound.reply(out, id, Ops.run(call)) end
-      {:ok, fn -> Ops.within(conn, out, id, op, Ops.deadline(op), reply) end}
+      {:ok, loaded(state.core, conn, out, id, op, params, reply)}
     end
   end
 
   defp worker(id, op, params, state),
     do: Authorize.worker(self(), state.out, id, op, params, state)
+
+  # A text op loads a session that a stop unloaded before its deadline
+  # (`Ops.load/3`, docs/features/idle-unload.md).
+  defp loaded(core, conn, out, id, op, params, reply) do
+    fn ->
+      case Ops.load(core, op, params) do
+        :ok -> Ops.within(conn, out, id, op, Ops.deadline(op), reply)
+        error -> Outbound.reply(out, id, error)
+      end
+    end
+  end
 
   # A sub holds at most one ack, and none before its subscribe reply
   # (`docs/features/wire-protocol.md`, "Subscriptions").

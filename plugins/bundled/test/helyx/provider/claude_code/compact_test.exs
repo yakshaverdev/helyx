@@ -169,7 +169,7 @@ defmodule Helyx.Provider.ClaudeCode.CompactTest do
     collect_until(:turn_end)
     Helyx.Test.SessionFile.stop(session)
 
-    {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
+    {:ok, session, _} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
     {:ok, _, _} = Session.subscribe(session)
     assert [_user, %{usage: %{cost: cost}}] = messages(prompt(session, "two"))
     assert_in_delta cost, 0.15, 1.0e-12

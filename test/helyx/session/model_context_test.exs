@@ -109,7 +109,7 @@ defmodule Helyx.Session.ModelContextTest do
     assert system(session) == "prepared"
     :ok = Helyx.Sessions.stop(session)
 
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir, id: session.id)
+    {:ok, resumed, _} = Session.resume(core, sessions_dir: dir, id: session.id)
     assert system(resumed) == "built for #{dir}"
   end
 end
