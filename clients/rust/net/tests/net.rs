@@ -1168,15 +1168,16 @@ fn a_source_that_fails_after_a_welcome_waits_for_the_server() {
         net::run_with(&source, &thread_shared, &receive, &notify, waits)
     });
 
-    // The first connection comes up and ends.
+    // The first connection comes up. The source fails before the close: the
+    // thread asks it only before a connection, so the order holds at any load.
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     start(&mut ws, "tok-q4");
+    let down = "no server runs for the data folder";
+    *state.lock().unwrap() = Err(down.into());
     let _ = ws.close(None);
     let _ = ws.flush();
 
-    // The source fails: the line is its error, and the loop goes on.
-    let down = "no server runs for the data folder";
-    *state.lock().unwrap() = Err(down.into());
+    // The line is the error of the source, and the loop goes on.
     line_is(&notified, down);
     assert!(!thread.is_finished(), "the loop ended at a failed source");
 
