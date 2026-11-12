@@ -47,13 +47,13 @@ defmodule Helyx.Session.PersistenceTest do
   for suffix <- ["", "/", "/.", "/new/.."] do
     @tag :tmp_dir
     test "a start creates a new sessions folder with mode 0700: #{inspect(suffix)}", %{
-      core: core,
       tmp_dir: tmp
     } do
       dir = Path.join(tmp, "sessions")
+      sessions = dir <> unquote(suffix)
+      core = start_core([Helyx.Test.Provider], sessions_dir: sessions)
 
-      {:ok, _session} =
-        Session.start(core, model: "test/ok", sessions_dir: dir <> unquote(suffix))
+      {:ok, _session} = Session.start(core, model: "test/ok", sessions_dir: sessions)
 
       assert mode(dir) == 0o700
     end
@@ -63,15 +63,15 @@ defmodule Helyx.Session.PersistenceTest do
   for path <- ["sessions", "sessions/new/..", "gone/../sessions"] do
     @tag :tmp_dir
     test "a start keeps the mode of a sessions folder that exists: #{path}", %{
-      core: core,
       tmp_dir: tmp
     } do
       dir = Path.join(tmp, "sessions")
       File.mkdir!(dir)
       File.chmod!(dir, 0o755)
+      sessions = Path.join(tmp, unquote(path))
+      core = start_core([Helyx.Test.Provider], sessions_dir: sessions)
 
-      {:ok, _session} =
-        Session.start(core, model: "test/ok", sessions_dir: Path.join(tmp, unquote(path)))
+      {:ok, _session} = Session.start(core, model: "test/ok", sessions_dir: sessions)
 
       assert mode(dir) == 0o755
     end
@@ -337,8 +337,6 @@ defmodule Helyx.Session.PersistenceTest do
     assert_receive {:helyx_event,
                     %Event{type: :message_end, data: %{message: %{role: :assistant}}}}
 
-    # The kill frees the lock once perl reads the end of its stdin, and
-    # `stop_session/2` waits for it.
     stop_session(session, &Process.exit(&1, :kill))
     {:ok, _} = Session.resume(core, sessions_dir: dir)
 
@@ -353,9 +351,8 @@ defmodule Helyx.Session.PersistenceTest do
   # and its first turn carries the result in the history.
   @tag :tmp_dir
   test "a resume with an interrupted call of a labelled provider starts that provider fresh",
-       %{tmp_dir: dir} do
+       %{core: core, tmp_dir: dir} do
     alias Helyx.Test.Connected
-    core = start_core([Connected])
     Process.register(self(), Connected.controller(core))
     call = %Helyx.Message.ToolCall{id: "c1", name: "slow", arguments: %{}}
     {:ok, file} = Helyx.Session.File.create(dir, "label0000000", File.cwd!(), "conn/hang")

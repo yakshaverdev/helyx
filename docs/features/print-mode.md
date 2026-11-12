@@ -103,7 +103,7 @@ Tests: the print tests run a server of the test VM (`Helyx.Core` with the provid
 
 - A session that was live before the run keeps running, and the run only aborts its turn. The gap between `sessions.live` before the open and the open itself is a hole: a client that opens the same saved session in that gap sees its session end when the print run ends, and can resume it. (Decision of 2026-11-11.)
 - A print client that is killed with SIGKILL leaves its session running in the server: no `after` runs, and the server stops no session at its cap. (Decision of 2026-11-11.)
-- A lock that another OS process holds on the session file is still an error, with the term of the server (`{:session_locked, id}`) in the line; it does not happen for a client of the server (see "A session that runs").
+- A data folder that another Core holds is still an error, with the term of the server (`{:data_folder_locked, dir}`) in the line; it does not happen for a client of the server (see "A session that runs").
 - `--resume` takes the session of the folder that started last (the `ts` of its header) and has a message, as the TUI does; it is not the session that changed last. The id of a resumed session is the name of its file, and a file whose name is not a session id or whose header `--list` does not accept is skipped, as `--list` skips it (#581, #585).
 - The answer goes to stdout as the provider sent it, with no clean pass: a script reads the exact text. Escape sequences in it reach a terminal when stdout is one.
 - A turn that the provider starts by itself before the prompt makes the prompt fail with `:turn_running`; the run then fails with status 1.

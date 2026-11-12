@@ -7,7 +7,7 @@ A client can tell the events of one session instance from those of another insta
 Without an instance id, two cases break a client:
 
 - **Resume.** A resume reuses the session id and starts `seq` at 0. Its subscribers are new, so a client subscribes again, and events of the old instance can still be in its mailbox.
-- **Two Cores.** Two Cores that resume one session file hold one id. Since the writer lock (#579, `docs/features/session-lock.md`), only a file that two sessions folders share (a hard link, or a copy) lets both run. A caller subscribed to both gets events with the same id and overlapping `seq` values from each. Both Cores write to the one session file. The second writer breaks the chain of the file, and a later resume rejects it with `{:invalid_file, text}` (#629, `docs/features/coding-agent.md`, "Session file").
+- **Two Cores.** Two Cores that resume one session file hold one id. Since the lock of the data folder (#579, #833, `docs/features/session-lock.md`), only a file that two sessions folders share (a hard link, or a copy) lets both run: each folder has its own Core and its own lock. A caller subscribed to both gets events with the same id and overlapping `seq` values from each. Both Cores write to the one session file. The second writer breaks the chain of the file, and a later resume rejects it with `{:invalid_file, text}` (#629, `docs/features/coding-agent.md`, "Session file").
 
 ## Decision
 

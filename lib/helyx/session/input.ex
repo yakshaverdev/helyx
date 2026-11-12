@@ -28,6 +28,22 @@ defmodule Helyx.Session.Input do
   @spec cwd_option(keyword()) :: {:ok, String.t()} | {:error, :invalid_cwd}
   def cwd_option(opts), do: opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> cwd()
 
+  # The folder of the session file: none, or the folder of the Core, whose
+  # lock covers it (docs/features/session-lock.md).
+  @spec sessions_dir(Helyx.Core.name(), keyword()) ::
+          {:ok, String.t() | nil} | {:error, {:invalid_option, :sessions_dir}}
+  def sessions_dir(core, opts) do
+    case opts[:sessions_dir] do
+      nil ->
+        {:ok, nil}
+
+      dir ->
+        if dir == Helyx.Core.config(core, :sessions_dir),
+          do: {:ok, dir},
+          else: {:error, {:invalid_option, :sessions_dir}}
+    end
+  end
+
   # Every `init/3` of the session gets them as they are: a provider checks the
   # keys that it reads (docs/features/harness-no-state.md).
   @spec provider_opts(keyword()) :: {:ok, keyword()} | {:error, :invalid_provider_opts}

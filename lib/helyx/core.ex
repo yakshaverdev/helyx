@@ -43,6 +43,15 @@ defmodule Helyx.Core do
 
   Several Core instances can run in one node under different names. Sessions
   and their subscribers are scoped to the Core that started them.
+
+  With `:sessions_dir`, Core makes the folder and takes the lock of the data
+  folder at its start (`docs/features/session-lock.md`). A second Core on the
+  folder gives `{:error, {:data_folder_locked, dir}}`; other errors are
+  `{:error, {:lock_failed, text}}` and `{:error, {:create_failed, reason}}`.
+  A failed start reaches a caller that does not trap exits as an exit signal,
+  so a caller that wants `{:error, {:data_folder_locked, dir}}` must trap
+  exits or start Core under a supervisor. If the lock ends while Core runs,
+  Core stops. Perl is required when `:sessions_dir` is given.
   """
 
   use Supervisor
@@ -88,7 +97,13 @@ defmodule Helyx.Core do
         model: opts[:model]
       ]
 
-      Supervisor.start_link(__MODULE__, {name, plugins, meta}, name: name)
+      case Supervisor.start_link(__MODULE__, {name, plugins, meta}, name: name) do
+        {:error, {:shutdown, {:failed_to_start_child, Helyx.Core.FolderLock, reason}}} ->
+          {:error, reason}
+
+        result ->
+          result
+      end
     end
   end
 
@@ -127,25 +142,42 @@ defmodule Helyx.Core do
         plugin.child_spec(core: name)
       end
 
-    children =
-      [
-        # The child spec holds the plugin table, the provider ids, the recall
-        # limit, and the server configuration, so a restart keeps them.
-        {Registry, keys: :unique, name: sessions_registry(name), meta: meta},
-        {Task.Supervisor, name: task_supervisor(name)},
-        # The memory sync workers, apart from the sessions so that the cap
-        # counts sessions only (#707). It is before the session supervisor, so
-        # it stops after the sessions and takes the batches of their stops.
-        {DynamicSupervisor, name: sync_supervisor(name), strategy: :one_for_one},
-        # The session process loads a resumed transcript, so the start
-        # message holds no transcript for the supervisor to keep (#103, #589).
-        # The supervisor counts its children one start at a time, so
-        # concurrent starts cannot pass the cap.
-        {DynamicSupervisor,
-         name: session_supervisor(name), strategy: :one_for_one, max_children: @max_sessions}
-      ] ++ plugin_children
+    # The lock is first, so it is taken before any session and released after
+    # all of them; its end stops Core (docs/features/session-lock.md).
+    lock =
+      case Keyword.fetch!(meta, :sessions_dir) do
+        nil ->
+          []
 
-    Supervisor.init(children, strategy: :one_for_one)
+        dir ->
+          [
+            Supervisor.child_spec({Helyx.Core.FolderLock, {dir, name}},
+              restart: :temporary,
+              significant: true
+            )
+          ]
+      end
+
+    children =
+      lock ++
+        [
+          # The child spec holds the plugin table, the provider ids, the recall
+          # limit, and the server configuration, so a restart keeps them.
+          {Registry, keys: :unique, name: sessions_registry(name), meta: meta},
+          {Task.Supervisor, name: task_supervisor(name)},
+          # The memory sync workers, apart from the sessions so that the cap
+          # counts sessions only (#707). It is before the session supervisor, so
+          # it stops after the sessions and takes the batches of their stops.
+          {DynamicSupervisor, name: sync_supervisor(name), strategy: :one_for_one},
+          # The session process loads a resumed transcript, so the start
+          # message holds no transcript for the supervisor to keep (#103, #589).
+          # The supervisor counts its children one start at a time, so
+          # concurrent starts cannot pass the cap.
+          {DynamicSupervisor,
+           name: session_supervisor(name), strategy: :one_for_one, max_children: @max_sessions}
+        ] ++ plugin_children
+
+    Supervisor.init(children, strategy: :one_for_one, auto_shutdown: :any_significant)
   end
 
   @doc "Returns the plugins registered for an interface, in registration order."

@@ -2,7 +2,7 @@
 
 ## Goal
 
-A public API to manage the sessions of one Core, so that a transport (#660) uses only public functions (ADR 0008 §1). Before this, a client listed the saved sessions with `Helyx.Session.File.Scan.list/2`, had no list of the running sessions, and a second resume of a running session in the same Core failed with `{:session_locked, id}`. Ticket #657.
+A public API to manage the sessions of one Core, so that a transport (#660) uses only public functions (ADR 0008 §1). Before this, a client listed the saved sessions with `Helyx.Session.File.Scan.list/2`, had no list of the running sessions, and a second resume of a running session in the same Core failed. Ticket #657.
 
 User stories:
 
@@ -33,7 +33,7 @@ Decisions:
   - `stop(session)` returns, after the session ended, `:ok` when every handle of the session was released, or `{:error, {:not_released, handles}}` (#752, `docs/features/session-lifecycle.md`, "Session stop"). It gives `{:error, :session_not_found}` when no session runs at the call. `stop/1` looks up the pid once, before the abort, and sends the abort and the stop to that pid. A session that ends for another reason during the abort or the stop, such as a second stop or a Core stop, gives `{:error, {:not_released, :unknown}}`: it ended, and no report came. `stop(pid)` takes the pid of a session process and acts on that process only; a process that is gone gives `{:error, {:not_released, :unknown}}` (`docs/features/agent-tool.md`).
   - `delete(core, id)` and `remove_message(core, id, message_id)` (#833) delete a saved session and remove one message group from it, under the lock of a session that does not run (`docs/features/session-edit.md`).
 - `Helyx.Session.start/2` and `resume/2` give `{:error, :session_not_found}` when an attach meets the end of the process twice (Decisions, "Attach").
-- `Helyx.Session.start/2` and `resume/2`: a new error `:too_many_sessions` at the cap. `resume/2` of a session that runs in the same Core returns `{:ok, session}`, the running instance, in place of `{:error, {:session_locked, id}}`. A session that another Core or another OS process holds still gives `{:session_locked, id}`.
+- `Helyx.Session.start/2` and `resume/2`: a new error `:too_many_sessions` at the cap. `resume/2` of a session that runs in the same Core returns `{:ok, session}`, the running instance, in place of an error. A session that a file edit of the Core holds gives `{:error, :editing}`.
 - The session process takes one new call, `:live`, which answers its `%Helyx.Sessions.Live{}`. Since #750 the attach asks `{:attach, provider_opts}` in its place, and a running session with other `:provider_opts` answers `{:error, :provider_opts_differ}`; so a wire `resume` of a session that a product started with `:provider_opts` gives `start_failed`.
 
 ### Order of the checks
@@ -51,7 +51,7 @@ The errors that the transport maps to the codes of `start` and `resume` (`wire-p
 
 ## Replaced mechanism
 
-1. **A second resume in the same Core.** `Server.start/3` gave `{:already_started, pid}` the shape of a held lock, `{:session_locked, id}` (`docs/features/session-lock.md`, Interface changes). It now attaches. The two writers that the lock prevents stay prevented: the second resume starts no process, takes no lock, and reads no file past the header of the pick.
+1. **A second resume in the same Core.** `Server.start/3` gave `{:already_started, pid}` the shape of a held lock. It now attaches. The two writers stay prevented: the second resume starts no process, takes no lock, and reads no file past the header of the pick.
 2. **The stop of a session whose open failed.** It stopped with `:normal` after it sent the error to its caller. It now stops with `{:shutdown, {:open_failed, reason}}`, so an attach that waits gets the same error. The first caller still gets the error by its message, before the exit. No subscriber exists before the open, so no client sees the reason. A session whose caller ended stops with `:normal` as before.
 3. Tests: "a session that another Core or the same Core holds does not open, and its file is unchanged" (`test/helyx/session/lock_test.exs`) becomes "a session that another Core holds does not open, the same Core attaches, and its file is unchanged": the property holds for another Core; for the same Core the resume attaches to the same process, and the file is still unchanged. "keeps no copy after a start and after a failed start" (`test/helyx/session/persistence_test.exs`) becomes "keeps no copy after a start and after a start that the Registry rejects": the second resume is still rejected in the supervisor before the `init/1`, and then attaches. "a failed resume shows the error and stays on the current session" (`plugins/bundled/test/helyx/tui/switch_test.exs`) keeps its name: a second Core now holds the lock, because a resume in the same Core attaches.
 4. Clients see: a resume of a session that already runs in this Core gives the running session.
@@ -70,7 +70,7 @@ The errors that the transport maps to the codes of `start` and `resume` (`wire-p
 | cursor | an integer, `:`, and a session id | `{:error, :invalid_cursor}` | `Helyx.Sessions.list_saved/2` |
 | wait of an attach | no timeout of its own: the open of the running process ends at its deadlines (the take: `deadline_ms.open`, 25,000 ms; the load: that plus 1 ms for each 1,000 bytes of the file, #834; then a kill), and a stop ends when the waits of `Stop.run/1` end, each with its bound | a kill: `:open_timeout` | the kill of the open (`Server.Open.open_file/2`), `Stop.run/1` |
 | runs of a resume | 2: the second run gives its result when the first one met an end of another process | n/a | `Helyx.Session.Server.Open.start/4` |
-| wait of a stop | the wait of `abort/1` (no timeout, as `abort/1`), then the `terminate/2` of the session. The `:stop` call waits with no timeout and no supervisor kill backs it, so the bound is the waits of `Stop.run/1`: the armed close of a provider process, the stop of the hands with its kill, and the lock release, together under `Stop.shutdown_ms/0`, 31,000 ms. The wire deadline of `stop` was 47,000 ms, the abort deadline and the lock release only; it is 77,000 ms, the abort deadline and `Stop.shutdown_ms/0` (`wire-protocol.md`, Deadlines) | the wire answers `timeout` | `Stop.run/1` |
+| wait of a stop | the wait of `abort/1` (no timeout, as `abort/1`), then the `terminate/2` of the session. The `:stop` call waits with no timeout and no supervisor kill backs it, so the bound is the waits of `Stop.run/1`: the armed close of a provider process, and the stop of the hands with its kill, together under `Stop.shutdown_ms/0`, 30,000 ms. The wire deadline of `stop` was 47,000 ms, the abort deadline and a lock release only; it is 77,000 ms, the abort deadline and `Stop.shutdown_ms/0`, 1,000 ms above the sum (`wire-protocol.md`, Deadlines) | the wire answers `timeout` | `Stop.run/1` |
 
 ## Ownership
 
@@ -78,7 +78,6 @@ No new external resource. The calls of `list_live/1` run in Tasks under the task
 
 | Resource | Created by | Held by | Released on normal end | Released when the holder crashes | Released on abort |
 | -------- | ---------- | ------- | ---------------------- | -------------------------------- | ----------------- |
-| writer lock of an attached session | the first resume | the one session process | its `terminate/2` | the port closes with the process | n/a |
 | the result of an open that failed, for an attach that reaches the process after its exit | the open | nobody: it goes with the process | n/a | n/a | open, ticket #694 |
 
 ## Out of scope

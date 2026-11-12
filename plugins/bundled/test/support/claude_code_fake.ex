@@ -66,12 +66,17 @@ defmodule Helyx.Test.ClaudeCodeFake do
     File.write!(Path.join(bin, "out.quiet"), [init(), "\n", replayed(), "\n"])
 
     core = :"core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [ClaudeCode, Fake]})
+    sessions = Path.join(tmp, "sessions")
+
+    start_supervised!(
+      {Helyx.Core, name: core, plugins: [ClaudeCode, Fake], sessions_dir: sessions}
+    )
+
     # The test process runs the callbacks of the provider with no session.
     Helyx.Test.Hands.fake()
     work = Path.join(tmp, "work")
     File.mkdir_p!(work)
-    %{core: core, bin: bin, work: work, sessions: Path.join(tmp, "sessions")}
+    %{core: core, bin: bin, work: work, sessions: sessions}
   end
 
   # Stream-json lines

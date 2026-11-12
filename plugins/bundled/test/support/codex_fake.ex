@@ -62,12 +62,13 @@ defmodule Helyx.Test.CodexFake do
     File.chmod!(Path.join(bin, "codex"), 0o755)
 
     core = :"core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [Codex, Fake]})
+    sessions = Path.join(tmp, "sessions")
+    start_supervised!({Helyx.Core, name: core, plugins: [Codex, Fake], sessions_dir: sessions})
     # The test process runs the callbacks of the provider with no session.
     Helyx.Test.Hands.fake()
     work = Path.join(tmp, "work")
     File.mkdir_p!(work)
-    %{core: core, bin: bin, work: work, sessions: Path.join(tmp, "sessions")}
+    %{core: core, bin: bin, work: work, sessions: sessions}
   end
 
   # Protocol lines

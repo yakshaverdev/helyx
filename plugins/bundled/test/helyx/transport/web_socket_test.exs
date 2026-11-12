@@ -657,7 +657,11 @@ defmodule Helyx.Transport.WebSocketTest do
         Helyx.Session.Server.State.provider_close_ms() + 1_000
 
     assert Ops.deadline("abort") == abort
-    assert Ops.deadline("stop") == abort + Helyx.Session.Server.Stop.shutdown_ms()
+
+    # The wire deadline (77,000 ms in the Rust client and the TUI) covers the
+    # abort bound plus the stop of the session process
+    # (docs/features/wire-protocol.md).
+    assert Ops.deadline("stop") >= abort + Helyx.Session.Server.Stop.shutdown_ms()
   end
 
   # Under a Hub, `sessions.saved` is the scan and one Hub call, and a

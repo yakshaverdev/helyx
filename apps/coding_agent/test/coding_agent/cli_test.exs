@@ -342,7 +342,7 @@ defmodule CodingAgent.CLITest do
 
       assert lock ==
                "could not test the lock of the data folder: perl is not on the PATH; " <>
-                 "Helyx needs it to lock a session"
+                 "Helyx needs it for its file locks"
 
       for id <- [id, Helyx.Session.Id.new(), "../x"] do
         assert error_line(["--session", id]) == lock
