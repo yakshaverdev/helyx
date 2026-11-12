@@ -12,8 +12,9 @@ defmodule Helyx.Transport.WebSocket.Pairing do
   `max_links/0` links wait.
 
   The link is `helyx-pair:1:<base64url of the JSON {a, t, p, k, n}>`: the
-  address, the bootstrap token, the pin, the kind, and the name. This slice
-  pairs only the kind `hands`; the client kind comes with #956.
+  address, the bootstrap token, the pin, the kind, and the name. A link of
+  the kind `hands` pairs a runner; one of the kind `client` pairs a client
+  app, which then acts as the default owner of the Hub.
   """
 
   use GenServer
@@ -27,8 +28,8 @@ defmodule Helyx.Transport.WebSocket.Pairing do
   # The prefix of a link and its version.
   @prefix "helyx-pair:1:"
 
-  # The one kind that this slice pairs.
-  @kind "hands"
+  # The kinds of peer that a link pairs.
+  @kinds ["hands", "client"]
 
   # The bytes of a base64 value of a 32-byte or a 64-byte part.
   @b64_32 44
@@ -92,12 +93,17 @@ defmodule Helyx.Transport.WebSocket.Pairing do
   defp part(value), do: <<byte_size(value)::32, value::binary>>
 
   @doc """
-  Whether a `hello` of the public listener has the fields of this slice: the
-  role `hands`, a name, and one handshake with parts of the right type and
-  size. The caller checks this before any other work on the frame.
+  Whether a `hello` of the public listener has the fields of a peer: the role
+  `hands` with a runner name, or the role `client` with a client name, and
+  one handshake with parts of the right type and size. The caller checks
+  this before any other work on the frame.
   """
   @spec valid_hello?(term()) :: boolean()
   def valid_hello?(%{"role" => "hands", "runner" => name} = hello) do
+    name?(name) and handshake?(hello)
+  end
+
+  def valid_hello?(%{"role" => "client", "client" => name} = hello) do
     name?(name) and handshake?(hello)
   end
 
@@ -127,11 +133,11 @@ defmodule Helyx.Transport.WebSocket.Pairing do
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
-  @doc "Makes a link for a pairing of a runner, or the error of the cap."
+  @doc "Makes a link for a pairing of a runner or a client, or the error of the cap."
   @spec create(GenServer.server(), String.t(), String.t()) ::
           {:ok, %{String.t() => term()}} | {:error, :bad_params | :too_many_links}
   def create(pairing, kind, name) do
-    if kind == @kind and name?(name),
+    if kind in @kinds and name?(name),
       do: GenServer.call(pairing, {:create, kind, name}, call_ms()),
       else: {:error, :bad_params}
   end
@@ -143,7 +149,7 @@ defmodule Helyx.Transport.WebSocket.Pairing do
   @spec revoke(GenServer.server(), String.t(), String.t()) ::
           :ok | {:error, :bad_params | term()}
   def revoke(pairing, kind, name) do
-    if kind == @kind and name?(name),
+    if kind in @kinds and name?(name),
       do: GenServer.call(pairing, {:revoke, kind, name}, call_ms()),
       else: {:error, :bad_params}
   end
@@ -181,9 +187,9 @@ defmodule Helyx.Transport.WebSocket.Pairing do
 
   @doc """
   The handshake of a `hello` on the public listener: a pairing with a link,
-  or the key of a paired runner. Gives `{:ok, "hands", name}`, `{:close,
-  4401}` for a handshake that does not hold, or `{:close, 4503}` when the Hub
-  gives no answer.
+  or the key of a paired peer. Gives `{:ok, kind, name}`, `{:close, 4401}`
+  for a handshake that does not hold, or `{:close, 4503}` when the Hub gives
+  no answer.
   """
   @spec hello(GenServer.server(), binary(), map(), pid()) ::
           {:ok, String.t(), String.t()} | {:close, 4401 | 4503}
@@ -301,52 +307,57 @@ defmodule Helyx.Transport.WebSocket.Pairing do
     {:noreply, %{state | connections: connections}}
   end
 
-  # The two handshakes: a pairing with a link, or the key of a paired runner.
+  # The two handshakes: a pairing with a link, or the key of a paired peer.
   # The validator holds the shape; these clauses read it.
-  defp handshake(state, nonce, %{"pair" => pair, "runner" => name}, connection, caller),
-    do: pair(state, nonce, name, pair, connection, caller)
+  defp handshake(state, nonce, %{"pair" => pair} = hello, connection, caller),
+    do: pair(state, nonce, hello["role"], peer_name(hello), pair, connection, caller)
 
-  defp handshake(
-         state,
-         nonce,
-         %{"runner" => name, "signature" => signature},
-         connection,
-         _caller
-       ),
-       do: paired(state, nonce, name, signature, connection)
+  defp handshake(state, nonce, %{"signature" => signature} = hello, connection, _caller),
+    do: paired(state, nonce, hello["role"], peer_name(hello), signature, connection)
+
+  # The name of the peer, in the field of its role.
+  defp peer_name(%{"role" => "hands", "runner" => name}), do: name
+  defp peer_name(%{"role" => "client", "client" => name}), do: name
 
   # The pairing of a link: the proof, the signature, the peer row, and the
   # consumed link. A wrong proof or signature, an expired link, another
   # kind or name, and a full store close with 4401, and the link stays. The
   # Hub errors that pass close with 4503, as the authority of the loopback
   # listener does.
-  defp pair(state, nonce, name, pair, connection, caller) do
+  defp pair(state, nonce, kind, name, pair, connection, caller) do
     with {:ok, proof} <- decode(pair["proof"]),
          {:ok, public_key} <- decode(pair["public_key"]),
          {:ok, signature} <- decode(pair["signature"]),
          true <- byte_size(public_key) == 32 and byte_size(signature) == 64,
          {:ok, entry} <- link_entry(state, nonce, proof),
-         true <- entry.kind == @kind and entry.name == name,
+         true <- entry.kind == kind and entry.name == name,
          true <- verify(state.pin, entry.kind, entry.name, public_key, signature, nonce),
          :ok <- put_peer(state, entry.kind, entry.name, public_key),
          true <- Process.alive?(caller) do
-      state = register(%{state | links: List.delete(state.links, entry)}, entry.name, connection)
-      {:reply, {:ok, "hands", entry.name}, state}
+      state =
+        register(
+          %{state | links: List.delete(state.links, entry)},
+          entry.kind,
+          entry.name,
+          connection
+        )
+
+      {:reply, {:ok, entry.kind, entry.name}, state}
     else
       {:close, code} -> {:reply, {:close, code}, state}
       _wrong -> {:reply, {:close, 4401}, state}
     end
   end
 
-  # The handshake of a paired runner: the signature of the shared bytes with
+  # The handshake of a paired peer: the signature of the shared bytes with
   # the key of its row. No row, or a wrong signature, closes with 4401; a
   # Hub that does not answer closes with 4503.
-  defp paired(state, nonce, name, signature, connection) do
+  defp paired(state, nonce, kind, name, signature, connection) do
     with {:ok, signature} <- decode(signature),
          true <- byte_size(signature) == 64,
-         {:ok, %{public_key: public_key}} <- peer(state, name),
-         true <- verify(state.pin, @kind, name, public_key, signature, nonce) do
-      {:reply, {:ok, "hands", name}, register(state, name, connection)}
+         {:ok, %{public_key: public_key}} <- peer(state, kind, name),
+         true <- verify(state.pin, kind, name, public_key, signature, nonce) do
+      {:reply, {:ok, kind, name}, register(state, kind, name, connection)}
     else
       {:close, code} -> {:reply, {:close, code}, state}
       _wrong -> {:reply, {:close, 4401}, state}
@@ -384,19 +395,21 @@ defmodule Helyx.Transport.WebSocket.Pairing do
     end
   end
 
-  defp peer(state, name) do
-    case hub(fn -> Hub.peer(state.hub, @kind, name) end) do
+  defp peer(state, kind, name) do
+    case hub(fn -> Hub.peer(state.hub, kind, name) end) do
       {:ok, peer} -> {:ok, peer}
       {:error, reason} when reason in [:busy, :timeout, :failed] -> {:close, 4503}
       _missing -> :error
     end
   end
 
-  # One connection for each peer name: a new one closes the old one.
-  defp register(state, name, connection) do
-    state = close(state, {@kind, name})
+  # One connection for each peer of a kind and name: a new one closes the
+  # old one.
+  defp register(state, kind, name, connection) do
+    key = {kind, name}
+    state = close(state, key)
     monitor = Process.monitor(connection)
-    %{state | connections: Map.put(state.connections, {@kind, name}, {connection, monitor})}
+    %{state | connections: Map.put(state.connections, key, {connection, monitor})}
   end
 
   defp close(state, key) do

@@ -18,7 +18,7 @@ use std::time::Duration;
 
 const CHALLENGE: &str =
     r#"{"type":"challenge","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}"#;
-const WELCOME: &str = r#"{"type":"welcome","protocol":14}"#;
+const WELCOME: &str = r#"{"type":"welcome","protocol":15}"#;
 
 /// The frames that the client sends among `outputs`, decoded.
 fn sent(outputs: &[Output]) -> Vec<Json> {

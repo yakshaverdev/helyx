@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 const CHALLENGE: &str =
     r#"{"type":"challenge","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}"#;
-const WELCOME: &str = r#"{"type":"welcome","protocol":14}"#;
+const WELCOME: &str = r#"{"type":"welcome","protocol":15}"#;
 
 /// The frames that the client sends among `outputs`, decoded.
 fn sent(outputs: &[Output]) -> Vec<Value> {
@@ -32,7 +32,7 @@ fn sent(outputs: &[Output]) -> Vec<Value> {
 fn welcomed(client: &mut Client) -> Vec<Output> {
     client.connect(None);
     let hello = client.receive(CHALLENGE).unwrap();
-    assert_eq!(sent(&hello), [json!({"type": "hello", "protocol": 14})]);
+    assert_eq!(sent(&hello), [json!({"type": "hello", "protocol": 15})]);
     let outputs = client.receive(WELCOME).unwrap();
     assert_eq!(outputs[0], Output::Welcome);
     outputs

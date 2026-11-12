@@ -71,6 +71,15 @@ defmodule Helyx.Transport.WebSocket.Authority do
   @callback release(arg(), auth(), op :: String.t(), params :: map()) :: :ok
 
   @doc """
+  The credential of a paired peer of the public listener, after the pairing
+  checked the key of its row. `kind` is `"client"` today; a client acts as
+  the default owner of the Hub. `:error` closes with `4401`; `{:error,
+  :busy}` closes with `4503`.
+  """
+  @callback paired(arg(), kind :: String.t(), name :: String.t(), connection :: pid()) ::
+              {:ok, auth()} | :error | {:error, :busy}
+
+  @doc """
   The load of a session that a text operation, `prompt`, `steer`, or
   `follow_up`, addresses, in the worker before the deadline of the
   operation: `:ok` when the session runs or its load succeeded, else the
@@ -110,5 +119,5 @@ defmodule Helyx.Transport.WebSocket.Authority do
               | {:error, code(), text :: String.t()}
               | {:close, 4403}
 
-  @optional_callbacks webhook: 3, load: 4, records: 3
+  @optional_callbacks webhook: 3, paired: 4, load: 4, records: 3
 end

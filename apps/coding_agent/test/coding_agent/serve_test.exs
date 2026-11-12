@@ -819,6 +819,7 @@ defmodule CodingAgent.ServeTest do
           {["--host", "::1", dir], "--host needs serve"},
           {["--public", "127.0.0.1:1", dir], "--public needs serve"},
           {["--runner", "mac", dir], "--runner needs pair"},
+          {["--client", "phone", dir], "--client needs pair"},
           {["serve", "x"], ~s(serve takes no directory argument, got: ["x"])},
           {["serve", "--port", "65536"], "--port takes 0 to 65535, got: 65536"},
           {["serve", "--port=-1"], "--port takes 0 to 65535, got: -1"},
@@ -834,13 +835,20 @@ defmodule CodingAgent.ServeTest do
           {["serve", "--runner", "mac"], "--runner does not combine with serve"},
           {["serve", "--resume"], "--resume does not combine with serve"},
           {["serve", "-p", "x"], "--print does not combine with serve"},
-          {["pair"], "pair needs --runner name"},
+          {["pair"], "pair needs --runner name or --client name"},
           {["pair", "x"], ~s(pair takes no directory argument, got: ["x"])},
           {["pair", "--runner", "Mac"],
            ~s(--runner takes 1 to 64 bytes of a-z, 0-9, and _, got: "Mac")},
           {["pair", "--runner", String.duplicate("a", 65)],
            "--runner takes 1 to 64 bytes of a-z, 0-9, and _, got: " <>
              inspect(String.duplicate("a", 65))},
+          {["pair", "--client", "Phone"],
+           ~s(--client takes 1 to 64 bytes of a-z, 0-9, and _, got: "Phone")},
+          {["pair", "--client", String.duplicate("a", 65)],
+           "--client takes 1 to 64 bytes of a-z, 0-9, and _, got: " <>
+             inspect(String.duplicate("a", 65))},
+          {["pair", "--runner", "mac", "--client", "phone"],
+           "--runner does not combine with --client"},
           {["pair", "--model", "fake/echo"], "--model does not combine with pair"}
         ] do
       assert capture_io(:stderr, fn -> assert CLI.main(argv) == 1 end) == "helyx: #{text}\n"
@@ -874,6 +882,16 @@ defmodule CodingAgent.ServeTest do
     assert String.length(pin) == 43
     assert String.length(token) == 43
     assert line =~ "valid for 10 minutes"
+
+    # A client link carries the kind and the name of the client app.
+    client_out = capture_io(fn -> assert CLI.main(["pair", "--client", "phone"]) == 0 end)
+    assert [client_link, client_line] = String.split(client_out, "\n", trim: true)
+    assert "helyx-pair:1:" <> client_encoded = client_link
+
+    assert %{"a" => ^address, "k" => "client", "n" => "phone", "p" => ^pin} =
+             JSON.decode!(Base.url_decode64!(client_encoded, padding: false))
+
+    assert client_line =~ "valid for 10 minutes"
 
     # The host is the link's address; the listener binds every interface.
     {:ok, found} = Helyx.Transport.WebSocket.TLS.ensure(sessions)

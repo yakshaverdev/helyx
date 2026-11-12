@@ -11,6 +11,17 @@ defmodule Helyx.Transport.WebSocket.PairOps do
   def allowed?(%{auth: %{token: nil}}), do: true
   def allowed?(_state), do: false
 
+  # The kind client needs an authority that knows a paired peer: the paired
+  # handshake asks its `paired/4` for the credential, and a link made without
+  # one never works.
+  def client?("pair.create", %{"kind" => "client"}, state), do: paired?(state.authority)
+  def client?(_op, _params, _state), do: true
+
+  defp paired?({mod, _arg}),
+    do: Code.ensure_loaded?(mod) and function_exported?(mod, :paired, 4)
+
+  defp paired?(_authority), do: false
+
   # Starts the linked worker of one request; the connection records it as a
   # writer.
   def start(out, id, op, params, pairing) do

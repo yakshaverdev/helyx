@@ -1,4 +1,4 @@
-//! The events of protocol 14, the `event` of an `event` frame and of a replay:
+//! The events of protocol 15, the `event` of an `event` frame and of a replay:
 //! the envelope of every event, and the data of each type that the client
 //! knows, each checked by the schema of `docs/features/wire-protocol.md`.
 

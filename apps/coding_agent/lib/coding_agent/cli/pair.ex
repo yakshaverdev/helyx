@@ -12,10 +12,10 @@ defmodule CodingAgent.CLI.Pair do
   # The command, for the data folder `dir`.
   def run(opts, [], dir) do
     with :ok <- switches(opts),
-         {:ok, name} <- runner_name(opts[:runner]),
+         {:ok, kind, name} <- peer_name(opts),
          {:ok, _apps} <- Application.ensure_all_started(:coding_agent),
          {:ok, socket, ws} <- find_server(dir) do
-      result = create_link(socket, ws, name)
+      result = create_link(socket, ws, kind, name)
       with {:error, text} <- result, do: {:error, CodingAgent.clean_line(text)}
     end
   end
@@ -75,17 +75,33 @@ defmodule CodingAgent.CLI.Pair do
     end
   end
 
+  # Exactly one of `--runner` and `--client`.
   defp switches(opts) do
-    case Enum.find(Keyword.keys(opts), &(&1 != :runner)) do
-      nil -> if opts[:runner], do: :ok, else: {:error, "pair needs --runner name"}
+    case Enum.find(Keyword.keys(opts), &(&1 not in [:runner, :client])) do
+      nil -> :ok
       name -> {:error, "--#{name} does not combine with pair"}
+    end
+  end
+
+  defp peer_name(opts) do
+    case {opts[:runner], opts[:client]} do
+      {nil, nil} -> {:error, "pair needs --runner name or --client name"}
+      {name, nil} -> runner_name(name)
+      {nil, name} -> client_name(name)
+      {_runner, _client} -> {:error, "--runner does not combine with --client"}
     end
   end
 
   defp runner_name(name) do
     if Pairing.name?(name),
-      do: {:ok, name},
+      do: {:ok, "hands", name},
       else: {:error, "--runner takes 1 to 64 bytes of a-z, 0-9, and _, got: #{inspect(name)}"}
+  end
+
+  defp client_name(name) do
+    if Pairing.name?(name),
+      do: {:ok, "client", name},
+      else: {:error, "--client takes 1 to 64 bytes of a-z, 0-9, and _, got: #{inspect(name)}"}
   end
 
   defp find_server(dir) do
@@ -96,11 +112,11 @@ defmodule CodingAgent.CLI.Pair do
     end
   end
 
-  defp create_link(socket, ws, name) do
+  defp create_link(socket, ws, kind, name) do
     {:ok, conn, ref} = Connection.open(socket, ws)
 
     try do
-      case Connection.pair(conn, "hands", name) do
+      case Connection.pair(conn, kind, name) do
         {:ok, %{"link" => link, "expires_ms" => expires_ms}} ->
           IO.puts(link)
 
@@ -125,7 +141,7 @@ defmodule CodingAgent.CLI.Pair do
   defp pair_error(:too_many_links),
     do: "the server holds too many pending links; pair one of them, or wait for one to end"
 
-  defp pair_error(:bad_params), do: "the server refused the runner name"
+  defp pair_error(:bad_params), do: "the server refused the peer name"
   defp pair_error(:closed), do: "the connection to the server closed"
   defp pair_error(code), do: "the server answered #{code}"
 end

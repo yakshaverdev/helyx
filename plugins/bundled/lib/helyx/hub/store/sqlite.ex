@@ -397,7 +397,7 @@ defmodule Helyx.Hub.Store.SQLite do
   @impl true
   defdelegate subscription_sent(db, id, at, outcome, deadline), to: Subscriptions
 
-  # The peers of the public listener (protocol 14).
+  # The peers of the public listener (protocol 14; both kinds, protocol 15).
   @impl true
   def peers(db) do
     with {:ok, rows} <- all(db, Tables.select_sql(:peers) <> " ORDER BY kind, name", []) do

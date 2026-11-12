@@ -209,7 +209,6 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
             %{"kind" => "hands", "name" => "Mac"},
             %{"kind" => "hands", "name" => "maç"},
             %{"kind" => "hands", "name" => String.duplicate("a", 65)},
-            %{"kind" => "client", "name" => "phone"},
             %{"kind" => "robot", "name" => "mac"},
             %{"kind" => "hands", "name" => "mac", "extra" => true}
           ] do
@@ -745,11 +744,15 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
         )
 
       {:ok, %{"link" => link}} = Pairing.create(pairing, "hands", "mac")
+      {:ok, %{"link" => client_link}} = Pairing.create(pairing, "client", "phone")
       %{"t" => token} = link_parts(link)
+      %{"t" => client_token} = link_parts(client_link)
       hash = Base.encode16(:crypto.hash(:sha256, token))
+      client_hash = Base.encode16(:crypto.hash(:sha256, client_token))
 
-      refute inspect(:sys.get_state(pairing)) =~ token
-      refute inspect(:sys.get_state(pairing)) =~ hash
+      for secret <- [token, client_token, hash, client_hash] do
+        refute inspect(:sys.get_state(pairing)) =~ secret
+      end
 
       Process.flag(:trap_exit, true)
 
@@ -759,8 +762,9 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
           assert_receive {:EXIT, ^pairing, _reason}
         end)
 
-      refute log =~ token
-      refute log =~ hash
+      for secret <- [token, client_token, hash, client_hash] do
+        refute log =~ secret
+      end
     end
   end
 

@@ -38,7 +38,7 @@ The same listener serves the webhook of an event subscription: `POST /hooks/<id>
 | Code | Meaning |
 |---|---|
 | `4400` | a frame that the contract does not allow: a text that the server cannot decode (bad JSON, a text that is not UTF-8, a float out of range, or a text over the decode bounds, see "Bounds"), an unknown `type`, a frame or a part before `welcome`, a `hello` whose `protocol` is not an integer of 0 or more, a part out of order, a request `id` whose reply was not sent, an `ack` of a `seq` that the subscription did not send |
-| `4401` | no `hello` within 5,000 ms, or a missing or wrong proof; under a Hub also a `token` that is not an id, unknown, or revoked; on the public listener a field of the `hello` of the wrong type or size, the proof of the server token, a wrong pairing proof, a link that is expired or used, a wrong peer signature, and a pairing over the peer cap |
+| `4401` | no `hello` within 5,000 ms, or a missing or wrong proof; under a Hub also a `token` that is not an id, unknown, or revoked; on the public listener a field of the `hello` of the wrong type or size, the proof of the server token, a wrong pairing proof, a link that is expired or used, a pairing whose role or name does not match the link's kind, a wrong peer signature, and a pairing over the peer cap |
 | `4408` | a slow client: a subscription passed its credits (`:slow`), the outbound queue held more than 64 MiB when a frame was added, or no inbound frame or pong for 45,000 ms; a hands connection that answered no `hands.live` within its lease |
 | `4413` | an inbound frame joined from parts over 25 MiB |
 | `1002`, `1008` | a WebSocket frame that RFC 6455 does not allow, such as a continuation with no frame before it (`1002`) or an empty continuation that is not the last (`1008`): the WebSocket server closes |
@@ -76,8 +76,8 @@ Every `req` gets one `res`: `ok: true` with the result, or `ok: false` with an e
 | `compact` | `{session, text?}`: the instructions, default `""` | `{}`; a provider that keeps no history gives a `notice` event | `session_not_found`, `text_too_large`, `invalid_utf8`, `turn_running`, and under a Hub `forbidden` |
 | `answer` | `{session, ask_id, answer}`: `ask_id` is the id of an `ask` event; `answer` is a JSON object of at most 16,384 bytes; a frame over the decode bounds ("Bounds") closes with `4400` before the op is known | `{}`; the first answer to an open ask goes to its call, and every client gets `ask_end`; an id that is not open gets `not_waiting` | `session_not_found`, `invalid_answer`, `not_waiting`, and under a Hub `forbidden` |
 | `stop` | `{session}` | `{}` after the session ended: a running turn aborts first, as at `abort`, then the session stops and every subscription of it gets `session_end` with `stopped`. A stopped session frees its place in the live-session cap and can be resumed from its file. The answer is `{}` also when a handle of the session was not released: the wire does not carry the stop report of `Helyx.Sessions.stop/1` (#752) | `session_not_found`, and under a Hub `forbidden` |
-| `pair.create` | `{kind, name}`: `kind` is `"hands"` in this build, `name` a name | `{link, expires_ms}`; served only on the loopback listener, on a connection that proved the server token | `bad_params` for another kind or a kind or name that is not a string, `too_many_links`, `no_public_listener`, `forbidden` for a user token, and `unknown_op` on the public listener |
-| `pair.revoke` | `{kind, name}`: `kind` is `"hands"` | `{}`; deletes the peer and closes its connection; served only on the loopback listener, on a connection that proved the server token | `bad_params` for another kind or a kind or name that is not a string, `no_public_listener`, `forbidden` for a user token, and `unknown_op` on the public listener |
+| `pair.create` | `{kind, name}`: `kind` is `"hands"` or `"client"`, `name` a name | `{link, expires_ms}`; served only on the loopback listener, on a connection that proved the server token | `bad_params` for another kind or a kind or name that is not a string, `too_many_links`, `no_public_listener`, `forbidden` for a user token, and `unknown_op` on the public listener |
+| `pair.revoke` | `{kind, name}`: `kind` is `"hands"` or `"client"` | `{}`; deletes the peer and closes its connection; served only on the loopback listener, on a connection that proved the server token | `bad_params` for another kind or a kind or name that is not a string, `no_public_listener`, `forbidden` for a user token, and `unknown_op` on the public listener |
 | `pair.list` | `{}` | `{peers: [peer]}`, by kind and name; served only on the loopback listener, on a connection that proved the server token | `no_public_listener`, `forbidden` for a user token, and `unknown_op` on the public listener |
 | `records.subscribe` | `{}` | `{records: [record], more}`, ordered: the sessions that wait for the user first, then by `active_at`, newest first, then by session id; the page and every live record beside it, at most `Helyx.Hub.RecordFeed.max_reply/0`, and `more` says that the user owns more | `unknown_op` on a server with no Hub, `too_many_subscriptions` for a second subscription on the connection |
 | `records.unsubscribe` | `{}` | `{}` | `unknown_sub` |
@@ -89,7 +89,8 @@ A `hands.register` is a `req` of a connection whose `hello` had the role `hands`
 `helyx serve --public <host>:<port>` starts a second listener of the same wire with TLS 1.3 only (`docs/features/remote-hands.md`, "Pairing and the public listener"). The loopback listener and `server.json` stay as they are. The host is the address that a link carries, and the listener binds every interface.
 
 - A `hello` on the public listener proves a pairing link or a paired key: `pair` with `{proof, public_key, signature}`, or `signature` alone. It never accepts the proof of the server token: such a `hello` closes with `4401`.
-- Every field of a public `hello` is checked for type and size before any other work: the role `hands`, a `runner` that is a name, and one handshake of parts of 32 or 64 decoded bytes. A bad field closes that connection with `4401`; the other connections keep serving.
+- A `hello` of a runner has the role `hands` and its name in `runner`; one of a client app has the role `client` and its name in `client`. A paired client acts as the default owner of the Hub (`docs/features/remote-hands.md`, "The handshake of a paired peer").
+- Every field of a public `hello` is checked for type and size before any other work: the role `hands` with a `runner` that is a name, or the role `client` with a `client` that is a name, and one handshake of parts of 32 or 64 decoded bytes. A bad field closes that connection with `4401`; the other connections keep serving.
 - The `challenge` and its nonce are the same as on the loopback listener. The proof of a pairing is rule O1 with the bootstrap token of the link in place of the server token.
 - The signature of both handshakes is Ed25519 over the signature text: the context text `helyx-handshake-v1`, the 32 bytes of the nonce, the pin of the server, the kind, and the name, in that order, each preceded by its length as a 32-bit big-endian integer (`Helyx.Transport.WebSocket.Pairing.signature_text/4`). A signature made for one server, one kind, or one name is of no use at another.
 - A Hub that is busy or gives no answer to a pairing closes with `4503`; the peer connects again later.
@@ -160,7 +161,7 @@ The schema below is the contract. The test of #660 computes the SHA-256 of the l
 
 <!-- wire-schema:start -->
 ```text
-protocol 14
+protocol 15
 
 notation: {k: T} an object; k? may be absent (absent = null or false);
   T | U either; [T] a list; "x" that string; int a JSON integer >= 0;
@@ -170,7 +171,7 @@ notation: {k: T} an object; k? may be absent (absent = null or false);
 
 # client to server
 hello   = {type: "hello", protocol: int, proof?: base64, token?: id,
-           role?: "client" | "hands", runner?: name,
+           role?: "client" | "hands", runner?: name, client?: name,
            pair?: {proof: base64, public_key: base64, signature: base64},
            signature?: base64}
 req     = {type: "req", id: id, op: op, params: object}
@@ -233,8 +234,8 @@ params.set_model       = {session: string, model: string}
 params.compact         = {session: string, text?: string}
 params.stop            = {session: string}
 params.answer          = {session: string, ask_id: string, answer: object}
-params.pair.create     = {kind: "hands", name: name}
-params.pair.revoke     = {kind: "hands", name: name}
+params.pair.create     = {kind: "hands" | "client", name: name}
+params.pair.revoke     = {kind: "hands" | "client", name: name}
 params.pair.list       = {}
 product_origin         = {kind: "product", id: string}
 params.hub.me              = {}
@@ -290,7 +291,7 @@ result.records.unsubscribe = {}
 live_session  = {id: string, instance_id: string, cwd: string, model: string,
                  status: "idle" | "running"}
 saved_session = {id: string, cwd: string, model: string, mtime: int, prompt: string}
-peer          = {kind: "hands", name: name, created_at: int, connected: bool}
+peer          = {kind: "hands" | "client", name: name, created_at: int, connected: bool}
 
 user     = {id: string, name: string}
 # project: null for a user who does not own the record (the project is the owner's)
@@ -408,7 +409,7 @@ Notes on the codec:
 
 ## Conformance fixtures
 
-`test/fixtures/wire/` holds fixtures of protocol 14 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, the TUI tests run the server frames and the folds against the client and its view model, and the Rust client core runs `records.json`, so the fixtures and the code cannot drift.
+`test/fixtures/wire/` holds fixtures of protocol 15 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, the TUI tests run the server frames and the folds against the client and its view model, and the Rust client core runs `records.json`, so the fixtures and the code cannot drift.
 
 What this doc does not pin down for an implementation that does not run on the BEAM. Each is open, not decided here:
 
@@ -440,6 +441,7 @@ What this doc does not pin down for an implementation that does not run on the B
 18. **Protocol 11** (#957, `docs/features/live-records.md`). Protocol 12 adds the records feed of a user: the operations `records.subscribe` and `records.unsubscribe`, their params and results, the `record_frame` and `records_frame` frames, `record_change`, and the status `"waiting"` of a record. A client of protocol 11 gets `refused` and the close `4426`, and the fixtures name protocol 12.
 19. **Protocol 12** (review of 2026-11-12, `docs/features/live-records.md`). Protocol 13 adds `records_end`, the last frame of a records feed when the Hub process behind it ends, such as a restart of Hub under its supervisor: the client subscribes again and gets the list. It also lets `records.unsubscribe` answer `unknown_sub` on a server with no Hub, as a client that never subscribed has no subscription. A client of protocol 12 gets `refused` and the close `4426`, and the fixtures name protocol 13.
 20. **Protocol 13** (#927, `docs/features/remote-hands.md`). Protocol 14 adds the hands role and the pairing of a runner: the fields `role`, `runner`, `pair`, and `signature` of `hello`; the operations `pair.create`, `pair.revoke`, and `pair.list` with the shape `peer`; the hands operation `hands.register`; the server request `hands.live`; the public listener with TLS of `helyx serve --public`; and the error codes `too_many_links` and `no_public_listener`. A server with no `--public` answers the three `pair.*` operations with `no_public_listener`, and a client of protocol 13 gets `refused` and the close `4426`, and the fixtures name protocol 14. The term codec of the hands namespace comes with the build ticket of ADR 0012 and does not change the schema of this doc yet.
+21. **Protocol 14** (#956, `docs/features/remote-hands.md`, "Slices" P7). Protocol 15 adds the client kind of a link and of the pairing: the field `client` of `hello`, the kind `"client"` in the params of `pair.create` and `pair.revoke` and in the shape `peer`. A paired client acts as the default owner of the Hub. Nothing else changes. A client of protocol 14 gets `refused` and the close `4426`, and the fixtures name protocol 15.
 
 ## Bounds
 
@@ -519,4 +521,4 @@ Each numeric limit gets tests at the limit, one under, and one over, and the fra
 - A browser client.
 - Paging inside one message body: parts carry any size (#658).
 - stdio framing code: same frames, a later ticket when a client needs it (#660).
-- The `hands` role of `hello`, the pairing of a runner, and the `pair.*` and `hands.register` operations of `helyx serve --public`: the schema and protocol 14 are here, and the design is in `docs/features/remote-hands.md` (#927). The term codec of the hands namespace, the session that uses a runner, and `helyx hands` come with later slices of that doc.
+- The `hands` role of `hello`, the pairing of a runner, and the `pair.*` and `hands.register` operations of `helyx serve --public`: the schema and protocol 14 are here, and protocol 15 adds the client kind of `hello` and of a link; the design is in `docs/features/remote-hands.md` (#927, #956). The term codec of the hands namespace, the session that uses a runner, and `helyx hands` come with later slices of that doc.

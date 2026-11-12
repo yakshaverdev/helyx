@@ -8,7 +8,7 @@ defmodule CodingAgent.CLI do
   helyx --session id [-p prompt]
   helyx --list [--all] [directory]
   helyx serve [--host ip] [--port n] [--public host:port] [--model provider/model]
-  helyx pair --runner name
+  helyx pair (--runner name | --client name)
   helyx hands --pair <link> [--folder dir]
   helyx hands --name <name> [--folder dir]
   helyx --version | --help
@@ -64,6 +64,9 @@ defmodule CodingAgent.CLI do
     runner:
       {:string, "--runner name",
        "with pair, the name of the runner, 1 to 64 bytes of a-z, 0-9, and _"},
+    client:
+      {:string, "--client name",
+       "with pair, the name of a client app, 1 to 64 bytes of a-z, 0-9, and _"},
     pair: {:string, "--pair link", "with hands, the helyx-pair link of the runner"},
     name: {:string, "--name name", "with hands, the paired runner to connect with its saved key"},
     folder:
@@ -114,6 +117,7 @@ defmodule CodingAgent.CLI do
     port: :serve,
     public: :serve,
     runner: :pair,
+    client: :pair,
     pair: :hands,
     name: :hands,
     folder: :hands

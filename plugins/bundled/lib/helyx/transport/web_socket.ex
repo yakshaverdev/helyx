@@ -39,9 +39,10 @@ defmodule Helyx.Transport.WebSocket do
   of `Helyx.Transport.WebSocket.TLS.ensure/1`, and `:pairing`, the Hub
   whose store holds the peers; the start fails with
   `{:error, :pairing_required}` without a Hub. The public listener accepts
-  no server token: a `hello` there proves a pairing link or a paired key,
-  and a `hello` with the proof of the server token closes with `4401`. The
-  loopback listener serves `pair.create`, `pair.revoke`, and `pair.list`;
+  no server token: a `hello` there proves a pairing link or a paired key of
+  a runner or a client, and a `hello` with the proof of the server token
+  closes with `4401`. A paired client acts as the default owner of the Hub.
+  The loopback listener serves `pair.create`, `pair.revoke`, and `pair.list`;
   without `:public` they answer `no_public_listener`. `:hands_lease_ms` is
   the lease of a hands connection, from 30,000 to 120,000 ms, default
   `hands_lease_ms/0`.
@@ -56,8 +57,8 @@ defmodule Helyx.Transport.WebSocket do
 
   # The protocol number and the SHA-256 of the schema in
   # `docs/features/wire-protocol.md`; a schema change needs a new number.
-  @protocol 14
-  @schema_sha256 "c1b4b4508cd44af8aff0ba7b26060d2addfd0eb8b8935c3f0bd2c76f03222ea5"
+  @protocol 15
+  @schema_sha256 "21275cebe45ee80ed963b2e1feb4d91f023f246484db3157dbef0de89123deb3"
 
   @max_connections Helyx.Transport.WebSocket.Bounds.get("connections")
   # The webhook endpoint of a Hub (decision 17): one request reads at most

@@ -7,7 +7,7 @@ defmodule Helyx.Transport.WebSocket.Hello do
   # read only the fields of the connection that they name: the listener, the
   # pairing, the nonce, the authority, and the key of the server token.
 
-  alias Helyx.Transport.WebSocket.{Authorize, Frame, Pairing}
+  alias Helyx.Transport.WebSocket.{Authorize, Frame, Handshake, Pairing}
 
   # The protocol number first: a client of another protocol learns that it
   # must update, whatever its proof.
@@ -33,16 +33,9 @@ defmodule Helyx.Transport.WebSocket.Hello do
   end
 
   # The public listener takes no server token: only a pairing link or the key
-  # of a paired runner (`docs/features/remote-hands.md`, "Pairing and the
-  # public listener"). The pairing validates every field of the `hello`
-  # before it reads any: a client role, a runner that is not a name, and a
-  # handshake of the wrong type or size close this connection with `4401`.
-  def authenticate(%{listener: :public} = state, hello) do
-    case Pairing.hello(state.pairing, state.nonce, hello, self()) do
-      {:ok, "hands", name} -> {:ok, nil, "hands", name}
-      {:close, code} -> {:close, code}
-    end
-  end
+  # of a paired peer (`docs/features/remote-hands.md`, "Pairing and the
+  # public listener"), and a paired client acts as the default owner.
+  def authenticate(%{listener: :public} = state, hello), do: Handshake.public(state, hello)
 
   # A pairing attempt on the loopback listener is not a handshake there.
   def authenticate(%{listener: :loopback} = state, hello) do

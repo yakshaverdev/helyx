@@ -51,9 +51,9 @@ An answer is the `res` of the request on the wire, and a term with no answer is 
 
 ## Codec on the wire
 
-The wire of ADR 0008 (`docs/features/wire-protocol.md`), protocol 14:
+The wire of ADR 0008 (`docs/features/wire-protocol.md`), protocol 15:
 
-- `hello` gets four fields: `role`, `"client"` (the default) or `"hands"`; `runner`, a `name` (1 to 64 bytes of a-z, 0-9, and `_`), required with the role `hands`; `pair`, the pairing handshake of "Pairing and the public listener"; and `signature`, the handshake of a paired peer. A `hello` carries `pair` or `signature`, never both.
+- `hello` gets five fields: `role`, `"client"` (the default) or `"hands"`; `runner`, a `name`, required with the role `hands`; `client`, a `name`, required with the role `client`; `pair`, the pairing handshake of "Pairing and the public listener"; and `signature`, the handshake of a paired peer. A `hello` carries `pair` or `signature`, never both. A client is not a runner, so the name of a client is in `client`, never in `runner`.
 - A runner registers with one `req` `hands.register {runner, folder}`; the result is `{lease_ms}`.
 - On a hands connection every S→H term is a `req` frame (ADR 0012 §5), and the runner answers each with a `res`. A term that has no answer today (`hands.call`, `hands.taken`, `hands.go`, `hands.provider_go`, `hands.provider_request`, `hands.provider_stop`, `hands.settle`, `hands.approve`) gets the `res` `{}` when the runner's request queue gave it to the hands; the stand-in does not wait for it and arms no deadline on it (ADR 0012 §3). The runner sends `event` frames for the H→S terms and `req` frames for the requests of a tool (`hands.ask`, `hands.show`, `hands.transcript`). The request ids of the two directions are separate spaces.
 - A term is the `params` of a `req`, the `result` of a `res`, or the `data` of an `event`, as the wire has them. Strings are UTF-8; a text that is not valid UTF-8 cannot be a term, so the sender turns it into text as the source of the text does today (a tool result through `Helyx.Message.cut_result/1`, a reason through `Helyx.Reason.text/1`).
@@ -62,7 +62,7 @@ The wire of ADR 0008 (`docs/features/wire-protocol.md`), protocol 14:
 
 ## Pairing and the public listener
 
-User story: on the server machine the owner runs `helyx pair --runner mac` and gets one link. On the Mac the owner runs `helyx hands --pair <link>` in the project folder. From then on the Mac is the runner `mac`. After a restart of either side it connects again alone, with no secret copied by hand. A phone or desktop client pairs with the same link format later (#956), so the link has a kind.
+User story: on the server machine the owner runs `helyx pair --runner mac` and gets one link. On the Mac the owner runs `helyx hands --pair <link>` in the project folder. From then on the Mac is the runner `mac`. After a restart of either side it connects again alone, with no secret copied by hand. A phone or desktop client pairs with the same link, of the kind `client`, and from then on it is connected as the owner: it sees the sessions of the owner, starts sessions, follows them, and answers their asks, as a local client with the server token does. After a restart of either side it connects again alone. So the link has a kind.
 
 ### Public listener
 
@@ -72,7 +72,7 @@ The listener binds every interface of both families with one dual-stack socket w
 
 Each listener has its own connection gate of `Helyx.Transport.WebSocket.max_connections/0`, so a public connection never takes a place of the loopback listener, in any state, and the total of a server is two gates. Each listener also admits at most `Helyx.Transport.WebSocket.tcp_connections/0` TCP connections before the upgrade, and `Helyx.Transport.WebSocket.TLS.handshake_ms/0` bounds the TLS handshake, so a connection that sends no ClientHello does not hold a place. The HTTP request of an upgrade is bounded by the same `handshake_ms/0` in all, from two waits of `Helyx.Transport.WebSocket.TLS.request_ms/0`. The upgraded WebSocket of the public listener keeps no read timeout of the listener: its idle rule is the ping and the lease, and a registered runner that is silent past the request bound stays open until its lease. The public listener serves no webhook: a path under `/hooks` answers 404 before any other work.
 
-The server checks every field of a public `hello` for type and size before it reads any: the role `hands`, a `runner` that is a name, and one handshake whose parts are strings of the right size. A `hello` of another role, a `runner` that is not a name, a handshake of the wrong type, and a `hello` with both handshakes close that connection with `4401`, and the transport keeps serving its other connections.
+The server checks every field of a public `hello` for type and size before it reads any: the role `hands` with a `runner` that is a name, or the role `client` with a `client` that is a name, and one handshake whose parts are strings of the right size. A `hello` of another role, a `hands` without a runner name, a `client` without a client name, a handshake of the wrong type, and a `hello` with both handshakes close that connection with `4401`, and the transport keeps serving its other connections.
 
 Without `--public` the server has one listener, and a pairing operation answers `no_public_listener`.
 
@@ -86,51 +86,51 @@ The pin is the base64url, without padding, of the SHA-256 of the DER of the Subj
 
 ### Peers
 
-A paired peer is a row in the Hub store: the table `peers` with `name` (1 to `Helyx.Transport.WebSocket.Pairing.name_bytes/0` bytes of a-z, 0-9 and `_`), `kind`, `public_key` (32 bytes, Ed25519), and `created_at`. The primary key is `(kind, name)`. This is a store schema version step with an upgrade, as `Helyx.Hub.Store.SQLite.Schema` does it. At most `Helyx.Hub.max_peers/0` rows, the runners and clients of one server; a pairing over it fails.
+A paired peer is a row in the Hub store: the table `peers` with `name` (1 to `Helyx.Transport.WebSocket.Pairing.name_bytes/0` bytes of a-z, 0-9 and `_`), `kind`, `public_key` (32 bytes, Ed25519), and `created_at`. The primary key is `(kind, name)`, so a client and a runner can have the same name. This is a store schema version step with an upgrade, as `Helyx.Hub.Store.SQLite.Schema` does it. At most `Helyx.Hub.max_peers/0` rows, the runners and clients of one server together; a pairing over it fails.
 
-This slice pairs only the kind `hands`. The link keeps its kind field, and the client kind, with its own operations, comes with #956. `pair.create` with the kind `client` answers `bad_params`.
+Both kinds pair: `hands` pairs a runner, and `client` pairs a client app. A paired client acts as the default owner of the Hub (`docs/features/hub.md`, decision 3), so its operations are the client operations of that user. A link for another Hub user is not built.
 
 The server stores no secret of a peer: a copy of the store does not let its holder connect as the peer. This is why the peer has a key pair and not a stored shared secret: the HMAC key of a stored secret would be enough to forge a proof.
 
 ### The link
 
-A link is `helyx-pair:1:<base64url of the JSON {"a": "<host>:<port>", "t": "<bootstrap token>", "p": "<pin>", "k": "hands", "n": "<name>"}>`.
+A link is `helyx-pair:1:<base64url of the JSON {"a": "<host>:<port>", "t": "<bootstrap token>", "p": "<pin>", "k": "hands" | "client", "n": "<name>"}>`.
 
 The bootstrap token is the base64url of 32 random bytes. The server keeps only its SHA-256, in memory, inside a closure, so no `inspect` or crash report of the pairing process holds it. A link is valid for `Helyx.Transport.WebSocket.Pairing.link_ms/0`: long enough for the owner to carry it to the other machine, and short enough that an unused one dies. It is valid for one successful pairing. At most `Helyx.Transport.WebSocket.Pairing.max_links/0` pending links, so the state of the process stays bounded; a create over it fails with `too_many_links`. A stop of the server ends every pending link.
 
 ### Make a link
 
-A new client operation `pair.create {kind, name}` with the result `{link, expires_ms}`, served only on the loopback listener, on a connection that proved the server token. The kind is `hands` and the name follows the one name rule; any other kind, and a kind or name that is not a string, answers `bad_params`. A Hub user token gets `forbidden`: pairing is the operator's action. On the public listener it is `unknown_op`. `pair.revoke` checks its kind and name the same way before it reaches the pairing process.
+A new client operation `pair.create {kind, name}` with the result `{link, expires_ms}`, served only on the loopback listener, on a connection that proved the server token. The kind is `hands` or `client`, and the name follows the one name rule; any other kind, and a kind or name that is not a string, answers `bad_params`. A Hub user token gets `forbidden`: pairing is the operator's action. On the public listener it is `unknown_op`. `pair.revoke` checks its kind and name the same way before it reaches the pairing process.
 
-Without `--public` it fails with `no_public_listener`. `helyx pair --runner <name>` connects as a second start of `helyx serve` does (`CodingAgent.Attach.connect/1`), calls the operation, and prints the link and one line that says how long it is valid.
+Without `--public` it fails with `no_public_listener`. `helyx pair --runner <name>` and `helyx pair --client <name>` connect as a second start of `helyx serve` does (`CodingAgent.Attach.connect/1`), call the operation with the kind of the switch, and print the link and one line that says how long it is valid. Exactly one of the two switches is given.
 
 A name that is already paired is paired again: the new key replaces the old one at the pairing, and the old connection closes.
 
 ### The pairing handshake
 
-The `challenge` gives a nonce, as today. A `hello` of a pairing has `role` `hands`, `runner` (the name), and `pair: {proof, public_key, signature}`:
+The `challenge` gives a nonce, as today. A `hello` of a pairing with a runner has `role` `hands`, `runner` (the name), and `pair: {proof, public_key, signature}`; one with a client has `role` `client`, `client` (the name), and the same `pair`:
 
 - `proof` is the HMAC of the nonce with the SHA-256 of the bootstrap token, as the wire computes a proof today (`docs/features/wire-protocol.md`, rule O1).
 - `public_key` is the Ed25519 public key that the peer made.
-- `signature` is the Ed25519 signature of the signature text below with the private key. The server checks the link's kind and name, the proof, the signature, and that the `runner` is the name of the link. A wrong proof or signature, an expired or used link, and another kind or name close with `4401` and do not consume the link.
+- `signature` is the Ed25519 signature of the signature text below with the private key. The server checks the link's kind and name, the proof, the signature, and that the role belongs to the link's kind and its name is the link's name. A wrong proof or signature, an expired or used link, another kind or name, and a role that does not belong to the link's kind close with `4401` and do not consume the link.
 
 ### The handshake of a paired peer
 
-A `hello` with `role` `hands`, `runner`, and `signature` (the Ed25519 signature of the signature text). The server reads the public key of `("hands", name)` and verifies. No row, or a wrong signature: `4401`.
+A `hello` with `role` `hands` and `runner`, or `role` `client` and `client`, and `signature` (the Ed25519 signature of the signature text). The server reads the public key of `(kind, name)` and verifies. No row, or a wrong signature: `4401`. A paired client acts as the default owner of the Hub: it gets the credential of that user, and its operations are the client operations of that user. It gets no operator operation: `pair.create`, `pair.revoke`, and `pair.list` stay `unknown_op` on the public listener, and everything that the loopback listener keeps for a connection that proved the server token stays refused.
 
 **The signature text.** Both handshakes sign the same bytes, and the runner builds them the same way: the context text `helyx-handshake-v1`, the 32 bytes of the nonce, the pin of the server, the kind, and the name, in that order, each part preceded by its length as a 32-bit big-endian integer (`Helyx.Transport.WebSocket.Pairing.signature_text/4`). A signature made for one server, one kind, or one name is of no use at another.
 
 **A Hub that does not answer.** A Hub that is busy or gives no answer to a pairing closes the connection with `4503`, as the authority of the loopback listener does; the peer connects again later. A missing or wrong row is permanent and closes with `4401`. The caller waits `Helyx.Transport.WebSocket.Pairing.call_ms/0` for this process, which is `Helyx.Hub.call_ms/0` plus a margin, so the `4503` answer arrives before the caller's own wait ends.
 
-**A caller that dies.** The pairing checks that the caller of a `hello` is alive after the Hub write and before it consumes the link. A caller that died during the write leaves the link pending, and the peer tries again. A connection that dies after the registration is cleaned up by the monitor of `Helyx.Transport.WebSocket.Pairing.register/3`.
+**A caller that dies.** The pairing checks that the caller of a `hello` is alive after the Hub write and before it consumes the link. A caller that died during the write leaves the link pending, and the peer tries again. A connection that dies after the registration is cleaned up by the monitor that `Helyx.Transport.WebSocket.Pairing` sets at the registration inside its `hello` call.
 
 ### Revoke
 
-`Helyx.Transport.WebSocket.Pairing.revoke/3` is the one path: it deletes the row and closes the connection of that peer, so its sessions stop as at a lost hands (ADR 0012 §4). The client operation `pair.revoke {kind, name}` on the loopback listener calls it, and so does the operator. The row may be gone already; the close still runs, and the operation answers `{}`. `pair.list` gives `{peers: [{kind, name, created_at, connected}]}`.
+`Helyx.Transport.WebSocket.Pairing.revoke/3` is the one path: it deletes the row of its kind and name and closes the connection of that peer, so its sessions stop as at a lost hands (ADR 0012 §4). It closes the connection of a paired client too, at once. The client operation `pair.revoke {kind, name}` on the loopback listener calls it, and so does the operator. The row may be gone already; the close still runs, and the operation answers `{}`. `pair.list` gives `{peers: [{kind, name, created_at, connected}]}`. A peer has at most one connection: a second connection with the same kind and name closes the first.
 
 ### With no Hub
 
-Pairing does not exist without a Hub in the Core: `--public` fails the start with one line, and the transport with a public listener and no pairing gives `{:error, :pairing_required}`.
+Pairing does not exist without a Hub in the Core: `--public` fails the start with one line, and the transport with a public listener and no pairing gives `{:error, :pairing_required}`. A transport with a pairing process and no authority, or with an authority that has no `paired/4`, refuses `pair.create` with the kind `client` with `bad_params`: the paired handshake has no credential to ask for, so a link of that kind would never work. The kind `hands` is not affected.
 
 ### The runner state
 
@@ -193,14 +193,15 @@ A transport option `:hands_lease_ms` of `Helyx.Transport.WebSocket`, an integer 
 
 - `Helyx.Session.start/2` and `resume/2`: the option `:hands`, a runner name; the session file records it. The tool set comes from the capability report of the hands, local and remote. The `:provider_opts` of a session with `:hands` are a keyword list whose values encode as JSON, else the start fails before the session starts.
 - A public entry point through which a connection hands Core a remote hands (ADR 0012 §1). Name and shape in the entry-point slice.
-- `Helyx.Transport.WebSocket`: the role `hands`, `hands.*`, the option `:hands_lease_ms`, the option `:public` for the second listener, and the pairing operations of "Pairing and the public listener". Protocol 14.
+- `Helyx.Transport.WebSocket`: the roles `hands` and `client`, `hands.*`, the option `:hands_lease_ms`, the option `:public` for the second listener, and the pairing operations of "Pairing and the public listener". Protocol 15.
+- `Helyx.Transport.WebSocket.Authority`: the optional callback `paired/4`, the credential of a paired client, which the Hub answers with the default owner.
 - `Helyx.Transport.WebSocket.TLS` (new): `ensure/1` and `pin/1` and `verify/2` of the certificate.
 - `Helyx.Transport.WebSocket.Pairing` (new): the links, the peer connections, the two handshakes, and the hands registrations.
 - `Helyx.Transport.WebSocket.Runner` (new): the client side of the role `hands`, with `Runner.Link` (the link), `Runner.State` (the state file), and `Runner.Connection` (TLS, the upgrade, and the handshake). Not a Core plugin, with no registration entry.
 - `Helyx.Hub`: `put_peer/4`, `peer/3`, `peers/1`, `max_peers/0`, and the internal `revoke_peer/3` that deletes a row. `Helyx.Transport.WebSocket.Pairing.revoke/3` is the one revoke path, and it closes the connection.
 - `Helyx.Hub.Store`: `put_peer/4`, `peer/3`, `delete_peer/4`, and `peers/1`, with the schema version of "Store schema".
 - `Helyx.Session.read_files/2` for the readers of the folder.
-- `CodingAgent.CLI`: `helyx serve --public <host>:<port>` and `helyx pair --runner <name>`.
+- `CodingAgent.CLI`: `helyx serve --public <host>:<port>`, `helyx pair --runner <name>`, and `helyx pair --client <name>`.
 - `CodingAgent.CLI`: `helyx hands --pair <link> [--folder <dir>]` and `helyx hands --name <name> [--folder <dir>]` (the runner connection, P6).
 
 ## Replaced mechanism
@@ -224,7 +225,7 @@ Each slice lists the tests of the old mechanism that it touches, with the proper
 | What | Bound | Over the bound | Where |
 | --- | --- | --- | --- |
 | hands per session instance | 1 | a term of another instance: refused by the hands, dropped by the session | both |
-| connections per runner name | 1 | a new registration closes the old connection | server |
+| connections per peer name | 1 | a new connection of the same kind and name closes the old connection | server |
 | a frame | `Helyx.Transport.WebSocket.Frame.max_frame/0`, with parts | close `1009` | transport |
 | a term, runner to server | `Helyx.Transport.WebSocket.Frame.max_request/0`, the values and integers of the request decode bounds | the receiver closes the connection; the sender fails the one operation | sender and receiver |
 | a term, server to runner | as "Term limits" | the receiver closes the connection; the sender fails the one operation | sender and receiver |
@@ -232,7 +233,7 @@ Each slice lists the tests of the old mechanism that it touches, with the proper
 | pending links | `Helyx.Transport.WebSocket.Pairing.max_links/0` (16) | `pair.create` fails with `too_many_links` | server |
 | peers | `Helyx.Hub.max_peers/0` | the pairing closes with `4401`, and the link stays unused | server |
 | a peer name | 1 to `Helyx.Transport.WebSocket.Pairing.name_bytes/0` bytes of a-z, 0-9, and `_` | `bad_params` for `pair.create`; `4401` for a `hello` | `Helyx.Transport.WebSocket.Pairing` |
-| a public `hello` | the role `hands`, a name, and one handshake of parts of 32 or 64 decoded bytes | `4401` | `Helyx.Transport.WebSocket.Pairing` |
+| a public `hello` | the role `hands` with a `runner` name, or the role `client` with a `client` name, and one handshake of parts of 32 or 64 decoded bytes | `4401` | `Helyx.Transport.WebSocket.Pairing` |
 | the TLS key and certificate | ECDSA P-256; the folder has mode 0700, the key 0600 before its first byte | the start refuses with one line that names the file | `Helyx.Transport.WebSocket.TLS` |
 | the TLS handshake | `Helyx.Transport.WebSocket.TLS.handshake_ms/0` | the connection closes | `Helyx.Transport.WebSocket.TLS.Transport` |
 | the HTTP request of an upgrade | `Helyx.Transport.WebSocket.TLS.handshake_ms/0`, from two waits of `Helyx.Transport.WebSocket.TLS.request_ms/0` | the server answers 408 and closes | `Helyx.Transport.WebSocket.TLS.Transport` |
@@ -271,7 +272,7 @@ Each numeric limit gets tests at it, one under, one over, and a multibyte case w
 | the public listener socket | `helyx serve --public` | the transport supervisor | the stop of the transport | the transport supervisor stops at the crash of the listener and starts it again | n/a |
 | the TLS key and certificate | `Helyx.Transport.WebSocket.TLS.ensure/1`, at the first start with `--public` | the data folder, `<data folder>/tls/` | they stay; a later start reads them | they stay | n/a |
 | a peer row | the pairing handshake, in the Hub store | the Hub store | `Helyx.Transport.WebSocket.Pairing.revoke/3` deletes it | it stays | n/a |
-| the connection of a peer | the pairing handshake or the handshake of a paired peer | `Helyx.Transport.WebSocket.Pairing`, with a monitor | the close of the connection | the monitor drops the entry | a revoke closes it |
+| the connection of a peer | the pairing handshake or the handshake of a paired peer | `Helyx.Transport.WebSocket.Pairing`, with a monitor | the close of the connection | the monitor drops the entry | a revoke closes it; a second connection of the same kind and name closes the first |
 | a pending link | `pair.create` | `Helyx.Transport.WebSocket.Pairing`, as a closure of the SHA-256 of its bootstrap token | one successful pairing, the end of its lifetime, or the stop of the server | the stop of the server | n/a |
 | the background folder of a session | the hands | the hands | the hands delete it at their stop | accepted hole: a killed runner leaves it, as a killed VM leaves it today | the hands delete it at their stop |
 
@@ -283,10 +284,11 @@ In order, each through `/ship` with its own commit. The pairing slices come firs
 
 - **P1. The public listener with TLS and the pin.** The option `:public` of `Helyx.Transport.WebSocket`, `Helyx.Transport.WebSocket.TLS`, and `helyx serve --public <host>:<port>`. Tests: the pin is stable across two starts; the folder has mode 0700 and `key.pem` 0600 before its first byte; a loose mode is corrected; a cut key, a key with no certificate, and a certificate of another key refuse the start with a line that names the file, and make no new key; a client with the pin connects and a client with another pin does not; TLS 1.3 only; a connection that sends no ClientHello closes at `handshake_ms/0`; a connection that sends no HTTP request closes at `handshake_ms/0`; the server token is refused on the public listener with `4401`; a bad `--public` value, and port 0, are one line and exit 1; the host is the link's address and the listener binds every interface, IPv6 and IPv4; a webhook path answers 404.
 - **P2. Peers in the Hub store.** The table, the schema upgrade, the store functions, and the cap. Tests at the cap, one under, one over; the name check with a multibyte case.
-- **P3. Links and `pair.create`, `pair.revoke`, `pair.list`.** Tests: one use; the lifetime; the cap of pending links; the kind `client` is `bad_params`; a kind or name that is not a string is `bad_params`; a Hub user token is `forbidden`; `unknown_op` on the public listener; `no_public_listener`; a revoke closes the connection of the peer, also after the row is gone; the state and a crash report hold no link secret.
+- **P3. Links and `pair.create`, `pair.revoke`, `pair.list`.** Tests: one use; the lifetime; the cap of pending links; a kind that is not `hands` or `client` is `bad_params`; a kind or name that is not a string is `bad_params`; a Hub user token is `forbidden`; `unknown_op` on the public listener; `no_public_listener`; a revoke closes the connection of the peer, also after the row is gone; the state and a crash report hold no link secret, for a link of either kind.
 - **P4. The two handshakes on the public listener.** A pairing `hello` and a paired `hello`, for the kind `hands`. After `welcome`, `hands.register {runner, folder}` gives `{lease_ms}`, and the lease closes a silent runner. A second registration of a name closes the first connection, and a second registration on one connection is `bad_params`. A client operation on a hands connection is `unknown_op`. A bad field of a public `hello` closes that connection only, and a Hub that does not answer closes with `4503`. No session uses the runner yet. Tests with a peer in the test process that speaks the frames over TLS: a pairing, then a second connection with the key alone; a wrong signature; a signature over the nonce alone; a signature for another name; a used link; an expired link; a bad field that leaves the loopback listener serving; each listener's gate; a registration with another name than the `hello`; an answer to no open `hands.live`; a Hub that does not answer through a real connection; a link of a caller that died.
 - **P5. `helyx pair --runner <name>`** on the server machine. Tests as the CLI tests of `serve` do.
 - **P6. The runner connection.** `Helyx.Transport.WebSocket.Runner`, its link parser, its state file, the two handshakes, the registration, `hands.live`, and the reconnect; `helyx hands --pair <link> [--folder <dir>]` and `helyx hands --name <name> [--folder <dir>]`. Tests: a pairing writes a 0600 state file in a 0700 folder, and `pair.list` shows `connected: true`; a second runner connects with the key alone; a used link ends with `unauthorized` and writes no state file; a second pairing over an existing state file refuses before any connection and keeps the file byte for byte; a wrong pin refuses the connection before any frame; each link fault gives its atom and no error holds the token; a pairing over an IPv6 literal host connects; the runner answers `hands.live` past three lease durations; a server restart connects the runner again alone; a revoke ends it with `unauthorized`; a server that goes silent after a live closes at the lease and the runner reconnects; the state file checks each give their error with the path; the private key and the link are out of the state, the child spec, and a crash report; a folder over the bound or not UTF-8 is refused before a connection; a lease over the maximum is a bad frame; the reconnect wait doubles to its cap and resets after a registration; the CLI prints its lines, its positional link and its other faults exit 1. No session runs on the runner.
+- **P7. The client kind.** The kind `client` of a link and of `hello`, the field `client` of its name, and the credential of the default owner on the public listener. A paired client starts a session, lists it, follows it, and sees a session that the server token started on the loopback listener; the operator operations stay `unknown_op` on its connection. Tests: a client pairing gives a link with `"k": "client"`, the pairing `hello` gets `welcome`, and `pair.list` shows the peer connected; a second connection with the key alone gets `welcome`; a wrong signature, a signature for the kind `hands` with the same name and key text, a signature for another name, and no row are `4401`; a used link and an expired link are `4401`; a `hands` link used with the role `client` and a `client` link used with the role `hands` are `4401` and do not consume the link; the default owner starts, lists, and follows a session, and sees the session of the loopback connection with the server token; `pair.create`, `pair.revoke`, and `pair.list` are `unknown_op`; a revoke closes the connection at once and its key no longer connects; a second connection of the same name closes the first; a client and a runner of the same name pair and both show in `pair.list`; `max_peers` counts both kinds; the state and a crash report hold no link secret, for a client link; a Hub that does not answer closes with `4503`; `helyx pair --client phone` prints a link of the kind `client`, and both switches, neither, and a bad name are one line and exit 1.
 
 ### Term slices
 
@@ -315,7 +317,7 @@ Owner decisions of 2026-11-11. No question of ADR 0012 stays open.
 6. **The signature covers the context.** Both handshakes sign the signature text of "The pairing handshake", not the nonce alone: the context text, the nonce, the pin of the server, the kind, and the name, each with a length before it. Reason: a signature made for one server, one kind, or one name is of no use at another. Part 2 signs the same bytes.
 7. **TLS 1.3 only.** Both ends are Helyx, so an older version adds a downgrade path for no peer.
 8. **A `res` renews the lease only for the open `hands.live`.** The request id carries its sequence, and each request is answered at most once. Reason: an answer with no open request cannot hold a connection alive.
-9. **One kind in this slice.** Only the kind `hands` pairs; the link keeps its kind field, and the client kind comes with #956. Reason: a client peer has no authority credential on the public listener yet, and a session that a client uses comes with that ticket.
+9. **Both kinds pair in this build.** A link of the kind `hands` pairs a runner, and one of the kind `client` pairs a client app (#956). The link keeps its kind field, and the two kinds share the key pair, the two handshakes, and the peers table. Reason: a paired client acts as the default owner of the Hub, and its operations are the client operations of that user, so the authority that the public listener needs for a client exists. A link for another Hub user is not built.
 
 ## Out of scope
 
@@ -326,3 +328,5 @@ Owner decisions of 2026-11-11. No question of ADR 0012 stays open.
 - The choice of a runner by the Hub: executor assignment (#928, #857).
 - The build tools: #929.
 - A result with blocks other than text: #858.
+- A link for a Hub user that is not the default owner. A client link always acts as the default owner.
+- The client side of a pairing: the desktop and phone apps that read the link, the keychain, and their UI (`clients/`).
