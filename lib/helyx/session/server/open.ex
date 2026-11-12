@@ -13,18 +13,31 @@ defmodule Helyx.Session.Server.Open do
   # `fun` to make or read the file. Past the deadline of the load the
   # session is killed, and the caller gets `{:error, :open_timeout}`. A start
   # of an id that this Core runs attaches
-  # (docs/features/server-management.md). The second run of a start is its
-  # last.
+  # (docs/features/server-management.md), and tells the caller so. The second
+  # run of a start is its last.
   def start(%State{} = state, tools, open, runs \\ 2) do
     start = {state, tools, open, runs}
 
     case launch(state, tools, open) do
-      {:error, {:already_started, pid}} -> attach(pid, session(state), start)
-      {:error, :max_children} -> attach(Helyx.Session.pid(session(state)), session(state), start)
-      {:started, result} -> result
-      error -> error
+      {:error, {:already_started, pid}} ->
+        origin(attach(pid, session(state), start), :attached)
+
+      {:error, :max_children} ->
+        origin(attach(Helyx.Session.pid(session(state)), session(state), start), :attached)
+
+      {:started, result} ->
+        origin(result, :started)
+
+      error ->
+        error
     end
   end
+
+  # The resume of an id tells whether the process ran (`:attached`) or this
+  # call started it (`:started`), so a load stops only a process that it
+  # started (docs/features/idle-unload.md).
+  defp origin({:ok, session}, origin), do: {:ok, session, origin}
+  defp origin(error, _origin), do: error
 
   # The open of `Helyx.Session.resume/2`: the read of the locked file and its
   # model ref. A repair of a crash may leave tool calls with no result, and

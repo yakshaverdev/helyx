@@ -602,7 +602,7 @@ defmodule Helyx.TUITest do
 
     assert Session.pid(session) == nil
 
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir, cwd: dir)
+    {:ok, resumed, _} = Session.resume(core, sessions_dir: dir, cwd: dir)
     %{vm: vm} = mount!(session: resumed, resumed: true)
 
     # The live cell shapes: the user message, the assistant message and its

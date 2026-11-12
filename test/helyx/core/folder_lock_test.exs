@@ -133,7 +133,7 @@ defmodule Helyx.Core.FolderLockTest do
     refute File.exists?(other)
 
     assert {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
-    assert {:ok, ^session} = Session.resume(core, sessions_dir: dir, id: session.id)
+    assert {:ok, ^session, _} = Session.resume(core, sessions_dir: dir, id: session.id)
 
     bare = start_bare_core()
     bare_other = Path.join(dir, "bare_other")

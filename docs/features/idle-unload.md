@@ -28,10 +28,13 @@ closes a provider process, and this feature stops the session.
 
 ## The rule
 
-The Core option `:idle_stop_ms` is a positive integer, or nil to turn the
-rule off. `Helyx.Core.start_link/1` checks it: any other value refuses the
-start with `{:error, {:invalid_option, :idle_stop_ms}}`. `Helyx.Core.config/2`
-reads it, and a start or a resume copies it into the session state once.
+The Core option `:idle_stop_ms` is a positive integer up to
+`Helyx.Session.Server.IdleStop.max_ms/0`, the largest time that
+`:erlang.start_timer/3` takes, or nil to turn the rule off.
+`Helyx.Core.start_link/1` checks it: any other value refuses the start with
+`{:error, {:invalid_option, :idle_stop_ms}}`, so no session dies with a
+`badarg` at its first arm. `Helyx.Core.config/2` reads it, and a start or a
+resume copies it into the session state once.
 `CodingAgent.Serve.idle_stop_ms/0` gives the value that `helyx serve` sets:
 it is the value of the provider idle timer, so a session that closed its
 provider for idleness is the one that unloads next.
@@ -90,6 +93,7 @@ which reads `stored: true` (`docs/features/hub.md`, decisions 8 and 14).
 | `Helyx.Session.Server.Events.emit/4`, when it drops a slow subscriber | a subscriber leaves |
 | `Helyx.Session.Server.Calls`, `{:prompt, _, _}`, `{:steer, _, _}`, `{:follow_up, _, _}` | a turn starts or a text queues |
 | `Helyx.Session.Server.Calls`, `{:answer, _, _}` | an ask ends |
+| `Helyx.Session.Server.Calls`, `{:attach, _}` | a client attaches: a full wait again, so the client has it for its subscribe |
 | `Helyx.Session.Server.Open.run_open/4` | the session has its hands and its file |
 
 `Helyx.Session.Server.Calls` for `{:set_model, ...}` needs no site of its
@@ -106,19 +110,36 @@ turn end arms the timer again.
 
 The load is the resume of an id, and the resume of an id that exists
 attaches to a running session with no second process
-(`Helyx.Session.resume/2`, `Helyx.Sessions.resume/2`). Each path that sends
-to a session by id, and whether it resumes a stopped session first:
+(`Helyx.Session.resume/2`, `Helyx.Sessions.resume/2`). The result says which:
+`{:ok, session, :started}` or `{:ok, session, :attached}`. A load stops only
+a process that its own resume started, so a loader that attached leaves the
+process of the loader that started it alone. `Helyx.Hub.Access.resume/3` is
+the one load under a Hub, for the wire authority and the Elixir API: the
+place of the user's live sessions, the resume, and the starter. A session
+that runs is attached with no place, and a place that a later step fails
+goes back, so two loads of one session take one place. Each caller maps its
+result to its own errors: the wire codes at the authority, the atoms of the
+Elixir API at `Helyx.Hub.Api`. Each path that sends to a session by id, and
+whether it resumes a stopped session first:
 
 | Path | Resumes first |
 | ---- | ------------- |
-| the wire ops `prompt`, `steer`, and `follow_up` | yes: the authority's `load/4`, `Helyx.Hub.Access.load/4` under a Hub, runs before the operation and its deadline, in the worker of `Helyx.Transport.WebSocket.Connection` and in `Helyx.Transport.WebSocket.Authorize.checked/8`. It resumes as the wire `resume` does: the place of the user's live sessions, `Helyx.Sessions.resume/2`, and the starter. A running session gives a Registry lookup. Without an authority that exports `load/4`, `Helyx.Transport.WebSocket.Ops.load/3` resumes the id. A missing file answers `session_not_found`; another resume error answers `failed` |
+| the wire ops `prompt`, `steer`, and `follow_up` | yes: the authority's `load/4`, `Helyx.Hub.Access.load/4` under a Hub, runs before the operation and its deadline, in the worker of `Helyx.Transport.WebSocket.Connection` and in `Helyx.Transport.WebSocket.Authorize.checked/8`, through `Helyx.Hub.Access.resume/3`. The text check counts a session with a file as existing, so a session that stopped before its Hub saw it, one with a file and no row, loads too. A running session gives a Registry lookup. Without an authority that exports `load/4`, `Helyx.Transport.WebSocket.Ops.load/3` resumes the id. A missing file answers `session_not_found`; another resume error answers `failed` |
 | the Hub `Helyx.Hub.Delivery` | yes: `Delivery.running/4` takes a place of the live set, resumes the id, and records the starter before it sends (`docs/features/hub.md`, decision 12) |
 | a schedule | yes: a schedule sends through `Helyx.Hub.Delivery` |
 | a webhook | yes: a webhook writes a delivery row that `Helyx.Hub.Delivery` sends |
 | the coordinator tool `session_send` | yes: `Helyx.Hub.resume/3`, the same place and starter as the wire `resume` (`docs/features/coordinator.md`, decision 4) |
 | the wire ops `subscribe`, `history`, `abort`, `set_model`, `compact`, `answer`, and `stop` | no, and none is added. They act on a running session; a client opens a session with `resume` before it subscribes (`Helyx.TUI.Link.open/3`, the `Operation::resume` of `clients/rust`) |
 
-A wire client that subscribes to a stopped session gets
+A send can meet a stop that comes first: the idle timer message is in the
+front of the session's mailbox, the session stops, and the call answers
+`{:error, :session_not_found}` while its file is complete. One sender,
+`Helyx.Send.text/3`, loads the session once and sends again; every text
+sender uses it. So a caller sees the send's own error when the second send
+fails (`:turn_running`, `:queue_full`, ...), the load's error when the load
+fails (`session_not_found` for a missing file, `failed` for another cause
+on the wire), and not `session_not_found` for a session that its file
+brings back. A wire client that subscribes to a stopped session gets
 `session_not_found`, as before. The TUI ends with `{:session_down,
 :session_not_found}` (`Helyx.TUI.Switch.subscribe!/2`), and the Rust app
 shows the failed subscribe with that code and follows nothing
@@ -150,7 +171,15 @@ runs.
 
 `Helyx.Hub.resume/3` and its in-process form `Helyx.Hub.Api.resume/3` are new:
 the wire `resume` for a user with no token, the place of the live sessions,
-the resume, and the starter.
+the resume, and the starter. `Helyx.Hub.Access.resume/3` is the one load
+that both call.
+
+`Helyx.Send.text/3` is new: a text send that loads the session once and
+sends again when it met a stop in flight. The wire's workers, `Helyx.Hub.Delivery`,
+and `Helyx.Tool.SessionSend` use it.
+
+`Helyx.Session.resume/2` and `Helyx.Sessions.resume/2` return
+`{:ok, session, :started | :attached}`.
 
 `Helyx.Transport.WebSocket.Authority.load/4` is a new optional callback, and
 `Helyx.Hub.Access.load/4` implements it. The worker of
@@ -179,7 +208,7 @@ bound a Core whose sessions all have work.
 
 | What | Bound | Over the bound | Where enforced |
 | ---- | ----- | -------------- | -------------- |
-| the time with no turn, no subscriber, and no work before the stop | `idle_stop_ms` of the Core, a positive integer; nil turns the rule off | the session checks the facts again and stops with `{:shutdown, :idle}` | `Helyx.Session.Server.IdleStop` |
+| the time with no turn, no subscriber, and no work before the stop | `idle_stop_ms` of the Core, a positive integer up to `Helyx.Session.Server.IdleStop.max_ms/0`; nil turns the rule off | a larger value is `{:error, {:invalid_option, :idle_stop_ms}}` at the Core start; the session checks the facts again and stops with `{:shutdown, :idle}` | `Helyx.Core.start_link/1`, `Helyx.Session.Server.IdleStop` |
 | the check of the live background runs | `@live_runs_ms` in `Helyx.Session.Server.IdleStop`: 1,000 ms for a call that reads one map of the hands; a map read takes well under a millisecond | the check is inconclusive: the session does not arm the timer and does not stop; the next change of a fact arms it again | `Helyx.Session.Hands.live_runs/2` |
 | a resume of a wire text op | the read bound of a session open, `deadline_ms.open` in `Helyx.Session.Server.State`, which grows with the file | `{:error, :open_timeout}`, and the wire answers `failed` | `Helyx.Session.Server.Open` |
 | the load of a wire text op under a Hub | the find of the existence check, `@find_ms` in `Helyx.Hub.Access`, 5,000 ms, and the Hub call bounds of `hub.md`, decision 5 | the find finds nothing, and the text op answers `session_not_found`; another failure answers `failed`, and a revoked credential closes the connection | `Helyx.Hub.Access.load/4` |

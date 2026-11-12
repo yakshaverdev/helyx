@@ -119,10 +119,16 @@ defmodule Helyx.Core do
       else: {:error, {:invalid_recall_ms, ms}}
   end
 
-  # The idle stop of a session, in ms: a positive integer, or nil for no rule
-  # (docs/features/idle-unload.md).
+  # The idle stop of a session, in ms: a positive integer up to the largest
+  # time that the timer takes, or nil for no rule (docs/features/idle-unload.md).
   defp check_idle_stop_ms(nil), do: :ok
-  defp check_idle_stop_ms(ms) when is_integer(ms) and ms > 0, do: :ok
+
+  defp check_idle_stop_ms(ms) when is_integer(ms) and ms > 0 do
+    if ms <= Helyx.Session.Server.IdleStop.max_ms(),
+      do: :ok,
+      else: {:error, {:invalid_option, :idle_stop_ms}}
+  end
+
   defp check_idle_stop_ms(_ms), do: {:error, {:invalid_option, :idle_stop_ms}}
 
   # The folder goes into file paths, as the cwd of a session does. A

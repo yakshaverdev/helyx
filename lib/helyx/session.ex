@@ -103,10 +103,12 @@ defmodule Helyx.Session do
   the newest of the working directory, or with `:id` that session. `:cwd`,
   the tool checks, the model ref, `:provider_opts`, the cap, and the read
   bounds are as in `start/2`. `:sessions_dir` is the folder of the Core.
-  A session that runs in this Core is attached, and other `:provider_opts`
-  give `{:error, :provider_opts_differ}` (docs/features/server-management.md).
+  The result tells whether a process ran already (`:attached`) or this call
+  started it (`:started`); other `:provider_opts` to a running session give
+  `{:error, :provider_opts_differ}` (docs/features/server-management.md).
   """
-  @spec resume(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
+  @spec resume(Helyx.Core.name(), keyword()) ::
+          {:ok, t(), :started | :attached} | {:error, model_error() | term()}
   def resume(core \\ Helyx.Core, opts) do
     # The option is required; the check of the folder of the Core follows.
     _ = Keyword.fetch!(opts, :sessions_dir)

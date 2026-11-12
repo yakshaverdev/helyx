@@ -24,46 +24,18 @@ defmodule Helyx.Hub.Api do
 
   # The resume of a session as the wire `resume` does, for a user with no
   # token: the place of the live sessions, the Core resume, and the starter
-  # (docs/features/idle-unload.md).
+  # (docs/features/idle-unload.md). The load is the one of the wire
+  # authority, `Helyx.Hub.Access.resume/3`; this edge maps its error to the
+  # atoms of the Elixir API.
   def resume(arg, user_id, session_id) do
     auth = %{user: user_id, token: nil}
-    params = %{"id" => session_id}
 
-    with :ok <- answer(safe(fn -> Access.check(arg, auth, "resume", params) end)),
-         do: core_resume(arg, auth, params, session_id)
-  end
-
-  defp core_resume(arg, auth, params, id) do
-    case Helyx.Sessions.resume(arg.core, id: id) do
-      {:ok, session} ->
-        resumed(arg, auth, params, id, session)
-
-      {:error, reason} ->
-        # The place of decision 14 goes back at once.
-        _ = safe(fn -> Access.release(arg, auth, "resume", params) end)
-        {:error, missing(reason)}
+    case safe(fn -> Access.resume(arg, auth, session_id) end) do
+      {:ok, session} -> {:ok, session}
+      {:close, 4403} -> {:error, :unknown_user}
+      {:error, reason} -> {:error, reason}
     end
   end
-
-  # A resume whose starter the Hub did not bind stops its session: the
-  # caller gets no session that acts for no user.
-  defp resumed(arg, auth, params, id, session) do
-    case answer(safe(fn -> Access.result(arg, auth, "resume", params, %{"session" => id}) end)) do
-      :ok ->
-        {:ok, session}
-
-      error ->
-        _ = Helyx.Sessions.stop(session)
-        _ = safe(fn -> Access.release(arg, auth, "resume", params) end)
-        error
-    end
-  end
-
-  # A file that a resume does not find answers as a missing session in the
-  # tests of the coordinator tools, as it does on the wire
-  # (`Helyx.Transport.WebSocket.Ops.load/3`).
-  defp missing(reason) when reason in [:not_found, :invalid_id], do: :session_not_found
-  defp missing(reason), do: reason
 
   defp core_start(arg, auth, params, opts) do
     case Helyx.Sessions.start(arg.core, opts) do

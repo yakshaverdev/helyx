@@ -28,7 +28,8 @@ defmodule Helyx.Hub.FeedTest do
     File.chmod!(data, 0o700)
 
     start_supervised!(
-      {Helyx.Core, [name: core, plugins: [Fake], sessions_dir: data] ++ core_opts},
+      {Helyx.Core,
+       [name: core, plugins: [Fake, Helyx.Test.Tool.Block], sessions_dir: data] ++ core_opts},
       id: :core
     )
 
@@ -71,8 +72,8 @@ defmodule Helyx.Hub.FeedTest do
 
   defp req(socket, op, params), do: Client.request(socket, "r", op, params)
 
-  defp start(socket),
-    do: req(socket, "start", %{"cwd" => File.cwd!(), "model" => "fake/echo"})
+  defp start(socket, model \\ "fake/echo"),
+    do: req(socket, "start", %{"cwd" => File.cwd!(), "model" => model})
 
   # Polls the search of the user until it lists the row of `id`.
   defp wait_listed(socket, id) do
@@ -181,24 +182,34 @@ defmodule Helyx.Hub.FeedTest do
     assert %{"result" => %{"record" => %{"stored" => true}}} =
              req(owner, "hub.records.get", %{"session" => id})
 
-    # The prompt loads the session, and the feed puts it in the live set again.
+    # The prompt loads the session and binds the starter of the owner; the
+    # bind is visible before the loaded turn can end and stop the session.
     assert %{"ok" => true} = req(owner, "prompt", %{"session" => id, "text" => "again"})
-    Events.wait_until(fn -> Live.running?(:sys.get_state(context.hub), id) end)
+
+    {:ok, users} = Helyx.Hub.users(context.hub)
+    owner_id = Enum.find(users, &(&1.name == "owner")).id
+    assert Helyx.Hub.actor(context.hub, id) == {:ok, owner_id}
   end
 
   # A text op under a Hub loads a stopped session as the wire `resume` does:
   # the place of the user's live sessions and the starter
-  # (docs/features/idle-unload.md).
+  # (docs/features/idle-unload.md). The loaded turn is held by a blocked call,
+  # so the live checks do not race the idle stop.
   test "a prompt to a stopped session takes the place of the user and binds the starter",
        context do
     context =
       serve(context, [max_live_sessions: 1], fn _context -> :ok end, idle_stop_ms: Idle.idle_ms())
 
+    holder = :"block_#{System.unique_integer([:positive])}"
+    Process.register(self(), holder)
+    :ok = Fake.script(context.core, "block", [[block_call(holder)]])
+
     owner = open(context.port)
-    %{"result" => %{"session" => id}} = start(owner)
+    %{"result" => %{"session" => id}} = start(owner, "fake/block")
     Events.wait_until(fn -> not Live.running?(:sys.get_state(context.hub), id) end)
 
     assert %{"ok" => true} = req(owner, "prompt", %{"session" => id, "text" => "again"})
+    assert_receive {:blocked, ^id}
     assert Live.running?(:sys.get_state(context.hub), id)
 
     # The load took the place of the user, so a start at the cap is refused.
@@ -207,6 +218,42 @@ defmodule Helyx.Hub.FeedTest do
     {:ok, users} = Helyx.Hub.users(context.hub)
     owner_id = Enum.find(users, &(&1.name == "owner")).id
     assert Helyx.Hub.actor(context.hub, id) == {:ok, owner_id}
+  end
+
+  # A session that stopped before its Hub started has a file and no row; a
+  # text op finds it by its file, as the wire `resume` does
+  # (docs/features/idle-unload.md). Until a `sessions.saved` scan, no row
+  # exists: the feed writes a row for a live session only.
+  test "a text op to a stopped session with a file and no row loads it", context do
+    context =
+      serve(
+        context,
+        [max_live_sessions: 1],
+        fn context ->
+          {:ok, session} =
+            Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
+
+          :ok = Helyx.Session.prompt(session, "hi")
+          :ok = Helyx.Sessions.stop(session)
+          send(self(), {:session, session.id})
+        end,
+        idle_stop_ms: Idle.idle_ms()
+      )
+
+    assert_received {:session, id}
+    owner = open(context.port)
+
+    # No `sessions.saved` ran, so no row exists, and the record is derived
+    # from the default owner when the file fact confirms it.
+    assert %{"ok" => true} = req(owner, "prompt", %{"session" => id, "text" => "again"})
+
+    {:ok, users} = Helyx.Hub.users(context.hub)
+    owner_id = Enum.find(users, &(&1.name == "owner")).id
+    assert Helyx.Hub.actor(context.hub, id) == {:ok, owner_id}
+  end
+
+  defp block_call(holder) do
+    %Helyx.Message.ToolCall{id: "b1", name: "block", arguments: %{"to" => Atom.to_string(holder)}}
   end
 
   # The tests arm no poll timer (`test_helper.exs`), so the poll of this test

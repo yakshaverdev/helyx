@@ -244,7 +244,7 @@ defmodule Helyx.Session.HooksTest do
 
       log =
         ExUnit.CaptureLog.capture_log(fn ->
-          {:ok, resumed} = Session.resume(core, id: session.id, sessions_dir: dir)
+          {:ok, resumed, _} = Session.resume(core, id: session.id, sessions_dir: dir)
           {:ok, snapshot, _ref} = Session.subscribe(resumed)
           send(self(), {:messages, snapshot.messages})
         end)

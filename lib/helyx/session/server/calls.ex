@@ -100,7 +100,9 @@ defmodule Helyx.Session.Server.Calls do
   # A start with other provider options gets no session, because the session
   # runs with its own.
   def handle({:attach, opts}, _from, %State{init: %{provider_opts: opts}} = state),
-    do: {:reply, :ok, state}
+    # An attach of a resume arms the full idle wait again, so the client has
+    # the whole wait for its subscribe (docs/features/idle-unload.md).
+    do: {:reply, :ok, IdleStop.arm(state)}
 
   def handle({:attach, _provider_opts}, _from, %State{} = state),
     do: {:reply, {:error, :provider_opts_differ}, state}

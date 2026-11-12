@@ -74,10 +74,7 @@ defmodule Helyx.Hub.Access do
 
   def check(arg, auth, "resume", %{"id" => id} = params),
     do:
-      passed(
-        Hub.call(arg.hub, {:resume, auth, id, found(arg, id) != nil, running?(arg, id)}),
-        params
-      )
+      passed(Hub.call(arg.hub, {:resume, auth, id, exists?(arg, id), running?(arg, id)}), params)
 
   # The resume of a folder becomes the resume of the newest session of the
   # folder that the user owns (decision 7).
@@ -89,14 +86,14 @@ defmodule Helyx.Hub.Access do
   end
 
   def check(arg, auth, op, %{"session" => id} = params) when op in @read_ops,
-    do: passed(Hub.call(arg.hub, {:session, auth, :read, id, running?(arg, id), nil}), params)
+    do: passed(Hub.call(arg.hub, {:session, auth, :read, id, exists?(arg, id), nil}), params)
 
   def check(arg, auth, op, %{"session" => id, "text" => text} = params) when op in @text_ops,
     do:
       passed(
         Hub.call(
           arg.hub,
-          {:session, auth, :write, id, running?(arg, id), {:touch, Params.cut(text)}}
+          {:session, auth, :write, id, exists?(arg, id), {:touch, Params.cut(text)}}
         ),
         params
       )
@@ -109,50 +106,133 @@ defmodule Helyx.Hub.Access do
   # starter (docs/features/idle-unload.md). A session that runs needs none.
   @impl true
   def load(arg, auth, op, %{"session" => id}) when op in @text_ops do
-    if running?(arg, id), do: :ok, else: load_resume(arg, auth, id)
+    if running?(arg, id) do
+      :ok
+    else
+      case resume(arg, auth, id) do
+        {:ok, _session} -> :ok
+        {:close, 4403} = close -> close
+        {:error, reason} -> load_error(reason)
+      end
+    end
   end
 
   def load(_arg, _auth, _op, _params), do: :ok
 
-  defp load_resume(arg, auth, id) do
-    case check(arg, auth, "resume", %{"id" => id}) do
-      {:ok, params} -> load_core(arg, auth, params, id)
-      error -> load_error(error)
+  # The load of a stopped session for a text, shared by the wire authority
+  # and the Elixir API (`Helyx.Hub.Api`): the place of the user's live
+  # sessions, the Core resume, and the starter. A session that runs is
+  # attached with no place; a load stops only a process that its own resume
+  # started, so a loader that attached leaves the process of the loader that
+  # started it alone. A place that a load took goes back when a later step
+  # fails. The result is `{:ok, session}`, `{:close, 4403}`, or
+  # `{:error, code}`, each caller mapping the error at its edge.
+  @doc false
+  @spec resume(map(), map(), String.t()) ::
+          {:ok, Helyx.Session.t()} | {:error, term()} | {:close, 4403}
+  def resume(arg, auth, id) do
+    if running?(arg, id) do
+      resume_check(arg, auth, id)
+    else
+      load_stopped(arg, auth, id)
     end
   end
 
-  defp load_core(arg, auth, params, id) do
-    case Helyx.Sessions.resume(arg.core, id: id) do
-      {:ok, session} ->
-        case result(arg, auth, "resume", params, %{"session" => id}) do
-          {:ok, _result} ->
-            :ok
+  # A session that runs, or that another loader started between the check
+  # for running and the check's place: an attach takes no place, so two
+  # loads of one session take one place.
+  defp load_stopped(arg, auth, id) do
+    case check(arg, auth, "resume", %{"id" => id}) do
+      {:ok, _params} ->
+        resume_core(arg, auth, id)
 
-          error ->
-            # A session with no starter acts for no user, so it stops.
-            _ = Helyx.Sessions.stop(session)
-            release(arg, auth, "resume", params)
-            load_error(error)
-        end
+      {:error, "too_many_sessions"} = error ->
+        if running?(arg, id), do: resume_check(arg, auth, id), else: error
+
+      {:error, code} ->
+        {:error, code_atom(code)}
+
+      {:close, 4403} = close ->
+        close
+    end
+  end
+
+  defp resume_check(arg, auth, id) do
+    case check(arg, auth, "resume", %{"id" => id}) do
+      {:ok, _params} -> resume_core(arg, auth, id)
+      {:error, code} -> {:error, code_atom(code)}
+      {:close, 4403} = close -> close
+    end
+  end
+
+  defp resume_core(arg, auth, id) do
+    case Helyx.Sessions.resume(arg.core, id: id) do
+      {:ok, session, origin} ->
+        bind(arg, auth, id, session, origin)
 
       {:error, reason} ->
-        release(arg, auth, "resume", params)
-        load_error(reason)
+        give_back(arg)
+        {:error, resume_error(reason)}
     end
   end
+
+  # The starter binds the session to its user; a session with none acts for
+  # no user in its coordinator tools, so the caller gets no session.
+  defp bind(arg, auth, id, session, origin) do
+    case hub_call(arg.hub, {:resumed, auth, id, Helyx.Session.pid(session)}) do
+      :ok ->
+        {:ok, session}
+
+      other ->
+        if origin == :started, do: Helyx.Sessions.stop(session)
+        give_back(arg)
+        {:error, hub_error(other)}
+    end
+  end
+
+  # The Hub calls of a load: an exit of a call is a timeout, as on the wire,
+  # and the place goes back.
+  defp hub_call(hub, request) do
+    Hub.call(hub, request)
+  catch
+    :exit, _reason -> {:error, :timeout}
+  end
+
+  # The place of decision 14 goes back at once; an attach holds none, so a
+  # release changes nothing.
+  defp give_back(arg) do
+    _ = hub_call(arg.hub, :release)
+    :ok
+  end
+
+  defp hub_error(:revoked), do: :revoked
+  defp hub_error({:error, code}), do: code
+  defp hub_error(_other), do: :timeout
+
+  # The check gives its codes as names of the wire; a load gives the codes of
+  # the Hub and Core as atoms, and each caller maps them.
+  defp code_atom("session_not_found"), do: :session_not_found
+  defp code_atom("not_found"), do: :not_found
+  defp code_atom("forbidden"), do: :forbidden
+  defp code_atom("too_many_sessions"), do: :too_many_sessions
+  defp code_atom("busy"), do: :busy
+  defp code_atom("timeout"), do: :timeout
+  defp code_atom(_other), do: :failed
+
+  # A file that a resume does not find answers as a missing session.
+  defp resume_error(reason) when reason in [:not_found, :invalid_id], do: :session_not_found
+  defp resume_error(reason), do: reason
 
   # A client of a text op knows these errors; a load that fails for another
   # reason answers `failed`, so no client meets a code that its text does not
   # name. A revoked credential still closes the connection.
-  defp load_error({:close, 4403} = close), do: close
-  defp load_error({:error, "not_found"}), do: {:error, "session_not_found"}
+  defp load_error(:revoked), do: {:close, 4403}
 
-  defp load_error({:error, code})
-       when code in ~w(session_not_found forbidden busy timeout failed),
-       do: {:error, code}
-
-  defp load_error(reason) when reason in [:not_found, :invalid_id],
+  defp load_error(reason) when reason in [:session_not_found, :not_found, :invalid_id],
     do: {:error, "session_not_found"}
+
+  defp load_error(reason) when reason in [:forbidden, :busy, :timeout],
+    do: {:error, Atom.to_string(reason)}
 
   defp load_error(_reason), do: {:error, "failed"}
 

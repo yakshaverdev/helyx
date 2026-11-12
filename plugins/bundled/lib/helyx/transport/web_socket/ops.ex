@@ -139,12 +139,11 @@ defmodule Helyx.Transport.WebSocket.Ops do
     :exit, {:timeout, _call} -> Outbound.error("timeout")
   end
 
-  # A text op to a session that a stop unloaded loads it first, so a client
-  # sends to a session, not to an id (docs/features/idle-unload.md). A running
-  # session costs one Registry lookup. The load runs before the deadline of
-  # the op, as a `resume` does: a load of a file has the bound of the session
-  # open (#834). A missing file answers `session_not_found`, and any other
-  # error answers `failed`.
+  # A text op to a session that a stop unloaded loads it before the deadline
+  # of the op, as a `resume` does: a load of a file has the bound of the
+  # session open (#834). The sender uses the same load when the session stops
+  # while the text is in flight (`Helyx.Send`). A missing file answers
+  # `session_not_found`, and any other error answers `failed`.
   @spec load(Helyx.Core.name(), String.t(), map()) ::
           :ok | {:error, String.t(), String.t()}
   def load(core, op, %{"session" => id}) when op in ~w(prompt steer follow_up) do
@@ -153,20 +152,25 @@ defmodule Helyx.Transport.WebSocket.Ops do
     if Session.pid(session) do
       :ok
     else
-      case Helyx.Sessions.resume(core, id: id) do
-        {:ok, _resumed} ->
-          :ok
-
-        {:error, reason} when reason in [:not_found, :invalid_id] ->
-          error(op, "session_not_found")
-
-        {:error, _reason} ->
-          Outbound.error("failed")
+      case plain_load(core, op, session) do
+        {:ok, _session} -> :ok
+        error -> error
       end
     end
   end
 
   def load(_core, _op, _params), do: :ok
+
+  # The Core resume of a text op that is not running, in the shape of the
+  # wire. It is the load of a transport with no authority, and the retry of a
+  # sender that met a stopped session.
+  defp plain_load(core, op, %Session{id: id}) do
+    case Helyx.Sessions.resume(core, id: id) do
+      {:ok, session, _origin} -> {:ok, session}
+      {:error, reason} when reason in [:not_found, :invalid_id] -> error(op, "session_not_found")
+      {:error, _reason} -> Outbound.error("failed")
+    end
+  end
 
   # The Core call of a request as a closure of its checked params, run by
   # `run/1`, or `:bad_params` or `:unknown_op`.
@@ -213,6 +217,18 @@ defmodule Helyx.Transport.WebSocket.Ops do
     end
   end
 
+  # A text op whose sender loads the session itself on a stop in flight, with
+  # the load of its transport (`Helyx.Send`, docs/features/idle-unload.md).
+  def check(core, op, params, _load) when op in ~w(sessions.live resume compact answer),
+    do: check(core, op, params)
+
+  def check(core, op, params, load) do
+    with {:ok, spec} <- params_spec(op),
+         {:ok, values} <- typed(core, spec, params) do
+      {:ok, call(core, op, values, load)}
+    end
+  end
+
   # The session and the options of a `subscribe`, or `:bad_params`.
   def subscribe_params(core, params) do
     with {:ok, spec} <- params_spec("subscribe"),
@@ -231,15 +247,8 @@ defmodule Helyx.Transport.WebSocket.Ops do
   defp call(core, "start", values),
     do: fn -> core |> Helyx.Sessions.start(keyword(values)) |> started() end
 
-  defp call(_core, op, values) when op in ~w(prompt steer follow_up) do
-    fn ->
-      apply(Session, String.to_existing_atom(op), [
-        values["session"],
-        values["text"],
-        origin(values)
-      ])
-    end
-  end
+  defp call(core, op, values) when op in ~w(prompt steer follow_up),
+    do: call(core, op, values, &plain_load(core, op, &1))
 
   defp call(_core, "history", values) do
     fn ->
@@ -261,6 +270,24 @@ defmodule Helyx.Transport.WebSocket.Ops do
 
   defp call(_core, "stop", values),
     do: fn -> stopped(Helyx.Sessions.stop(values["session"])) end
+
+  # A text op sends to the session, and loads it once with `load` when it met
+  # a stop in flight (`Helyx.Send`, docs/features/idle-unload.md).
+  defp call(_core, op, values, load) when op in ~w(prompt steer follow_up) do
+    fn ->
+      session = values["session"]
+
+      Helyx.Send.text(
+        session,
+        fn current ->
+          apply(Session, String.to_existing_atom(op), [current, values["text"], origin(values)])
+        end,
+        fn -> load.(session) end
+      )
+    end
+  end
+
+  defp call(core, op, values, _load), do: call(core, op, values)
 
   # The params of a common op, or `:unknown_op` for an op that has none.
   defp params_spec(op) do
@@ -368,6 +395,7 @@ defmodule Helyx.Transport.WebSocket.Ops do
   defp object(value) when is_map(value), do: {:ok, value}
   defp object(_value), do: :bad_params
 
+  defp started({:ok, %Session{id: id}, _origin}), do: {:ok, %{"session" => id}}
   defp started({:ok, %Session{id: id}}), do: {:ok, %{"session" => id}}
   defp started({:error, reason}) when reason in @core_errors, do: {:error, reason}
   defp started({:error, {:invalid_model_ref, _}} = error), do: error

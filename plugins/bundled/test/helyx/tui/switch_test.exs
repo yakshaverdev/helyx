@@ -250,7 +250,7 @@ defmodule Helyx.TUI.SwitchTest do
     refute_received {:helyx_end, ^other_sub, _}
 
     # A client that comes later finds the session live and attaches to it.
-    assert {:ok, again} = Helyx.Sessions.resume(core, id: old.id)
+    assert {:ok, again, _} = Helyx.Sessions.resume(core, id: old.id)
     assert Session.pid(again) == old_pid
   end
 

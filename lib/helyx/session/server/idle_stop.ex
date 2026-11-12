@@ -15,6 +15,13 @@ defmodule Helyx.Session.Server.IdleStop do
   @live_runs_ms 1_000
   def live_runs_ms, do: @live_runs_ms
 
+  # The largest time that `:erlang.start_timer/3` takes, in ms; a larger
+  # value is a `badarg` in the session. The Core check reads it, so a value
+  # that a session cannot arm is refused at the start, not at the first arm
+  # (docs/features/idle-unload.md).
+  @max_ms 4_294_967_295
+  def max_ms, do: @max_ms
+
   # Cancels the timer of an earlier arm and arms one when the facts hold. A
   # nil `idle_stop_ms` or a failed fact holds no timer.
   @spec arm(State.t()) :: State.t()

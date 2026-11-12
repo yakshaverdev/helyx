@@ -122,6 +122,29 @@ defmodule Helyx.Tool.CoordinatorTest do
     session
   end
 
+  # A session of `user` whose one turn is held by a blocked call: the test
+  # gets `{:blocked, id}` when the call runs, and the turn holds the session
+  # (docs/features/idle-unload.md).
+  defp blocked_session(context, user) do
+    holder = :"block_#{System.unique_integer([:positive])}"
+    Process.register(self(), holder)
+
+    :ok =
+      Fake.script(context.core, "block", [
+        [
+          %Message.ToolCall{
+            id: "b1",
+            name: "block",
+            arguments: %{"to" => Atom.to_string(holder)}
+          }
+        ]
+      ])
+
+    opts = [model: "fake/block", cwd: context.dir]
+    {:ok, session} = Hub.start_session(context.hub, user, opts)
+    session
+  end
+
   # The messages of a session, read by a Task of its own.
   defp messages(session) do
     Task.await(
@@ -282,9 +305,11 @@ defmodule Helyx.Tool.CoordinatorTest do
 
     # A coordinator could reach a session that it started at any later time
     # before the idle stop; the load keeps that (docs/features/idle-unload.md).
+    # The target's turn is held by a blocked call, so nothing in the test
+    # races the idle stop.
     @tag idle_stop_ms: Helyx.Test.Idle.idle_ms()
     test "a session that its idle stop unloaded gets the text, and keeps the starter", context do
-      session = echo_session(context, context.ann)
+      session = blocked_session(context, context.ann)
       wait_until(fn -> Session.pid(session) == nil end, 500)
 
       [sent, missing] =
@@ -300,14 +325,32 @@ defmodule Helyx.Tool.CoordinatorTest do
       # wire `resume` does.
       assert Hub.actor(context.hub, session.id) == {:ok, context.ann}
 
-      # The echo turn of the text ran.
-      {:ok, _snapshot, _ref} = Session.subscribe(session)
-      wait_until(fn -> length(messages(session)) == 4 end, 500)
-      assert [_, _, %Message{origin: %{kind: :product}, role: :user}, _] = messages(session)
+      # The turn of the text runs in the loaded session.
+      assert_receive {:blocked, id}
+      assert id == session.id
     end
   end
 
   describe "session_read" do
+    # A session that a stop unloaded is read from its file, and a wait on it
+    # answers at once, as on a live idle session (docs/features/idle-unload.md).
+    test "a stopped session is read from its file, and a wait answers at once", context do
+      session = echo_session(context, context.ann)
+      :ok = Helyx.Sessions.stop(session)
+
+      [read, wait] =
+        coordinate(context, context.ann, [
+          call("session_read", %{"id" => session.id}),
+          call("session_wait", %{"ids" => [session.id]})
+        ])
+
+      text = Message.text(read)
+      assert text =~ "session #{session.id}, no turn runs"
+      assert text =~ "user: first words"
+      assert text =~ "assistant: first words"
+      assert Message.text(wait) =~ "no turn runs"
+    end
+
     test "the transcript of a session; another user gets the answer of a missing one", context do
       session = echo_session(context, context.ann)
       [read] = coordinate(context, context.ann, [call("session_read", %{"id" => session.id})])

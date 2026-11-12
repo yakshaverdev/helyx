@@ -36,6 +36,26 @@ defmodule Helyx.Hub.WakeTest do
     assert idle?(context.hub) and length(woken(context.core, session.id)) == 1
   end
 
+  # A scheduled prompt that meets the idle stop of the session loads it again
+  # and is not lost (docs/features/idle-unload.md). The timer is armed by the
+  # test and fires while the session is suspended, so the timer message is in
+  # the mailbox before the prompt of the delivery Task.
+  test "a scheduled prompt that meets the idle stop of the session loads it", context do
+    {:ok, session} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
+    id = due(context, context.owner, session.id)
+    pid = Helyx.Session.pid(session)
+
+    Helyx.Test.Idle.arm_timer(session)
+    :erlang.suspend_process(pid)
+    Process.sleep(Helyx.Test.Idle.idle_ms() + Helyx.Test.Idle.load_ms())
+    poll(context.hub)
+    Events.wait_until(fn -> Process.info(pid, :message_queue_len) == {:message_queue_len, 2} end)
+    :erlang.resume_process(pid)
+
+    wait_row(context.hub, id, &(&1.last_outcome == "delivered"))
+    assert [{"wake up", _origin}] = woken(context.core, session.id)
+  end
+
   test "a stopped session is resumed, enters the live set, and its record moves", context do
     {ann, socket} = user(context, "ann")
     session = start(socket)

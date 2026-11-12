@@ -241,11 +241,13 @@ defmodule Helyx.Sessions do
   `:sessions_dir` of `core`: the session `:id`, in the folder that its
   header names when `opts` names no `:cwd`, or the newest session of
   `:cwd`. A Core with no `:sessions_dir` gives `{:error, :not_found}`. The
-  errors of the find of an id are those of `Helyx.Session.File.Scan.find/2`,
-  and `:invalid_cwd` for a header folder that a start would reject. They
-  come after the tool checks.
+  result tells whether a process ran already (`:attached`) or this call
+  started it (`:started`). The errors of the find of an id are those of
+  `Helyx.Session.File.Scan.find/2`, and `:invalid_cwd` for a header folder
+  that a start would reject. They come after the tool checks.
   """
-  @spec resume(Helyx.Core.name(), keyword()) :: {:ok, Session.t()} | {:error, term()}
+  @spec resume(Helyx.Core.name(), keyword()) ::
+          {:ok, Session.t(), :started | :attached} | {:error, term()}
   def resume(core, opts) do
     case Helyx.Core.config(core, :sessions_dir) do
       nil -> {:error, :not_found}

@@ -60,7 +60,23 @@
 - The two matching "Current limits" of the feature doc are gone; a subscribe
   of a stopped session is still no load.
 
-## Next
+## Second review
 
-- A load on a subscribe that a client uses to open a stopped session is a
-  follow-up under #853.
+- The resume result says `:started` or `:attached`, and a load stops only a
+  process that its own resume started. One function, `Helyx.Hub.Access.resume/3`,
+  is the load under a Hub for the wire and the Elixir API; a session that runs
+  is attached with no place, and a refused place that a racing loader filled
+  attaches.
+- A text send loads once and sends again when it met a stop in flight
+  (`Helyx.Send.text/3`), used by the wire, `Hub.Delivery`, and `session_send`.
+  The tests cover the probe (the timer in the mailbox before the prompt)
+  through the wire and through a schedule.
+- An attach of a resume arms the full wait again; the Core refuses an
+  `idle_stop_ms` over `IdleStop.max_ms/0`; the text and read checks count a
+  session with a file as existing, so a session that stopped before its Hub
+  saw it loads or reads.
+- `session_read` reads a stopped session from its file, and `session_wait`
+  answers at once for one; the coordinator limit is gone.
+- The tests hold a session live by a subscriber or a held turn, and take the
+  monitor before the step that makes it quiet; the idle option is set when
+  the test is ready.

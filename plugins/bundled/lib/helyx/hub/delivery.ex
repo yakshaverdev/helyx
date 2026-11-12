@@ -34,7 +34,7 @@ defmodule Helyx.Hub.Delivery do
       case Helyx.Sessions.resume(core, id: session.id) do
         # A session that the live set did not take gets no send: the row
         # stays due at its next try.
-        {:ok, resumed} ->
+        {:ok, resumed, _origin} ->
           Hub.call(hub, {:wake_resumed, row, Helyx.Session.pid(resumed)})
 
         {:error, reason} ->
@@ -50,18 +50,35 @@ defmodule Helyx.Hub.Delivery do
   defp failed(:editing), do: :wake_retry
   defp failed(:open_timeout), do: :wake_retry
   defp failed(:not_found), do: :wake_gone
+  defp failed(:session_not_found), do: :wake_gone
   defp failed(_reason), do: :wake_refused
 
   # Step 3. Only `:turn_running` and `:queue_full` prove that the session
-  # took nothing. `:session_not_found` and an exit of the call leave
-  # `unconfirmed`: the session may have taken the prompt before it went
-  # down. `:text_too_large`, `:invalid_utf8` and `:invalid_origin` cannot come (a checked
-  # prompt, an origin id of 12 bytes); they crash the Task, which leaves
-  # `unconfirmed` too.
+  # took nothing. A session that stops while the prompt is in flight is
+  # loaded again through the Hub and gets the prompt, so the idle stop does
+  # not lose it (`Helyx.Send`, docs/features/idle-unload.md).
+  # `:session_not_found` and an exit of the call leave `unconfirmed`: the
+  # session may have taken the prompt before it went down.
+  # `:text_too_large`, `:invalid_utf8` and `:invalid_origin` cannot come (a
+  # checked prompt, an origin id of 12 bytes); they crash the Task, which
+  # leaves `unconfirmed` too.
   defp send_prompt(hub, session, row) do
-    case prompt(session, row) do
+    result =
+      Helyx.Send.text(
+        session,
+        &prompt(&1, row),
+        fn ->
+          case Helyx.Hub.resume(hub, row.owner, row.session_id) do
+            {:ok, loaded} -> {:ok, loaded}
+            {:error, reason} -> {:error, {:load, reason}}
+          end
+        end
+      )
+
+    case result do
       :ok -> Hub.call(hub, {:wake_outcome, row, {:delivered, Params.cut(row.prompt)}})
       {:error, busy} when busy in [:turn_running, :queue_full] -> back(hub, row)
+      {:error, {:load, reason}} -> Hub.call(hub, {failed(reason), row})
       {:error, :session_not_found} -> unconfirmed(hub, row)
       :exit -> unconfirmed(hub, row)
     end

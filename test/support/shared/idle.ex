@@ -2,8 +2,8 @@ defmodule Helyx.Test.Idle do
   @moduledoc false
   # The setup and the helpers of the tests of the idle stop
   # (docs/features/idle-unload.md): the short idle time, the margin of a wait
-  # that must not happen, a subscriber in its own process, and the `:DOWN` of
-  # a session.
+  # that must not happen, a subscriber in its own process, the monitor of a
+  # session, and the test seam that arms the timer when the test is ready.
 
   import ExUnit.Assertions
 
@@ -20,6 +20,36 @@ defmodule Helyx.Test.Idle do
   def start(core, opts), do: Helyx.Sessions.start(core, Keyword.merge([model: "test/ok"], opts))
 
   def state(session), do: :sys.get_state(Session.pid(session))
+
+  # The idle stop of the session, set when the test is ready. A test starts
+  # its Core with no idle option, so the open arms nothing, and no step of
+  # the test races the wait. `quiet/2` arms the timer now: the session's
+  # `{:unsubscribe, pid}` is a fact change that arms it, and no test depends
+  # on the 100 ms (AGENTS.md, #193).
+  def set_idle(session, ms \\ idle_ms()) do
+    :sys.replace_state(Session.pid(session), fn state -> %{state | idle_stop_ms: ms} end)
+  end
+
+  def quiet(session, ms \\ idle_ms()) do
+    set_idle(session, ms)
+    send(Session.pid(session), {:unsubscribe, self()})
+
+    Helyx.Test.Events.wait_until(
+      fn -> state(session).idle_stop != nil end,
+      Helyx.Test.Events.wait_ms(),
+      "the idle stop to arm"
+    )
+  end
+
+  # The timer of the idle stop, armed by the test with the session's message,
+  # so a test can suspend the session and let the timer fire into its mailbox
+  # before a call. `set_idle` stays nil: the stop does not need the option.
+  def arm_timer(session, ms \\ idle_ms()) do
+    pid = Session.pid(session)
+    ref = :erlang.start_timer(ms, pid, :idle_stop)
+    :sys.replace_state(pid, fn state -> %{state | idle_stop: ref} end)
+    ref
+  end
 
   # A subscriber in its own process, so that a test ends the subscription
   # without ending itself. It forwards the events to the test. `:stop` ends
@@ -60,10 +90,17 @@ defmodule Helyx.Test.Idle do
     )
   end
 
-  # The reason of the end of the session, after its `:DOWN`.
-  def down(session) do
+  # The monitor of the session, taken before the step that makes it quiet: a
+  # session that stops at that step gives its `:DOWN` to it, and a test never
+  # reads the pid after the stop.
+  def monitor(session) do
     pid = Session.pid(session)
-    ref = Process.monitor(pid)
+    {pid, Process.monitor(pid)}
+  end
+
+  # The reason of the end of the session, from the monitor taken before the
+  # step that made it quiet.
+  def down({pid, ref}) do
     assert_receive {:DOWN, ^ref, :process, ^pid, reason}
     reason
   end
