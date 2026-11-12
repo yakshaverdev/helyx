@@ -362,4 +362,18 @@ defmodule Helyx.Session.QueueTest do
       assert {%Queue{ends: %Queue.Ends{wake: :on}}, []} = Queue.provider_down(%Queue{}, false)
     end
   end
+
+  describe "empty?" do
+    test "is true only with no text, no waiting end, no continue, and no sent steer" do
+      queue = %Queue{}
+      assert Queue.empty?(queue)
+      refute Queue.empty?(push!(queue, :steers, "s"))
+      refute Queue.empty?(push!(queue, :follow_ups, "f"))
+      refute Queue.empty?(ends_queue(["e"]))
+      refute Queue.empty?(%{queue | continue: "c"})
+
+      {sent, _from} = sent_one()
+      refute Queue.empty?(sent)
+    end
+  end
 end

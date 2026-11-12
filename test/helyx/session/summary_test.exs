@@ -10,10 +10,12 @@ defmodule Helyx.Session.SummaryTest do
   alias Helyx.Session.Server.Flow
   alias Helyx.Test.{Connected, SummaryPlugin, SummaryProvider}
 
-  setup do
+  @moduletag :tmp_dir
+
+  setup %{tmp_dir: dir} do
     core = :"core_#{System.unique_integer([:positive])}"
     plugins = [SummaryProvider, SummaryPlugin, Connected]
-    start_supervised!({Helyx.Core, name: core, plugins: plugins})
+    start_supervised!({Helyx.Core, name: core, plugins: plugins, sessions_dir: dir})
     %{core: core}
   end
 
@@ -73,7 +75,7 @@ defmodule Helyx.Session.SummaryTest do
     assert length(kept_messages) == 2
     Helyx.Test.SessionCase.stop_session(session, &GenServer.stop/1)
 
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir, id: session.id)
+    {:ok, resumed, _} = Session.resume(core, sessions_dir: dir, id: session.id)
     {:ok, _, _} = Session.subscribe(resumed)
     assert %Helyx.Summary{text: "the summary", first_kept_id: ^kept} = state(resumed).summary
     assert state(resumed).compacted == {kept, nil}

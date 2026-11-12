@@ -32,7 +32,9 @@ pub fn read_block(json: String) -> BlockView {
                 provider: approval.provider,
                 arguments: approval.arguments,
             },
-            View::Text => BlockView::Text {
+            // The bindings have no diff view yet, so a `diff` shows its text,
+            // the fallback of the kind (`docs/features/ui-blocks.md`).
+            View::Text | View::Diff(_) => BlockView::Text {
                 kind: block.kind,
                 text: cut(block.text),
             },

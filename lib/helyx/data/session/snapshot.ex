@@ -23,9 +23,8 @@ defmodule Helyx.Session.Snapshot do
       running background runs, and the held and waiting background ends, as
       in `queue_update` (`Helyx.Event`).
     * `persisting` – true while the session appends to its file. It is
-      false for a session with no file, and after a write failure or the
-      loss of the writer lock stopped the saving
-      (`docs/features/session-lock.md`).
+      false for a session with no file, and after a failed write stopped the
+      saving (`docs/features/session-lock.md`).
     * `usage` and `context` – the totals and the context state of every
       message of the transcript, also of those that a tail leaves out
       (`Helyx.Session.Totals`).

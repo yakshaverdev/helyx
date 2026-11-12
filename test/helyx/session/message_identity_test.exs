@@ -150,7 +150,7 @@ defmodule Helyx.Session.MessageIdentityTest do
     {:ok, live, _ref} = Session.subscribe(session)
     stop_session(session, &GenServer.stop/1)
 
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+    {:ok, resumed, _} = Session.resume(core, sessions_dir: dir)
     {:ok, snapshot, _ref} = Session.subscribe(resumed)
     assert snapshot.messages == live.messages
     assert [%{kind: :product, id: "p1"} | _] = Enum.map(snapshot.messages, & &1.origin)

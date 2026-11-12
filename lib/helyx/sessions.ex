@@ -6,10 +6,17 @@ defmodule Helyx.Sessions do
   The server configuration is the start options of `Helyx.Core`:
   `:sessions_dir` and the default `:model`. A Core runs at most 64
   sessions; a start or a resume over the cap gives
-  `{:error, :too_many_sessions}`. A resume of a session that runs in the
+  `{:error, :too_many_sessions}`. A session that no client watches and that
+  has no work stops for idleness and frees its place
+  (`docs/features/idle-unload.md`). A resume of a session that runs in the
   Core attaches to it, also at the cap, and concurrent resumes of one id
   get one result; an attach with other `:provider_opts` than the running
   session's gives `{:error, :provider_opts_differ}`.
+
+  `watch/2` follows every session of the Core without a subscription to
+  each: the feed sends the `Live` of a session at its open and at each
+  change of status or model, and the events of the types that the watcher
+  names (`docs/features/session-feed.md`).
   """
 
   alias Helyx.Session
@@ -24,29 +31,48 @@ defmodule Helyx.Sessions do
   @default_page 50
 
   # The deadline of `remove_message/3` up to its rename: a base for the
-  # lock and the small file, then one ms for each 1,000 bytes of each of
-  # the three passes over the file (the read, the copy, and its write), as
-  # the open of a session counts its load (`docs/features/session-edit.md`,
-  # "Bounds").
+  # small file and the margin for load, then one ms for each 1,000 bytes of
+  # each of the three passes over the file (the read, the copy, and its
+  # write), as the open of a session counts its load
+  # (`docs/features/session-edit.md`, "Bounds").
   @remove_base_ms 25_000
   @remove_passes 3
 
   defmodule Live do
     @moduledoc """
-    One session of `Helyx.Sessions.list_live/1`. `model` is the current
-    model ref. `status` is `:idle` when the session has no turn and no wait
-    after a turn, else `:running`.
+    One session of `Helyx.Sessions.list_live/1`, and the notice of a start,
+    a resume, or a change of status or model that
+    `Helyx.Sessions.watch/2` sends. `model` is the current model ref.
+    `status` is `:idle` when the session has no turn and no wait after a
+    turn, else `:running`. `parent` is the link of a child to the tool call
+    that started it (`docs/features/agent-tool.md`), or nil.
     """
-    @enforce_keys [:id, :instance_id, :cwd, :model, :status]
+    @enforce_keys [:id, :instance_id, :cwd, :model, :status, :parent]
     defstruct @enforce_keys
+
+    @type parent :: %{session_id: String.t(), call_id: String.t()} | nil
 
     @type t :: %__MODULE__{
             id: String.t(),
             instance_id: String.t(),
             cwd: String.t(),
             model: String.t(),
-            status: :idle | :running
+            status: :idle | :running,
+            parent: parent()
           }
+  end
+
+  defmodule Sync do
+    @moduledoc """
+    The full state of a session that `Helyx.Sessions.sync/1` asks for, sent
+    from the session process to one watcher: the `Live` of the session and the
+    ids of its open asks, at the send. Every notice of that session that the
+    watcher gets after it is newer (`docs/features/session-feed.md`).
+    """
+    @enforce_keys [:live, :asks]
+    defstruct @enforce_keys
+
+    @type t :: %__MODULE__{live: Helyx.Sessions.Live.t(), asks: [String.t()]}
   end
 
   @doc """
@@ -58,7 +84,12 @@ defmodule Helyx.Sessions do
   """
   @spec list_live(Helyx.Core.name()) :: [Live.t()]
   def list_live(core) do
-    pids = Registry.select(Helyx.Core.sessions_registry(core), [{{:_, :"$1", :_}, [], [:"$1"]}])
+    # The Registry also holds `{:edit, id}` keys of file edits; a session key
+    # is a binary.
+    pids =
+      Registry.select(Helyx.Core.sessions_registry(core), [
+        {{:"$1", :"$2", :_}, [{:is_binary, :"$1"}], [:"$2"]}
+      ])
 
     stream =
       Task.Supervisor.async_stream(Helyx.Core.task_supervisor(core), pids, &live/1,
@@ -78,6 +109,90 @@ defmodule Helyx.Sessions do
   catch
     :exit, _reason -> nil
   end
+
+  @doc """
+  Sends one message to every session process of `core`, with no call and no
+  wait: each session that is open answers the calling watcher with a
+  `Helyx.Sessions.Sync` notice of its full state, through the same deliver
+  rule as every notice of the feed. A session before its open sends nothing;
+  a session that does not handle messages now answers when it does. The
+  caller must be a watcher of the feed of `core`, or it gets
+  `{:error, :not_watching}`. It returns at once
+  (`docs/features/session-feed.md`).
+  """
+  @spec sync(Helyx.Core.name()) :: :ok | {:error, :not_watching}
+  def sync(core) do
+    if Registry.keys(Helyx.Core.feed_registry(core), self()) == [] do
+      {:error, :not_watching}
+    else
+      pids =
+        Registry.select(Helyx.Core.sessions_registry(core), [
+          {{:"$1", :"$2", :_}, [{:is_binary, :"$1"}], [:"$2"]}
+        ])
+
+      for pid <- pids, do: send(pid, {:helyx_sync, self()})
+      :ok
+    end
+  end
+
+  @doc """
+  Registers the calling process as a watcher of `core`: it gets the `Live`
+  of every session of the Core at its open and at each change of status or
+  model, and the events whose type is in `types`. A second `watch/2` by the
+  same process replaces the first, and `unwatch/1` ends the notices.
+
+  Messages, each from the session process:
+
+    * `{:helyx_feed, session_pid, %Helyx.Sessions.Live{}}`
+    * `{:helyx_feed, session_pid, %Helyx.Event{}}` for a named type
+    * `{:helyx_feed, session_pid, %Helyx.Sessions.Sync{}}` after `sync/1`
+
+  Per session the order is the send order: the first `Live` of an instance
+  comes before every event of it, and a `Live` with a new status comes before
+  the events of that status. A `Sync` is the full state at its send, so every
+  notice of that session after it is newer. Notices of two sessions have no
+  order. No notice tells of a stop: monitor `session_pid`, whose `:DOWN`
+  reason `Helyx.Session.end_reason/1` maps.
+
+  Returns the counter of the notices that the feed dropped, which
+  `dropped/1` reads. A watcher whose mailbox is at
+  `max_feed_queue/0` loses its notices, and the count says how many: read
+  `list_live/1` again to repair the view. A `core` that is not running
+  raises `ArgumentError`.
+  """
+  @spec watch(Helyx.Core.name(), [Helyx.Event.type()]) ::
+          {:ok, :counters.counters_ref()} | {:error, :invalid_types}
+  def watch(core, types) when is_list(types) do
+    if Enum.all?(types, &(&1 in Helyx.Event.types())) do
+      :ok = unwatch(core)
+      dropped = :counters.new(1, [:write_concurrency])
+      registry = Helyx.Core.feed_registry(core)
+
+      for key <- Enum.uniq([:live | types]),
+          do: {:ok, _} = Registry.register(registry, key, dropped)
+
+      {:ok, dropped}
+    else
+      {:error, :invalid_types}
+    end
+  end
+
+  def watch(_core, _types), do: {:error, :invalid_types}
+
+  @doc "Ends the notices of the calling process to the feed of `core`."
+  @spec unwatch(Helyx.Core.name()) :: :ok
+  def unwatch(core) do
+    registry = Helyx.Core.feed_registry(core)
+    Enum.each(Registry.keys(registry, self()), &Registry.unregister(registry, &1))
+  end
+
+  @doc "The number of notices that the feed dropped for the watch of `ref`."
+  @spec dropped(:counters.counters_ref()) :: non_neg_integer()
+  def dropped(ref), do: :counters.get(ref, 1)
+
+  @doc "The mailbox length of a watcher at which the feed drops its notices."
+  @spec max_feed_queue() :: pos_integer()
+  defdelegate max_feed_queue, to: Helyx.Session.Server.Feed, as: :max_queue
 
   @doc """
   One page of the saved sessions of the `:sessions_dir` of `core`, newest
@@ -170,11 +285,13 @@ defmodule Helyx.Sessions do
   `:sessions_dir` of `core`: the session `:id`, in the folder that its
   header names when `opts` names no `:cwd`, or the newest session of
   `:cwd`. A Core with no `:sessions_dir` gives `{:error, :not_found}`. The
-  errors of the find of an id are those of `Helyx.Session.File.Scan.find/2`,
-  and `:invalid_cwd` for a header folder that a start would reject. They
-  come after the tool checks.
+  result tells whether a process ran already (`:attached`) or this call
+  started it (`:started`). The errors of the find of an id are those of
+  `Helyx.Session.File.Scan.find/2`, and `:invalid_cwd` for a header folder
+  that a start would reject. They come after the tool checks.
   """
-  @spec resume(Helyx.Core.name(), keyword()) :: {:ok, Session.t()} | {:error, term()}
+  @spec resume(Helyx.Core.name(), keyword()) ::
+          {:ok, Session.t(), :started | :attached} | {:error, term()}
   def resume(core, opts) do
     case Helyx.Core.config(core, :sessions_dir) do
       nil -> {:error, :not_found}
@@ -184,19 +301,16 @@ defmodule Helyx.Sessions do
 
   @doc """
   Deletes the saved session `id` from the `:sessions_dir` of `core`: its
-  file and the copy that a failed `remove_message/3` left. Takes the writer
-  lock of the file first, so no session writes it during the delete.
+  file and the copy that a failed `remove_message/3` left.
 
   Errors, each with no change: `:not_found` for an id with no file (or a
   Core with no `:sessions_dir`), `:invalid_id`, `:duplicate_id`, and
-  `:running` when a session of the id runs in `core`, or another process
-  holds its lock; the caller stops it first. `:not_regular` for a path
-  that is a symlink or not a file, `{:lock_failed, text}` when the lock
-  cannot be taken, `{:edit_failed, text}` when a remove fails, and a POSIX
-  reason of the stat of the file. Two exceptions, where the file may or
-  may not have changed: an `{:edit_failed, text}` that says perl gave no
-  answer in time, and `:unknown`, an end of the work with no result, such
-  as at a stop of the Core.
+  `:running` when a session of the id runs in `core`, or another edit of
+  the id runs; the caller stops the session first. `:not_regular` for a
+  path that is a symlink or not a file, `{:edit_failed, text}` when a
+  remove fails, and a POSIX reason of the stat of the file. The one
+  exception, where the file may or may not have changed: `:unknown`, an
+  end of the work with no result, such as at a stop of the Core.
 
   It does not remove what is kept outside the file
   (`docs/features/session-edit.md`, "What the calls do not remove").
@@ -210,13 +324,11 @@ defmodule Helyx.Sessions do
              | :running
              | :not_regular
              | :unknown
-             | {:lock_failed | :edit_failed, String.t()}
+             | {:edit_failed, String.t()}
              | File.posix()}
   def delete(core, id) when is_binary(id) do
     with {:ok, dir} <- sessions_dir(core),
          {:ok, path} <- Scan.locate(dir, id) do
-      # The take, two removes, and the release each have the bound of
-      # `Helyx.Session.Lock`.
       Edit.run(core, nil, fn nil -> Edit.delete(core, id, path) end)
     end
   end
@@ -236,9 +348,9 @@ defmodule Helyx.Sessions do
   errors of a resume of the file (such as `{:invalid_file, text}`),
   `:message_not_found` for an id that is no message of the file, and
   `:timeout` past the deadline, 25,000 ms plus 3 ms for each 1,000 bytes
-  of the file: the deadline ends before the rename is sent, and only a kill
-  of the deadline gives `:timeout`. The two exceptions of `delete/2` hold
-  for the rename.
+  of the file: the deadline ends before the rename, and only a kill of the
+  deadline gives `:timeout`. The exception of `delete/2` holds for the
+  rename.
 
   It does not remove what is kept outside the file
   (`docs/features/session-edit.md`, "What the calls do not remove").
@@ -253,7 +365,7 @@ defmodule Helyx.Sessions do
              | :message_not_found
              | :timeout
              | :unknown
-             | {:lock_failed | :edit_failed, String.t()}
+             | {:edit_failed, String.t()}
              | SessionFile.error()}
   def remove_message(core, id, message_id) when is_binary(id) and is_binary(message_id) do
     with {:ok, dir} <- sessions_dir(core),
@@ -284,8 +396,8 @@ defmodule Helyx.Sessions do
   Stops a session: a running turn aborts first, as at
   `Helyx.Session.abort/1`, then the session process stops, so each
   subscriber gets its end signal, whose `Helyx.Session.end_reason/1` is
-  `:stopped`, and the lock of its file is released. Returns after the
-  session ended: `:ok` when every handle of the session was released, and
+  `:stopped`. Returns after the session ended: `:ok` when every handle of
+  the session was released, and
   `{:error, {:not_released, handles}}` when a release failed or timed
   out, with the handles still held, or `:unknown` when the stop got no
   answer of the hands or another end of the session, such as a second stop

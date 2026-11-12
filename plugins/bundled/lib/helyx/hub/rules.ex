@@ -105,7 +105,7 @@ defmodule Helyx.Hub.Rules do
 
   def handle({:started, auth, start}, deadline, state) do
     with :ok <- credential(auth, state) do
-      if auth.user == state.default_owner_id,
+      if auth.user == state.default_owner_id and is_nil(start[:thread_of]),
         do: :ok,
         else: record(auth.user, start, deadline, state)
     end
@@ -114,11 +114,25 @@ defmodule Helyx.Hub.Rules do
   # The record and project operations.
   def handle(request, deadline, state), do: Helyx.Hub.Records.handle(request, deadline, state)
 
+  # A start of the default owner writes no row, because the feed writes it;
+  # a thread link is in no `Live`, so that start writes its row. The rows of
+  # the default owner have no cap: the session files bound them (decision 8).
   defp record(owner, start, deadline, %{store: mod, db: db} = state) do
     with {:ok, model} <- model(start.model, state.core) do
       now = System.os_time(:second)
-      fields = %{owner: owner, model: model, prompt: "", active_at: now, created_at: now}
-      mod.put_record(db, Map.merge(start, fields), @max_records, deadline)
+      max = if owner == state.default_owner_id, do: :none, else: @max_records
+
+      fields = %{
+        owner: owner,
+        model: model,
+        prompt: "",
+        active_at: now,
+        created_at: now,
+        parent_id: start[:thread_of],
+        parent_kind: if(start[:thread_of], do: "thread")
+      }
+
+      mod.put_record(db, Map.merge(start, fields), max, deadline)
     end
   end
 
@@ -159,24 +173,23 @@ defmodule Helyx.Hub.Rules do
     end
   end
 
-  # The cap of the stored records of a user, which the first update of a
-  # derived record (`Helyx.Hub.Records`) checks too.
+  # The cap of the stored records of a user, which the row of a start of that
+  # user (`Helyx.Hub.Rules`) keeps too.
   def max_records, do: @max_records
 
   # The access of a session: its row; for a session with no row that the
   # existence check confirmed, the derived record of the default owner
-  # (decision 8); else `:missing`, which every rule refuses. `stored` tells
-  # a row from a derived record.
+  # (decision 8); else `:missing`, which every rule refuses.
   def access(session_id, exists?, %{store: mod, db: db} = state) do
     case mod.record(db, session_id) do
-      {:ok, row} -> {:ok, %{owner: row.owner, visibility: row.visibility, stored: true}}
+      {:ok, row} -> {:ok, %{owner: row.owner, visibility: row.visibility}}
       {:error, :not_found} when exists? -> {:ok, derived(state)}
       {:error, :not_found} -> {:ok, :missing}
       error -> error
     end
   end
 
-  defp derived(state), do: %{owner: state.default_owner_id, visibility: "private", stored: false}
+  defp derived(state), do: %{owner: state.default_owner_id, visibility: "private"}
 
   defp readable?(:missing, _user), do: false
   defp readable?(%{owner: user}, user), do: true

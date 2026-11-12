@@ -24,8 +24,6 @@ defmodule Helyx.HubTest do
       )
 
     hub = start_supervised!(Supervisor.child_spec({Hub, opts}, id: :hub))
-    # The Hub handled its start, so no message of it comes later.
-    :sys.get_state(hub)
     hub
   end
 
@@ -401,9 +399,11 @@ defmodule Helyx.HubTest do
     defdelegate records(db, ids), to: SQLite
     defdelegate count_records(db, owner), to: SQLite
     defdelegate put_record(db, record, max, deadline), to: SQLite
+    defdelegate seen_record(db, record, deadline), to: SQLite
+    defdelegate ensure_records(db, records, deadline), to: SQLite
     defdelegate touch_record(db, id, at, prompt, deadline), to: SQLite
     defdelegate labels(db, ids), to: SQLite
-    defdelegate update_record(db, id, new, changes, max, deadline), to: SQLite
+    defdelegate update_record(db, id, changes, deadline), to: SQLite
     defdelegate delete_record(db, id, deadline), to: SQLite
     defdelegate search(db, user, filters), to: SQLite
     defdelegate projects(db, owner), to: SQLite
@@ -414,6 +414,8 @@ defmodule Helyx.HubTest do
     defdelegate saved(db, user, cwd, cursor, limit), to: SQLite
     defdelegate newest(db, owner, cwd), to: SQLite
     defdelegate hub_records?(db, owner), to: SQLite
+    defdelegate owned(db, owner, limit), to: SQLite
+    defdelegate rows(db, ids), to: SQLite
     defdelegate schedules(db, owner, session_id), to: SQLite
     defdelegate schedule(db, id), to: SQLite
     defdelegate put_schedule(db, schedule, per_session, per_user, deadline), to: SQLite

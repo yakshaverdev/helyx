@@ -16,6 +16,7 @@ defmodule Helyx.Session.Server.State do
   # (`Helyx.Session.Recall`).
   @prepare_ms 10_000
   def prepare_ms, do: @prepare_ms
+  @deadline_ms %{prepare: @prepare_ms, open: 25_000, idle_stop: nil}
   # The armed kill of a close: end of input, then the exit.
   @provider_close_ms 5_000
   def provider_close_ms, do: @provider_close_ms
@@ -28,13 +29,14 @@ defmodule Helyx.Session.Server.State do
     :model,
     :provider,
     :cwd,
+    # The link of a child to the tool call that started it, or nil
+    # (`Helyx.Sessions.Live`, docs/features/agent-tool.md).
+    :parent,
     :hands,
     :background_dir,
-    # The session file and its writer lock: `:never` before the session has a
-    # file; `{:saving, file, lock}` while an append goes to disk, with the
-    # port of the lock, or nil in the open before the take; `{:stopped,
-    # unsaved_from, lock}` after a failed write or a lost lock
-    # (`Records`).
+    # The session file: `:never` before the session has a file; `{:saving,
+    # file}` while each append goes to disk; `{:stopped, unsaved_from}` after
+    # a failed write (`Records`).
     {:save, :never},
     # The sync worker of the instance (`Helyx.Session.Sync`), or nil with no
     # Memory plugin. Before `Sync.open/1`, nil or `{:replay, messages}`.
@@ -66,13 +68,17 @@ defmodule Helyx.Session.Server.State do
       idle: 1_800_000
     },
     # The deadlines of the session's own steps, in ms: `prepare`, the armed
-    # kill of the prepare Task (`TurnLoop`), and `open`, the deadline of the
-    # lock take and the base of the deadline of the load, which grows with
-    # the file (docs/features/session-lock.md). A test seam.
-    deadline_ms: %{prepare: @prepare_ms, open: 25_000},
+    # kill of the prepare Task (`TurnLoop`), and `open`, the base of the
+    # deadline of the load, which grows with the file
+    # (docs/features/session-lock.md). `idle_stop` is the Core option of the
+    # idle stop, or nil (docs/features/idle-unload.md). A test seam.
+    deadline_ms: @deadline_ms,
     # The current idle timer (`:erlang.start_timer/3`, see
     # `Connect.arm_idle/1`), or nil.
     idle: nil,
+    # The timer of the idle stop (docs/features/idle-unload.md), of the
+    # pattern of `idle`. Its time is `deadline_ms.idle_stop`.
+    idle_stop: nil,
     # The instructions of a compaction that waits for the end of the wait, or
     # nil (docs/features/harness-compaction.md).
     pending_compact: nil,
@@ -85,7 +91,10 @@ defmodule Helyx.Session.Server.State do
     compacted: nil,
     # The caller of `Helyx.Sessions.stop/1`, which `terminate/2` answers with
     # the stop report, or nil.
-    stopper: nil
+    stopper: nil,
+    # The key of the last Live that the session feed sent, or nil
+    # (`Helyx.Session.Server.Feed`).
+    fed: nil
   ]
 
   @type t :: %__MODULE__{
@@ -95,12 +104,13 @@ defmodule Helyx.Session.Server.State do
           model: Helyx.ModelRef.t(),
           provider: module(),
           cwd: Path.t(),
+          parent: Helyx.Sessions.Live.parent(),
           hands: pid() | nil,
           background_dir: Path.t() | nil,
           save:
             :never
-            | {:saving, Helyx.Session.File.t(), port() | nil}
-            | {:stopped, non_neg_integer(), port() | nil},
+            | {:saving, Helyx.Session.File.t()}
+            | {:stopped, non_neg_integer()},
           plugins: %{
             model_context: module() | nil,
             compaction: module() | nil,
@@ -117,24 +127,29 @@ defmodule Helyx.Session.Server.State do
           queue: Queue.t(),
           resume_ids: %{String.t() => Helyx.Session.Transcript.label()},
           provider_ms: %{reply: pos_integer(), close: pos_integer(), idle: pos_integer()},
-          deadline_ms: %{prepare: pos_integer(), open: pos_integer()},
+          deadline_ms: %{
+            prepare: pos_integer(),
+            open: pos_integer(),
+            idle_stop: pos_integer() | nil
+          },
           idle: reference() | nil,
+          idle_stop: reference() | nil,
           pending_compact: String.t() | nil,
           summary: Helyx.Summary.t() | nil,
           summary_call: Helyx.Session.Server.Summary.t() | nil,
           compacted: Helyx.Session.Totals.compaction() | nil,
-          stopper: GenServer.from() | nil
+          stopper: GenServer.from() | nil,
+          fed: {String.t(), boolean(), Helyx.ModelRef.t()} | nil
         }
 
-  def ask(state, pid, req, key), do: ProviderRequest.ask(pid, req, state.provider_ms[key])
+  # The deadlines of a new session of `core`: the defaults, with the idle
+  # stop of the Core option.
+  @spec deadline_ms(Helyx.Core.name()) :: map()
+  def deadline_ms(core) do
+    %{@deadline_ms | idle_stop: Helyx.Core.config(core, :idle_stop_ms)}
+  end
 
-  # The writer lock of the session file, or nil: of a saving session, and of
-  # one whose failed write still holds it. A session that never had a file,
-  # and one that lost its lock, hold none.
-  @doc false
-  def lock(%__MODULE__{save: {:saving, _file, lock}}), do: lock
-  def lock(%__MODULE__{save: {:stopped, _from, lock}}), do: lock
-  def lock(%__MODULE__{save: :never}), do: nil
+  def ask(state, pid, req, key), do: ProviderRequest.ask(pid, req, state.provider_ms[key])
 
   # The options of every plugin call of the session.
   def base_opts(state), do: [core: state.core, session_id: state.id, cwd: state.cwd]

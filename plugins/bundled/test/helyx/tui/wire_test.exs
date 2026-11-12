@@ -228,6 +228,10 @@ defmodule Helyx.TUI.WireTest do
   # The server sends pings until the client closes: a read past the
   # deadline would take them with no end.
   test "pings that wait in the socket do not keep the handshake past its deadline" do
+    # The client closes at its deadline. On a loaded host the fake server can
+    # be before its challenge then, and its send fails with `:closed`; its
+    # exit must not end the test.
+    Process.flag(:trap_exit, true)
     port = server(&pings/1)
     assert connect(port, @load_ms) == {:error, "no welcome from the server in #{@load_ms} ms"}
   end

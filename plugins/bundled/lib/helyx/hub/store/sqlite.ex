@@ -99,7 +99,7 @@ defmodule Helyx.Hub.Store.SQLite do
   defp take_lock(path) do
     case Lock.take(path <> ".lock") do
       {:ok, port} -> {:ok, port}
-      {:error, {:session_locked, _name}} -> {:error, :store_locked}
+      {:error, :locked} -> {:error, :store_locked}
       {:error, {:lock_failed, _text} = error} -> {:error, error}
     end
   end
@@ -179,13 +179,32 @@ defmodule Helyx.Hub.Store.SQLite do
     end
   end
 
+  # The version of the file, and the upgrade of a file of version 2. A file of
+  # another version is refused (decision 9).
   defp version(db) do
     case one(db, "PRAGMA user_version", []) do
       {:ok, [@version]} -> :ok
       {:ok, [0]} -> empty(db)
+      {:ok, [2]} -> upgrade_2(db)
       {:ok, [n]} -> {:error, {:store_version, n}}
       {:error, _} = error -> error
     end
+  end
+
+  # SQLite cannot add a table check, so the pair rule of `parent_id` and
+  # `parent_kind` holds in the store code here and in the schema of a new
+  # file; every write sets both.
+  defp upgrade_2(db) do
+    transaction(db, :infinity, fn ->
+      with :ok <- exec(db, "ALTER TABLE records ADD COLUMN parent_id TEXT"),
+           :ok <-
+             exec(
+               db,
+               "ALTER TABLE records ADD COLUMN parent_kind TEXT " <>
+                 "CHECK (parent_kind IN ('child', 'thread'))"
+             ),
+           do: exec(db, "PRAGMA user_version = #{@version}")
+    end)
   end
 
   # A file of version 0 is new only when it holds no schema: a database of
@@ -311,11 +330,15 @@ defmodule Helyx.Hub.Store.SQLite do
   @impl true
   defdelegate put_record(db, record, max, deadline), to: Records
   @impl true
+  defdelegate seen_record(db, record, deadline), to: Records
+  @impl true
+  defdelegate ensure_records(db, records, deadline), to: Records
+  @impl true
   defdelegate touch_record(db, session_id, at, prompt, deadline), to: Records
   @impl true
   defdelegate labels(db, session_ids), to: Records
   @impl true
-  defdelegate update_record(db, session_id, new, changes, max, deadline), to: Records
+  defdelegate update_record(db, session_id, changes, deadline), to: Records
   @impl true
   defdelegate delete_record(db, session_id, deadline), to: Records
   @impl true
@@ -336,6 +359,10 @@ defmodule Helyx.Hub.Store.SQLite do
   defdelegate newest(db, owner, cwd), to: Records
   @impl true
   defdelegate hub_records?(db, owner), to: Records
+  @impl true
+  defdelegate owned(db, owner, limit), to: Records
+  @impl true
+  defdelegate rows(db, session_ids), to: Records
   @impl true
   defdelegate schedules(db, owner, session_id), to: Schedules
   @impl true
