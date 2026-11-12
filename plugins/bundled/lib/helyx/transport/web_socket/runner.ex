@@ -7,16 +7,19 @@ defmodule Helyx.Transport.WebSocket.Runner do
   answers `hands.live`, and reconnects alone after a lost connection. It is
   not a Core plugin and has no registration entry.
 
-  Options: `:link` (a pairing link) or `:name` (a paired runner), `:folder`
-  (the absolute folder of the runner), `:home` (the root of the state
-  files, default `~/.helyx`), `:notify` (a process that gets
-  `{:hands, :waiting}` and `{:hands, {:connected, info}}`), and
-  `:reconnect_ms`, `:max_reconnect_ms`, and `:lease_ms` (test seams).
+  Options of `prepare/1`: `:link` (a pairing link) or `:name` (a paired
+  runner), `:folder` (the absolute folder of the runner), `:home` (the root
+  of the state files, default `~/.helyx`), `:notify` (a process that gets
+  `{:hands, :waiting}`, `{:hands, {:connected, info}}`, and `{:hands,
+  {:ended, reason}}`), and `:reconnect_ms`, `:max_reconnect_ms`,
+  and `:lease_ms` (smaller waits for a test).
 
-  One process owns the socket and the state. `start_link/1` starts it, and
-  `await/1` gives its end as `{:error, :unauthorized}`, `{:error,
-  :bad_pin}`, or another error. The private key is held in a closure; it is
-  in no process state and in no crash report as a binary.
+  One process owns the socket and the state. The caller prepares it with
+  `prepare/1` and starts it with `start_link/1`, which takes only the
+  prepared form: the start arguments of a supervisor hold closures, never a
+  link or a key. `await/1` gives its end as `{:error, :unauthorized}`,
+  `{:error, :bad_pin}`, or another error. The private key is held in a
+  closure; it is in no process state and in no crash report as a binary.
   """
 
   use GenServer
@@ -127,6 +130,7 @@ defmodule Helyx.Transport.WebSocket.Runner do
 
   defp pair(link, folder, common) do
     with {:ok, link} <- parse(link),
+         :ok <- state_free(common.home, link.name),
          {:ok, folder} <- folder(folder) do
       {public, private} = :crypto.generate_key(:eddsa, :ed25519)
       token = link.token
@@ -150,6 +154,18 @@ defmodule Helyx.Transport.WebSocket.Runner do
          max_ms: common.max_ms,
          lease_ms: common.lease_ms
        }}
+    end
+  end
+
+  # A pairing never replaces a key that may still be valid: the owner uses
+  # `--name` for the saved runner, and the link stays unused.
+  defp state_free(home, name) do
+    path = State.path(home, name)
+
+    case File.lstat(path) do
+      {:ok, _stat} -> {:error, {:state_file, path, :exists}}
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, {:state_file, path, reason}}
     end
   end
 
@@ -201,17 +217,21 @@ defmodule Helyx.Transport.WebSocket.Runner do
   defp folder(nil), do: {:error, {:folder, :missing}}
 
   defp folder(folder) when is_binary(folder) do
-    folder = Path.expand(folder)
+    if String.valid?(folder) do
+      folder = Path.expand(folder)
 
-    cond do
-      byte_size(folder) > Pairing.max_folder_bytes() ->
-        {:error, {:folder, :too_long, folder}}
+      cond do
+        byte_size(folder) > Pairing.max_folder_bytes() ->
+          {:error, {:folder, :too_long, folder}}
 
-      not File.dir?(folder) ->
-        {:error, {:folder, :not_a_directory, folder}}
+        not File.dir?(folder) ->
+          {:error, {:folder, :not_a_directory, folder}}
 
-      true ->
-        {:ok, folder}
+        true ->
+          {:ok, folder}
+      end
+    else
+      {:error, {:folder, :invalid_utf8, folder}}
     end
   end
 
@@ -219,19 +239,18 @@ defmodule Helyx.Transport.WebSocket.Runner do
 
   defp sign(private), do: fn text -> :crypto.sign(:eddsa, :none, text, [private, :ed25519]) end
 
-  @doc "Starts a runner; see `prepare/1` for the options."
-  @spec start_link(keyword() | Prepared.t()) :: GenServer.on_start()
-  def start_link(opts) do
-    with {:ok, prepared} <- prepare(opts) do
-      GenServer.start_link(__MODULE__, prepared)
-    end
-  end
+  @doc """
+  Starts a prepared runner. The prepared form is the one start path, so a
+  supervisor's start arguments hold no link and no key.
+  """
+  @spec start_link(Prepared.t()) :: GenServer.on_start()
+  def start_link(%Prepared{} = prepared), do: GenServer.start_link(__MODULE__, prepared)
 
   @doc false
-  def child_spec(opts) do
+  def child_spec(%Prepared{} = prepared) do
     %{
       id: __MODULE__,
-      start: {__MODULE__, :start_link, [opts]},
+      start: {__MODULE__, :start_link, [prepared]},
       restart: :temporary,
       shutdown: frame_ms()
     }
@@ -274,6 +293,7 @@ defmodule Helyx.Transport.WebSocket.Runner do
   def handle_continue(:connect, state) do
     case connect(state) do
       {:ok, state} -> {:noreply, state}
+      {:frames, frames, state} -> frames(frames, state)
       {:error, reason, state} -> failure(reason, state)
     end
   end
@@ -282,6 +302,7 @@ defmodule Helyx.Transport.WebSocket.Runner do
   def handle_info({:connect, ref}, %{connect_ref: ref} = state) do
     case connect(%{state | connect_ref: nil}) do
       {:ok, state} -> {:noreply, state}
+      {:frames, frames, state} -> frames(frames, state)
       {:error, reason, state} -> failure(reason, state)
     end
   end
@@ -332,8 +353,11 @@ defmodule Helyx.Transport.WebSocket.Runner do
       {:ok, cache} ->
         state = %{state | cache: cache}
 
+        # The saved key is the one of every later connection from the moment
+        # the write succeeds: a drop before the registration answer
+        # reconnects with the key, not the used link.
         case write_state(prepared) do
-          :ok -> register(state)
+          :ok -> register(%{state | prepared: after_register(prepared)})
           {:error, reason} -> {:error, reason, state}
         end
 
@@ -347,7 +371,7 @@ defmodule Helyx.Transport.WebSocket.Runner do
 
     case Connection.register(state.cache, prepared.name, prepared.folder, frame_ms()) do
       {:ok, lease, cache} ->
-        state = %{state | cache: cache, prepared: after_register(prepared)}
+        state = %{state | cache: cache}
 
         case Connection.activate(cache) do
           {:ok, cache} -> connected(%{state | cache: cache}, lease)
@@ -394,7 +418,15 @@ defmodule Helyx.Transport.WebSocket.Runner do
       {:connected, %{name: state.prepared.name, address: state.prepared.address, first?: first?}}
     )
 
-    {:ok, state}
+    # The frames of the registration read that came after the answer (a
+    # `hands.live` in the same write) run before the first wait.
+    case state.cache.frames do
+      [] ->
+        {:ok, state}
+
+      frames ->
+        {:frames, frames, %{state | cache: %{state.cache | frames: []}}}
+    end
   end
 
   defp lease_timer(lease, state) do
@@ -471,27 +503,12 @@ defmodule Helyx.Transport.WebSocket.Runner do
   end
 
   # A 4401, a wrong pin, and a protocol refusal are permanent: a retry
-  # cannot pass.
-  defp failure(:unauthorized, state) do
-    Connection.close(state.cache)
-    remove_state(state)
-    {:stop, {:shutdown, :unauthorized}, %{state | cache: nil}}
-  end
-
-  defp failure(:bad_pin, state) do
-    Connection.close(state.cache)
-    {:stop, {:shutdown, :bad_pin}, %{state | cache: nil}}
-  end
-
-  defp failure({:refused, server}, state) do
-    Connection.close(state.cache)
-    {:stop, {:shutdown, {:refused, server}}, %{state | cache: nil}}
-  end
-
-  defp failure({:state_file, _path, _reason} = reason, state) do
-    Connection.close(state.cache)
-    {:stop, {:shutdown, reason}, %{state | cache: nil}}
-  end
+  # cannot pass. The runner never removes a state file: it wrote it after
+  # the welcome, so a refusal of an earlier pairing leaves the saved key.
+  defp failure(:unauthorized, state), do: permanent(:unauthorized, state)
+  defp failure(:bad_pin, state), do: permanent(:bad_pin, state)
+  defp failure({:refused, _server} = reason, state), do: permanent(reason, state)
+  defp failure({:state_file, _path, _reason} = reason, state), do: permanent(reason, state)
 
   defp failure(_reason, state) do
     Connection.close(state.cache)
@@ -511,12 +528,11 @@ defmodule Helyx.Transport.WebSocket.Runner do
     {:noreply, %{state | connect_ref: ref}}
   end
 
-  defp remove_state(%{prepared: %Prepared{mode: :pair} = prepared}) do
-    _ = File.rm(State.path(prepared.home, prepared.name))
-    :ok
+  defp permanent(reason, state) do
+    Connection.close(state.cache)
+    notify(state, {:ended, reason})
+    {:stop, {:shutdown, reason}, %{state | cache: nil}}
   end
-
-  defp remove_state(_state), do: :ok
 
   defp notify(%{prepared: %Prepared{notify: pid}} = state, event) when is_pid(pid) do
     send(pid, {:hands, event})

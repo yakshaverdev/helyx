@@ -14,6 +14,25 @@ defmodule Helyx.Transport.WebSocket.Runner.Connection do
   # `recv_next/3`. The branch runs: a closed socket returns the error.
   @dialyzer {:nowarn_function, [recv_reply: 5, recv_next: 3]}
 
+  # The most lease that a registration may answer: the top of the server's
+  # lease setting, `Helyx.Transport.WebSocket.hands_lease_ms/0` (120,000),
+  # and a value that a timer takes.
+  @max_lease_ms 120_000
+
+  @doc "The most lease that a registration may answer, in milliseconds."
+  @spec max_lease_ms() :: pos_integer()
+  def max_lease_ms, do: @max_lease_ms
+
+  @doc """
+  The `lease_ms` of a registration: `{:ok, lease}` for 1 to
+  `max_lease_ms/0`, else `:bad_frame`.
+  """
+  @spec lease_ms(term()) :: {:ok, pos_integer()} | :bad_frame
+  def lease_ms(lease) when is_integer(lease) and lease in 1..@max_lease_ms,
+    do: {:ok, lease}
+
+  def lease_ms(_lease), do: :bad_frame
+
   @doc """
   Connects to `host:port` with TLS 1.3, checks the certificate of the peer
   against `pin`, and upgrades the connection. Gives the connection state, or
@@ -36,6 +55,7 @@ defmodule Helyx.Transport.WebSocket.Runner.Connection do
     opts = [
       protocols: [:http1],
       mode: :passive,
+      hostname: hostname(host),
       transport_opts: [
         verify: :verify_none,
         server_name_indication: :disable,
@@ -231,9 +251,8 @@ defmodule Helyx.Transport.WebSocket.Runner.Connection do
     with {:ok, state} <- send_frame(state, request),
          {:ok, frame, state} <- await_res(state, id, deadline) do
       case frame do
-        %{"type" => "res", "id" => ^id, "ok" => true, "result" => %{"lease_ms" => lease}}
-        when is_integer(lease) and lease > 0 ->
-          {:ok, lease, state}
+        %{"type" => "res", "id" => ^id, "ok" => true, "result" => %{"lease_ms" => lease}} ->
+          lease_answer(lease, state)
 
         %{"type" => "res", "id" => ^id, "ok" => false, "error" => %{"code" => code}} ->
           {:error, server_error(code), state}
@@ -241,6 +260,13 @@ defmodule Helyx.Transport.WebSocket.Runner.Connection do
         _other ->
           {:error, :bad_frame, state}
       end
+    end
+  end
+
+  defp lease_answer(lease, state) do
+    case lease_ms(lease) do
+      {:ok, lease} -> {:ok, lease, state}
+      :bad_frame -> {:error, :bad_frame, state}
     end
   end
 
@@ -405,6 +431,16 @@ defmodule Helyx.Transport.WebSocket.Runner.Connection do
 
   defp ipv6?(ip) when is_tuple(ip), do: tuple_size(ip) == 8
   defp ipv6?(_host), do: false
+
+  # Mint needs a hostname when the address is a tuple, for the Host header
+  # and the TLS options, though the pin is the only identity check. An IPv6
+  # literal is bracketed in the Host header.
+  defp hostname(host) when is_binary(host), do: host
+
+  defp hostname(ip) when tuple_size(ip) == 8,
+    do: "[" <> to_string(:inet.ntoa(ip)) <> "]"
+
+  defp hostname(ip), do: ip |> :inet.ntoa() |> to_string()
 
   defp now, do: System.monotonic_time(:millisecond)
   defp left(deadline), do: max(deadline - now(), 0)

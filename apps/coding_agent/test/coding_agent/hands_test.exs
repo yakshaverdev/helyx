@@ -65,13 +65,44 @@ defmodule CodingAgent.HandsTest do
           {["--name", "mac"], "no saved runner state for"},
           {["--name", "Mac"], "--name takes 1 to 64 bytes"},
           {["--name", "mac", "--folder", context.project], "no saved runner state for"},
-          {["x"], ~s(hands takes no directory argument, got: ["x"])}
+          {["--name", link], "--name takes 1 to 64 bytes"},
+          {["x"], "hands takes no directory argument, got 1 argument(s)"}
         ] do
       {status, out, err} = run(["hands" | argv])
       assert status == 1
       assert out == ""
       assert err =~ text
     end
+  end
+
+  test "a positional link is not printed", context do
+    {_server, link} = start_server(context)
+    %{"t" => token} = link_parts(link)
+
+    {status, out, err} = run(["hands", link])
+    assert status == 1
+    assert out == ""
+    assert err =~ "a pair link goes after --pair"
+    refute err =~ token
+    refute err =~ Base.encode64(token)
+  end
+
+  test "a second --pair over an existing state file refuses and keeps it", context do
+    {_server, link} = start_server(context)
+    {task, io} = start_hands(["--pair", link, "--folder", context.project])
+    wait_output(io, "is paired with")
+    stop_hands()
+    assert Task.await(task, 30_000) == 0
+
+    path = Path.join([context.home, "hands", "mac.json"])
+    before = File.read!(path)
+
+    {status, out, err} = run(["hands", "--pair", link, "--folder", context.project])
+    assert status == 1
+    assert out == ""
+    assert err =~ "already exists"
+    assert err =~ path
+    assert File.read!(path) == before
   end
 
   test "a bad link shows no token", context do
@@ -93,6 +124,13 @@ defmodule CodingAgent.HandsTest do
     wait_output(io, "is paired with")
     stop_hands()
     assert Task.await(task, 30_000) == 0
+
+    # Another home has no state file, so the link reaches the server.
+    Application.put_env(
+      :coding_agent,
+      :sessions_dir,
+      Path.join([context.home, "other", "sessions"])
+    )
 
     {status, out, err} = run(["hands", "--pair", link, "--folder", context.project])
     assert status == 1

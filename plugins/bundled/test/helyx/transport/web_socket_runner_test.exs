@@ -13,7 +13,7 @@ defmodule Helyx.Transport.WebSocket.RunnerTest do
   alias Helyx.Transport.WebSocket
   alias Helyx.Transport.WebSocket.{Pairing, TLS}
   alias Helyx.Transport.WebSocket.Runner
-  alias Helyx.Transport.WebSocket.Runner.{Link, State}
+  alias Helyx.Transport.WebSocket.Runner.{Connection, Link, State}
 
   @moduletag :tmp_dir
 
@@ -29,13 +29,18 @@ defmodule Helyx.Transport.WebSocket.RunnerTest do
     hub =
       start_supervised!(
         Supervisor.child_spec(
-          {Hub, core: core, default_owner: "owner", path: Path.join(context.tmp_dir, "hub.db")},
+          {Hub,
+           core: core,
+           default_owner: "owner",
+           path: Keyword.get(opts, :hub_path, Path.join(context.tmp_dir, "hub.db"))},
           id: {id, :hub}
         )
       )
 
     port = Keyword.get(opts, :port, free_port())
-    public = [ip: {127, 0, 0, 1}, port: port, address: "127.0.0.1:#{port}"]
+    ip = Keyword.get(opts, :public_ip, {127, 0, 0, 1})
+    address = Keyword.get(opts, :address, address_text(ip, port))
+    public = [ip: ip, port: port, address: address]
 
     transport =
       start_supervised!(
@@ -47,7 +52,7 @@ defmodule Helyx.Transport.WebSocket.RunnerTest do
            public: public,
            tls: tls,
            pairing: hub
-         ] ++ Keyword.drop(opts, [:port])},
+         ] ++ Keyword.drop(opts, [:port, :public_ip, :address, :hub_path])},
         id: {id, :transport}
       )
 
@@ -57,10 +62,16 @@ defmodule Helyx.Transport.WebSocket.RunnerTest do
       tls: tls,
       transport: transport,
       port: port,
+      address: address,
       pairing: pairing(transport),
       id: id
     }
   end
+
+  defp address_text(ip, port) when tuple_size(ip) == 8,
+    do: "[#{:inet.ntoa(ip)}]:#{port}"
+
+  defp address_text(ip, port), do: "#{:inet.ntoa(ip)}:#{port}"
 
   defp stop_server(id) do
     stop_supervised!({id, :transport})
@@ -102,8 +113,19 @@ defmodule Helyx.Transport.WebSocket.RunnerTest do
   end
 
   defp start_runner(context, opts) do
+    {pid, _prepared} = start_prepared(context, opts)
+    pid
+  end
+
+  defp start_prepared(context, opts) do
     {id, opts} = Keyword.pop(opts, :id, :runner)
-    start_supervised!({Runner, runner_opts(context, opts)}, id: id)
+    {:ok, prepared} = Runner.prepare(runner_opts(context, opts))
+    pid = start_supervised!({Runner, prepared}, id: id)
+    {pid, prepared}
+  end
+
+  defp ipv6_loopback? do
+    match?({:ok, _ip}, :inet.getaddr(~c"::1", :inet6))
   end
 
   defp wait_connected(pairing, name) do
@@ -171,11 +193,7 @@ defmodule Helyx.Transport.WebSocket.RunnerTest do
 
       other = Path.join(context.tmp_dir, "other_home")
 
-      pid =
-        start_supervised!(
-          {Runner, runner_opts(context, link: link, home: other)},
-          id: :second
-        )
+      pid = start_runner(context, link: link, home: other, id: :second)
 
       assert {:error, :unauthorized} = Runner.await(pid)
       refute File.exists?(State.path(other, "mac"))
@@ -184,7 +202,7 @@ defmodule Helyx.Transport.WebSocket.RunnerTest do
     test "a wrong pin refuses the connection before any frame", context do
       pin = "not-the-pin"
       link = relink(link(context), &Map.put(&1, "p", pin))
-      pid = start_supervised!({Runner, runner_opts(context, link: link)}, id: :runner)
+      pid = start_runner(context, link: link)
 
       assert {:error, :bad_pin} = Runner.await(pid)
       refute File.exists?(State.path(Path.join(context.tmp_dir, "home"), "mac"))
@@ -196,13 +214,73 @@ defmodule Helyx.Transport.WebSocket.RunnerTest do
       folder = String.duplicate("a", Pairing.max_folder_bytes() + 1)
 
       assert {:error, {:folder, :too_long, _folder}} =
-               Runner.start_link(
+               Runner.prepare(
                  link: link,
                  folder: folder,
                  home: Path.join(context.tmp_dir, "home")
                )
 
       assert {:ok, []} = Pairing.list(context.pairing)
+    end
+
+    test "a folder that is not UTF-8 is refused before a connection", context do
+      link = link(context)
+      folder = Path.join(context.tmp_dir, <<"project", 0xFF>>)
+
+      assert {:error, {:folder, :invalid_utf8, _folder}} =
+               Runner.prepare(
+                 link: link,
+                 folder: folder,
+                 home: Path.join(context.tmp_dir, "home")
+               )
+
+      assert {:ok, []} = Pairing.list(context.pairing)
+    end
+
+    test "a second pairing over an existing state file refuses and keeps it", context do
+      first_link = link(context)
+      start_runner(context, link: first_link)
+      wait_connected(context.pairing, "mac")
+      assert_receive {:hands, {:connected, %{first?: true}}}, 30_000
+
+      home = Path.join(context.tmp_dir, "home")
+      path = State.path(home, "mac")
+      before = File.read!(path)
+
+      second_link = link(context)
+
+      assert {:error, {:state_file, ^path, :exists}} =
+               Runner.prepare(
+                 link: second_link,
+                 folder: Path.join(context.tmp_dir, "project"),
+                 home: home
+               )
+
+      assert File.read!(path) == before
+
+      # The refused link was not used: it pairs from another home.
+      other = Path.join(context.tmp_dir, "other_home")
+      start_runner(context, link: second_link, home: other, id: :other)
+      wait_connected(context.pairing, "mac")
+      assert_receive {:hands, {:connected, %{first?: true}}}, 30_000
+    end
+
+    test "a pairing over an IPv6 literal host connects", context do
+      if ipv6_loopback?() do
+        server =
+          serve(context, :v6,
+            public_ip: {0, 0, 0, 0, 0, 0, 0, 1},
+            hub_path: Path.join(context.tmp_dir, "hub_v6.db")
+          )
+
+        link = link(server)
+
+        assert {:ok, %{host: {0, 0, 0, 0, 0, 0, 0, 1}}} = Link.parse(link)
+
+        start_runner(context, link: link)
+        wait_connected(server.pairing, "mac")
+        assert_receive {:hands, {:connected, %{first?: true}}}, 30_000
+      end
     end
   end
 
@@ -393,12 +471,18 @@ defmodule Helyx.Transport.WebSocket.RunnerTest do
       assert {:error, :unauthorized} = Runner.await(runner)
     end
 
-    test "a server that goes silent closes at the lease and connects again", context do
+    @tag :slow
+    @tag timeout: 90_000
+    test "a server that goes silent after a live closes at the lease and reconnects", context do
       server = serve(context, :server, hands_lease_ms: 30_000)
-      start_runner(context, link: link(server), lease_ms: 500, reconnect_ms: 100)
+
+      start_runner(context, link: link(server), lease_ms: 11_000, reconnect_ms: 100)
       wait_connected(server.pairing, "mac")
       assert_receive {:hands, {:connected, %{first?: true}}}
 
+      # The first request comes at a third of the lease. The runner answers
+      # it, so the test isolates a server that goes silent afterwards.
+      wait_until(fn -> conn_state(server.pairing, "mac").live_seq >= 1 end, 20_000)
       conn = conn_pid(server.pairing, "mac")
 
       try do
@@ -409,6 +493,14 @@ defmodule Helyx.Transport.WebSocket.RunnerTest do
       after
         resume(conn)
       end
+    end
+
+    test "a lease over the maximum is a bad frame" do
+      max = Connection.max_lease_ms()
+
+      assert Connection.lease_ms(max) == {:ok, max}
+      assert Connection.lease_ms(max + 1) == :bad_frame
+      assert Connection.lease_ms(0) == :bad_frame
     end
 
     test "the wait doubles to the cap, and a registration resets it" do
@@ -427,13 +519,16 @@ defmodule Helyx.Transport.WebSocket.RunnerTest do
     end
   end
 
-  test "the private key is out of the state and out of a crash report", context do
+  test "the private key and the link are out of the state, the child spec, and a crash report",
+       context do
     server = serve(context)
-    runner = start_runner(context, link: link(server))
+    link = link(server)
+    {runner, prepared} = start_prepared(context, link: link)
     wait_connected(server.pairing, "mac")
     assert_receive {:hands, {:connected, %{first?: true}}}, 30_000
 
     key = Base.decode64!(state_json(context, "mac")["key"])
+    token = token(link)
 
     forms = [
       Base.encode64(key),
@@ -443,8 +538,11 @@ defmodule Helyx.Transport.WebSocket.RunnerTest do
       inspect(key, binaries: :as_strings)
     ]
 
-    state = inspect(:sys.get_state(runner))
-    refute Enum.any?(forms, &String.contains?(state, &1))
+    for text <- [inspect(:sys.get_state(runner)), inspect(Runner.child_spec(prepared))] do
+      refute Enum.any?(forms, &String.contains?(text, &1))
+      refute text =~ token
+      refute text =~ "helyx-pair:"
+    end
 
     ref = Process.monitor(runner)
 
@@ -455,6 +553,7 @@ defmodule Helyx.Transport.WebSocket.RunnerTest do
       end)
 
     refute Enum.any?(forms, &String.contains?(log, &1))
+    refute log =~ token
   end
 
   defp resume(pid) do
@@ -485,6 +584,11 @@ defmodule Helyx.Transport.WebSocket.RunnerTest do
   end
 
   defp link_json(fields), do: encoded(JSON.encode!(fields))
+
+  defp token(link) do
+    "helyx-pair:1:" <> encoded = link
+    JSON.decode!(Base.url_decode64!(encoded, padding: false))["t"]
+  end
 
   defp encoded(json), do: "helyx-pair:1:" <> Base.url_encode64(json, padding: false)
 end

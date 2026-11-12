@@ -8,7 +8,12 @@ defmodule Helyx.Transport.WebSocket.Runner.Link do
   alias Helyx.Transport.WebSocket.Pairing
 
   @prefix "helyx-pair:1:"
+  @scheme "helyx-pair:"
   @kind "hands"
+
+  @doc "The prefix of a link of any version, for a command line that refuses one."
+  @spec scheme() :: String.t()
+  def scheme, do: @scheme
 
   # The longest link that `Pairing.create/3` makes through the `--public`
   # argument: a host of at most 255 bytes, a port of 5 digits and 2 brackets,

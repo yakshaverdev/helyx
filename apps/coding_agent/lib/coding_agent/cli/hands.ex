@@ -9,7 +9,7 @@ defmodule CodingAgent.CLI.Hands do
   alias Helyx.Transport.WebSocket
   alias Helyx.Transport.WebSocket.Pairing
   alias Helyx.Transport.WebSocket.Runner
-  alias Helyx.Transport.WebSocket.Runner.State
+  alias Helyx.Transport.WebSocket.Runner.{Link, State}
 
   # The runner's supervisor, which a stop of the command stops.
   @supervisor CodingAgent.Hands
@@ -29,8 +29,18 @@ defmodule CodingAgent.CLI.Hands do
     end
   end
 
-  def run(_opts, args, _home),
-    do: {:error, "hands takes no directory argument, got: #{inspect(args)}"}
+  def run(_opts, args, _home) do
+    if Enum.any?(args, &link_argument?/1) do
+      {:error, "a pair link goes after --pair, not as an argument"}
+    else
+      {:error, "hands takes no directory argument, got #{length(args)} argument(s)"}
+    end
+  end
+
+  defp link_argument?(argument) when is_binary(argument),
+    do: String.starts_with?(argument, Link.scheme())
+
+  defp link_argument?(_argument), do: false
 
   defp switches(opts) do
     case Enum.find(Keyword.keys(opts), &(&1 not in [:pair, :name, :folder])) do
@@ -52,7 +62,7 @@ defmodule CodingAgent.CLI.Hands do
   defp name(name) do
     if Pairing.name?(name),
       do: :ok,
-      else: {:error, "--name takes 1 to 64 bytes of a-z, 0-9, and _, got: #{inspect(name)}"}
+      else: {:error, "--name takes 1 to 64 bytes of a-z, 0-9, and _"}
   end
 
   defp prepare(opts, home) do
@@ -90,12 +100,15 @@ defmodule CodingAgent.CLI.Hands do
         loop(ref, prepared)
 
       [] ->
-        {:error, :runner_stopped}
+        ended()
     end
   end
 
   defp loop(ref, prepared) do
     receive do
+      {:hands, {:ended, reason}} ->
+        result({:shutdown, reason})
+
       {:hands, {:connected, %{first?: true} = info}} ->
         IO.puts(connected(prepared, info))
         loop(ref, prepared)
@@ -110,6 +123,17 @@ defmodule CodingAgent.CLI.Hands do
 
       {:DOWN, ^ref, :process, _pid, reason} ->
         result(reason)
+    end
+  end
+
+  # The runner ended before the monitor was set: its result is already a
+  # message, so every fault keeps its one line.
+  defp ended do
+    receive do
+      {:hands, {:ended, reason}} -> result({:shutdown, reason})
+      {:hands, _event} -> ended()
+    after
+      5_000 -> {:error, :runner_stopped}
     end
   end
 
@@ -129,6 +153,11 @@ defmodule CodingAgent.CLI.Hands do
 
   defp error_text({:state_file, path, :enoent}, opts),
     do: "no saved runner state for #{inspect(opts[:name])} at #{path}; pair the runner first"
+
+  defp error_text({:state_file, path, :exists}, _opts) do
+    name = Path.basename(path, ".json")
+    "a runner state for #{name} already exists at #{path}; use helyx hands --name #{name}"
+  end
 
   defp error_text({:state_file, path, :symlink}, _opts),
     do: "the runner state #{path} is a symlink; remove it and pair the runner again"
@@ -165,13 +194,19 @@ defmodule CodingAgent.CLI.Hands do
   defp error_text({:folder, :too_long, _folder}, _opts),
     do: "the folder is over #{Pairing.max_folder_bytes()} bytes"
 
-  defp error_text({:folder, :not_a_directory, folder}, _opts),
-    do: "not a directory: #{inspect(folder)}"
+  defp error_text({:folder, :not_a_directory, folder}, _opts) do
+    if String.starts_with?(folder, Link.scheme()),
+      do: "the folder is not a directory",
+      else: "not a directory: #{inspect(folder)}"
+  end
 
   defp error_text({:folder, :not_a_directory}, _opts), do: "the folder is not a directory"
 
-  defp error_text({:name, :bad_name}, opts),
-    do: "--name takes 1 to 64 bytes of a-z, 0-9, and _, got: #{inspect(opts[:name])}"
+  defp error_text({:folder, :invalid_utf8, _folder}, _opts),
+    do: "the folder is not valid UTF-8"
+
+  defp error_text({:name, :bad_name}, _opts),
+    do: "--name takes 1 to 64 bytes of a-z, 0-9, and _"
 
   defp error_text(:unauthorized, _opts),
     do: "the server refused the runner key; pair the runner again"
