@@ -335,4 +335,22 @@ defmodule Helyx.Hub.Store.SQLite.Records do
     sql = "SELECT EXISTS (SELECT 1 FROM records WHERE owner = ?1 AND visibility = 'hub')"
     with {:ok, [found]} <- one(db, sql, [owner]), do: {:ok, found == 1}
   end
+
+  # The rows of `owner`, newest `active_at` first, then by session id, at
+  # most `limit` (`docs/features/live-records.md`).
+  def owned(db, owner, limit) do
+    sql =
+      @select <>
+        " WHERE owner = ?1 ORDER BY active_at DESC, session_id ASC LIMIT ?2"
+
+    with {:ok, rows} <- all(db, sql, [owner, limit]), do: {:ok, Enum.map(rows, &row/1)}
+  end
+
+  # The rows of the ids, at most 256, bound by the caller.
+  def rows(_db, []), do: {:ok, []}
+
+  def rows(db, session_ids) do
+    sql = @select <> " WHERE session_id IN (#{marks(session_ids)})"
+    with {:ok, rows} <- all(db, sql, session_ids), do: {:ok, Enum.map(rows, &row/1)}
+  end
 end

@@ -8,7 +8,7 @@ defmodule Helyx.Transport.WebSocket.Connection do
 
   @behaviour WebSock
 
-  alias Helyx.Transport.WebSocket.{Authorize, Bounds, Frame, Ops, Outbound, Subscription}
+  alias Helyx.Transport.WebSocket.{Authorize, Bounds, Frame, Ops, Outbound, Records, Subscription}
 
   @hello_ms Bounds.get("hello_ms")
   @ping_ms Bounds.get("ping_ms")
@@ -153,6 +153,37 @@ defmodule Helyx.Transport.WebSocket.Connection do
 
   defp request(id, "unsubscribe", _params, state), do: error(id, "bad_params", state)
 
+  # One records subscription of the connection (`docs/features/live-records.md`).
+  # A server with no authority answers as it answers a `hub.*` op.
+  defp request(id, "records.subscribe", params, state) when map_size(params) == 0 do
+    cond do
+      state.authority == nil ->
+        error(id, "unknown_op", state)
+
+      records_writer(state) != nil ->
+        error(id, "too_many_subscriptions", state)
+
+      true ->
+        pid = Records.start_link(state.out, id, state.authority, state.auth)
+        {:ok, put_writer(state, pid, {:records, id, nil, :none})}
+    end
+  end
+
+  defp request(id, "records.subscribe", _params, state), do: error(id, "bad_params", state)
+
+  defp request(id, "records.unsubscribe", params, state) when map_size(params) == 0 do
+    case records_writer(state) do
+      nil ->
+        error(id, "unknown_sub", state)
+
+      {pid, writer} ->
+        send(pid, {:unsubscribe, id})
+        {:ok, put_writer(state, pid, unsubscribe_records(writer, id))}
+    end
+  end
+
+  defp request(id, "records.unsubscribe", _params, state), do: error(id, "bad_params", state)
+
   # The params are checked here, before the worker: a worker holds only the
   # checked values, not the decoded frame (`docs/features/wire-protocol.md`,
   # "Bounds").
@@ -253,6 +284,15 @@ defmodule Helyx.Transport.WebSocket.Connection do
   def handle_info({:close, code}, state), do: close(code, state)
 
   def handle_info({:acked, pid}, state), do: {:ok, next_ack(state, pid)}
+
+  # The records process sent `records_end` (its Hub ended): the connection
+  # holds no records subscription from here, and every request that the writer
+  # still owes gets its answer, so a subscribe that follows the frame finds a
+  # free place and an unsubscribe that was in flight gets its `res` (O2).
+  def handle_info({:records_ended, pid}, state) do
+    {texts, state} = records_closed(state, pid)
+    {:push, texts, state}
+  end
 
   def handle_info({:slot, pid}, state) do
     writer = put_slot(Map.fetch!(state.writers, pid), :wait)
@@ -360,6 +400,14 @@ defmodule Helyx.Transport.WebSocket.Connection do
       {:sub, sub, req, ^id, ack, slot} ->
         state = put_writer(state, pid, {:sub, sub, req, nil, ack, slot})
         next_ack(state, pid)
+
+      {:records, nil, ^id, _slot} ->
+        # The unsubscribe reply: the subscription is gone, so a subscribe
+        # that follows the reply finds no records writer.
+        %{state | writers: Map.delete(state.writers, pid)}
+
+      {:records, ^id, unsub, slot} ->
+        put_writer(state, pid, {:records, nil, unsub, slot})
     end
   end
 
@@ -387,9 +435,12 @@ defmodule Helyx.Transport.WebSocket.Connection do
   defp owed({:worker, id, _slot}), do: [id]
   defp owed({:sub, _sub, req, unsub, _ack, _slot}), do: Enum.reject([req, unsub], &is_nil/1)
 
+  defp owed({:records, req, unsub, _slot}), do: Enum.reject([req, unsub], &is_nil/1)
+
   defp in_flight(state), do: Enum.count(state.writers, fn {_, writer} -> in_flight?(writer) end)
   defp in_flight?({:worker, _id, _slot}), do: true
   defp in_flight?({:sub, _sub, req, _unsub, _ack, _slot}), do: req != nil
+  defp in_flight?({:records, req, _unsub, _slot}), do: req != nil
 
   # The active subscriptions: a sub that is unsubscribing does not count.
   defp subs(state), do: Enum.count(state.writers, &match?({_, {:sub, _, _, nil, _, _}}, &1))
@@ -402,8 +453,42 @@ defmodule Helyx.Transport.WebSocket.Connection do
   end
 
   defp unsubscribe({:sub, sub, req, nil, ack, slot}, id), do: {:sub, sub, req, id, ack, slot}
+  defp unsubscribe_records({:records, req, nil, slot}, id), do: {:records, req, id, slot}
   defp slot({:worker, _id, slot}), do: slot
   defp slot({:sub, _sub, _req, _unsub, _ack, slot}), do: slot
+  defp slot({:records, _req, _unsub, slot}), do: slot
   defp put_slot({:worker, id, _slot}, slot), do: {:worker, id, slot}
   defp put_slot({:sub, sub, req, unsub, ack, _}, slot), do: {:sub, sub, req, unsub, ack, slot}
+  defp put_slot({:records, req, unsub, _}, slot), do: {:records, req, unsub, slot}
+
+  # The records writer that is not unsubscribing, with its tuple. A writer
+  # whose process is gone is not one: its `:EXIT` is on the way, and a
+  # subscribe that follows `records_end` or an unsubscribe reply must pass.
+  defp records_writer(state) do
+    Enum.find_value(state.writers, fn
+      {pid, {:records, _req, nil, _slot} = writer} ->
+        if Process.alive?(pid), do: {pid, writer}
+
+      _other ->
+        nil
+    end)
+  end
+
+  # The one way a records writer goes: free its place and its slot, and answer
+  # every id that it owes. The feed is gone, which is the answer of an
+  # unsubscribe that waits; a records writer never owes its subscribe, because
+  # the monitor comes after that reply.
+  defp records_closed(state, pid) do
+    writer = Map.get(state.writers, pid)
+    state = release(state, pid)
+
+    state = %{
+      state
+      | writers: Map.delete(state.writers, pid),
+        waiting: :queue.delete(pid, state.waiting)
+    }
+
+    ids = if writer, do: owed(writer), else: []
+    {Enum.flat_map(ids, &texts(Outbound.res(&1, {:ok, %{}}))), state}
+  end
 end

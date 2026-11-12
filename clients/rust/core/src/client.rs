@@ -15,6 +15,7 @@ use crate::handshake::{Step, Token};
 use crate::json::{self, Json, Limits};
 use crate::operation::{self, Operation};
 use crate::reconcile::subscribe_fits;
+use crate::records::{Feed, RecordFrame};
 use crate::seq::Seq;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -38,6 +39,11 @@ pub enum Output {
     },
     /// The state of this session changed.
     Changed(String),
+    /// The records feed changed: its reply, a change, or a full list.
+    RecordsChanged,
+    /// The records subscription ended without the client's unsubscribe: the
+    /// rows stay, and the host subscribes again.
+    RecordsEnded,
     /// The session ended; its state stays, and no subscribe for it goes on
     /// this connection until the host states its intent again or a `history`
     /// reply says that the instance that ended was replaced (`Follow::Held`).
@@ -90,6 +96,9 @@ pub struct Client {
     /// number, so no two share one, those of a forgotten session neither.
     statements: u64,
     pub(crate) connection: Option<Connection>,
+    /// The records feed of the user, from its last reply, its changes, and
+    /// its full lists. It outlives a connection, as a session state does.
+    records: Feed,
     /// A connection of the client took the handshake: a fact of the frames
     /// of the server, which outlives the connection (`closed`).
     welcomed: bool,
@@ -109,8 +118,17 @@ impl Client {
             sessions: HashMap::new(),
             statements: 0,
             connection: None,
+            records: Feed::default(),
             welcomed: false,
         }
+    }
+
+    /// The records feed of the user, from its reply and its changes
+    /// (`docs/features/live-records.md`). The host sends
+    /// `Operation::records_subscribe()` after a welcome, and
+    /// `Operation::records_unsubscribe()` to end it.
+    pub fn records(&self) -> &Feed {
+        &self.records
     }
 
     /// The state of `session`, when the client has followed it.
@@ -412,7 +430,31 @@ impl Client {
                 c.stop(session.clone(), Stop::Ended(instance), s.stated());
                 Ok(vec![Output::Ended { session, crashed }])
             }
+            ServerFrame::Record(frame) => self.record(frame),
+            ServerFrame::RecordsEnd => {
+                let c = self.connection.as_mut().expect("a connection");
+                if !c.records {
+                    return Err(Broken("records end"));
+                }
+                c.records = false;
+                self.records.end();
+                Ok(vec![Output::RecordsEnded])
+            }
         }
+    }
+
+    /// A `record` or `records` frame: it is a break before the
+    /// `records.subscribe` reply or after the `records.unsubscribe` reply.
+    fn record(&mut self, frame: RecordFrame) -> Checked<Vec<Output>> {
+        let c = self.connection.as_mut().expect("a connection");
+        if !c.records {
+            return Err(Broken("record frame"));
+        }
+        match frame {
+            RecordFrame::Change(change) => self.records.applied(change),
+            RecordFrame::Full { records, more } => self.records.full(records, more),
+        }
+        Ok(vec![Output::RecordsChanged])
     }
 
     fn reply(
@@ -457,6 +499,21 @@ impl Client {
                 let session = session.expect("an unsubscribe names its session");
                 let stated = request.stated.expect("an unsubscribe names its statement");
                 Ok(self.unsubscribed(session, sub, stated, result))
+            }
+            // The records feed: its reply replaces the list, and the
+            // unsubscribe ends it on the connection.
+            ("records.subscribe", _, Ok(Reply::Records { records, more })) => {
+                c.records = true;
+                self.records = Feed::subscribed(records, more);
+                Ok(vec![Output::RecordsChanged])
+            }
+            ("records.unsubscribe", _, result) => {
+                // A refusal such as `busy` leaves the server subscription
+                // live, so its frames still apply; only an ok reply ends it.
+                if result.is_ok() {
+                    c.records = false;
+                }
+                Ok(vec![Output::Reply { id, result }])
             }
             // The session started again: the instance that the page named
             // was replaced, so an end of it holds no more.

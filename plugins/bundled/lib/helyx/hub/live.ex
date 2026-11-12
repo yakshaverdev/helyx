@@ -4,16 +4,17 @@ defmodule Helyx.Hub.Live do
   # decision 14), in the state of the Hub process.
   #
   # `live`: monitor ref => `{session id, pid, status}`, where `status` is the
-  # `"idle"` or `"running"` of the last `Live` that the feed sent for that
-  # process, or `"stopped"` for a session with no entry (`status/2`). It holds
-  # every session of the Core: the feed sends one at the open of the process,
-  # and the seed reads the sessions that ran before Hub started. `reserved`:
-  # caller pid => place, with a monitor of the caller and a timer; a place
-  # ends at `result`, at `release`, at the `:DOWN` of its caller, or
-  # @place_ms after its `check`. `starters`: session id => the user whose
-  # start or resume through Hub made or attached to the entry, for whom the
-  # coordinator tools act (`docs/features/coordinator.md`, decision 3); a
-  # seeded entry has none.
+  # `"idle"` or `"running"` of the last `Live` or `Sync` that the feed sent for
+  # that process, or `"stopped"` for a session with no entry (`status/2`). It
+  # holds every session of the Core: the feed sends one at the open of the
+  # process, and the `Sync` answers of `Helyx.Sessions.sync/1` add the sessions
+  # that ran before Hub started. `reserved`: caller pid => place, with a
+  # monitor of the caller and a timer; a place ends at `result`, at `release`,
+  # at the `:DOWN` of its caller, or @place_ms after its `check`. `starters`:
+  # session id => the user whose start or resume through Hub made or attached
+  # to the entry, for whom the coordinator tools act
+  # (`docs/features/coordinator.md`, decision 3); an entry that a `Sync` added
+  # has none.
 
   alias Helyx.Hub.Rules
 
@@ -43,6 +44,12 @@ defmodule Helyx.Hub.Live do
       if live + length(places) < state.max_live, do: :ok, else: {:error, :too_many_sessions}
     end
   end
+
+  # Whether a start of a user who is not the default owner is in flight: its
+  # reserved place names no session id, so a `Live` of a session with no row
+  # cannot be told from it (`docs/features/live-records.md`).
+  def start_in_flight?(%{reserved: reserved}),
+    do: Enum.any?(reserved, fn {_caller, place} -> place.record? end)
 
   defp record_room(_state, _user, _places, false), do: :ok
 
@@ -104,12 +111,36 @@ defmodule Helyx.Hub.Live do
   def running?(%{live: live}, session_id),
     do: Enum.any?(live, fn {_ref, {id, _pid, _status}} -> id == session_id end)
 
-  # The derived status of a session's record: the status of its live entry,
-  # else `"stopped"`. Never stored (decision 8).
-  def status(%{live: live}, session_id) do
-    Enum.find_value(live, "stopped", fn {_ref, {id, _pid, status}} ->
-      if id == session_id, do: status
-    end)
+  # Every live session id, at most the 64 of the Core cap.
+  def ids(%{live: live}), do: Enum.map(live, fn {_ref, {id, _pid, _status}} -> id end)
+
+  # The session id of an entry of the live set, or nil.
+  def watched(%{live: live}, ref) do
+    case Map.fetch(live, ref) do
+      {:ok, {id, _pid, _status}} -> id
+      :error -> nil
+    end
+  end
+
+  # The derived status of a session's record: `"waiting"` while it has an
+  # open ask, else the status of its live entry, else `"stopped"`. Never
+  # stored (hub.md, decision 8; live-records.md).
+  def status(state, session_id) do
+    if waiting?(state, session_id), do: "waiting", else: live_status(state, session_id)
+  end
+
+  defp live_status(%{live: live}, session_id) do
+    Enum.find_value(live, "stopped", &entry_status(&1, session_id))
+  end
+
+  defp entry_status({_ref, {id, _pid, status}}, id), do: status
+  defp entry_status(_entry, _id), do: nil
+
+  defp waiting?(state, session_id) do
+    case Map.get(state, :asks, %{}) do
+      %{^session_id => set} -> MapSet.size(set) > 0
+      _none -> false
+    end
   end
 
   # A `:DOWN` of a session of the live set or of the caller of a place.
@@ -131,6 +162,22 @@ defmodule Helyx.Hub.Live do
       _ -> state
     end
   end
+
+  # A notice of a session from a process that is not the session's current
+  # process in the sessions Registry is stale: a new process of the session
+  # sends the newer state, and its notices replace the old entry. The Hub
+  # never lets a stale notice replace or delete the entry and starter of the
+  # current process (`live-records.md`).
+  def stale?(%{core: core}, session_id, pid) do
+    case Helyx.Session.pid(%Helyx.Session{id: session_id, core: core}) do
+      nil -> false
+      current -> current != pid
+    end
+  end
+
+  # The live set holds the session under a process that is not `pid`.
+  def replaces?(%{live: live}, session_id, pid),
+    do: Enum.any?(live, fn {_ref, {id, entry, _status}} -> id == session_id and entry != pid end)
 
   # One entry for each session: a new process of a session replaces the entry
   # of an old one whose `:DOWN` has not come yet, and drops its starter. An

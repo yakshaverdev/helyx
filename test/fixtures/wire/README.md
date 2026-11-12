@@ -1,8 +1,8 @@
 # Wire conformance fixtures
 
-Fixtures of the wire protocol 11 (`docs/features/wire-protocol.md`) as plain JSON, for a client or a server in any language. They describe protocol 10 as it is, for a server with no authority; a server under a Hub (`docs/features/hub.md`) has no case here (see "Rules in prose only"). Each file names its `protocol`; a protocol change fails the Elixir tests until the fixtures follow it.
+Fixtures of the wire protocol 13 (`docs/features/wire-protocol.md`) as plain JSON, for a client or a server in any language. They describe protocol 13 as it is, for a server with no authority; a server under a Hub (`docs/features/hub.md`) has no case here (see "Rules in prose only"), but the records feed of a user has its own file. Each file names its `protocol`; a protocol change fails the Elixir tests until the fixtures follow it.
 
-The Elixir code runs every case: `plugins/bundled/test/helyx/transport/web_socket_fixtures_test.exs` runs `client_frames.json` against the server, and `plugins/bundled/test/helyx/tui/wire_fixtures_test.exs` runs `server_frames.json` against the client of the TUI and `folds.json` against its view model. The runners are in the bundled project and read this folder by its path in the repository.
+The Elixir code runs every case: `plugins/bundled/test/helyx/transport/web_socket_fixtures_test.exs` runs `client_frames.json` against the server, and `plugins/bundled/test/helyx/tui/wire_fixtures_test.exs` runs `server_frames.json` against the client of the TUI and `folds.json` against its view model. The runners are in the bundled project and read this folder by its path in the repository. `clients/rust/core/tests/records.rs` runs `records.json` against the client core.
 
 ## The match rule
 
@@ -60,4 +60,20 @@ The feature doc lists what the prose does not pin down for an implementation tha
 
 ## `bounds.json`: the numbers and the error codes, once
 
-The bounds of a frame, a part, a request and a server frame, the waits and the caps of a connection, the deadlines of the operations in milliseconds, and the error codes in the order of the schema. The server and the client of the TUI read this file at compile time (`Helyx.Transport.WebSocket.Bounds`), so they hold no copy. `clients/rust/core/tests/bounds.rs` checks the constants of the Rust client against it. `docs/features/wire-protocol.md`, "Bounds", gives the reason of each number.
+The bounds of a frame, a part, a request and a server frame, the waits and the caps of a connection, the deadlines of the operations in milliseconds, the records feed's page, pending changes, subscribers, and the client's rows, and the error codes in the order of the schema. The server and the client of the TUI read this file at compile time (`Helyx.Transport.WebSocket.Bounds`), so they hold no copy. `clients/rust/core/tests/bounds.rs` checks the constants of the Rust client against it. `docs/features/wire-protocol.md`, "Bounds", gives the reason of each number, and `docs/features/live-records.md`, "Bounds", the reason of the records numbers.
+
+## `records.json`: a client of the records feed must pass every case
+
+The records feed of a user (`docs/features/live-records.md`), for a client
+that subscribes with `records.subscribe`:
+
+- `reply`: a `res` of `records.subscribe`, with its `record` list and `more`.
+  `expect` is the ordered ids of the rows and `more`.
+- `frames`: a frame after the `records.subscribe` reply: a `record` change, a
+  `record` removal, a `records` full list, or a `records_end`. `"valid"`: the
+  client takes it and applies it, or ends the feed for `records_end`.
+  `"broken"`: a contract break, as for a known kind with a broken shape.
+- `folds`: the steps of `folds.json` for the records feed. `client` is a
+  `records.subscribe` request with `{}` params. `server` is its reply or a
+  frame; `close` ends a connection; `expect` gives the ordered ids of the
+  rows, the status of each row, `more`, and whether the feed ended.

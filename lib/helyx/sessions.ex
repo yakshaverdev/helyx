@@ -62,6 +62,19 @@ defmodule Helyx.Sessions do
           }
   end
 
+  defmodule Sync do
+    @moduledoc """
+    The full state of a session that `Helyx.Sessions.sync/1` asks for, sent
+    from the session process to one watcher: the `Live` of the session and the
+    ids of its open asks, at the send. Every notice of that session that the
+    watcher gets after it is newer (`docs/features/session-feed.md`).
+    """
+    @enforce_keys [:live, :asks]
+    defstruct @enforce_keys
+
+    @type t :: %__MODULE__{live: Helyx.Sessions.Live.t(), asks: [String.t()]}
+  end
+
   @doc """
   The sessions that run in `core`, at most 64, in no order. Each session
   answers a call; the calls run in parallel under one deadline of
@@ -98,6 +111,31 @@ defmodule Helyx.Sessions do
   end
 
   @doc """
+  Sends one message to every session process of `core`, with no call and no
+  wait: each session that is open answers the calling watcher with a
+  `Helyx.Sessions.Sync` notice of its full state, through the same deliver
+  rule as every notice of the feed. A session before its open sends nothing;
+  a session that does not handle messages now answers when it does. The
+  caller must be a watcher of the feed of `core`, or it gets
+  `{:error, :not_watching}`. It returns at once
+  (`docs/features/session-feed.md`).
+  """
+  @spec sync(Helyx.Core.name()) :: :ok | {:error, :not_watching}
+  def sync(core) do
+    if Registry.keys(Helyx.Core.feed_registry(core), self()) == [] do
+      {:error, :not_watching}
+    else
+      pids =
+        Registry.select(Helyx.Core.sessions_registry(core), [
+          {{:"$1", :"$2", :_}, [{:is_binary, :"$1"}], [:"$2"]}
+        ])
+
+      for pid <- pids, do: send(pid, {:helyx_sync, self()})
+      :ok
+    end
+  end
+
+  @doc """
   Registers the calling process as a watcher of `core`: it gets the `Live`
   of every session of the Core at its open and at each change of status or
   model, and the events whose type is in `types`. A second `watch/2` by the
@@ -107,12 +145,14 @@ defmodule Helyx.Sessions do
 
     * `{:helyx_feed, session_pid, %Helyx.Sessions.Live{}}`
     * `{:helyx_feed, session_pid, %Helyx.Event{}}` for a named type
+    * `{:helyx_feed, session_pid, %Helyx.Sessions.Sync{}}` after `sync/1`
 
   Per session the order is the send order: the first `Live` of an instance
   comes before every event of it, and a `Live` with a new status comes before
-  the events of that status. Notices of two sessions have no order. No
-  notice tells of a stop: monitor `session_pid`, whose `:DOWN` reason
-  `Helyx.Session.end_reason/1` maps.
+  the events of that status. A `Sync` is the full state at its send, so every
+  notice of that session after it is newer. Notices of two sessions have no
+  order. No notice tells of a stop: monitor `session_pid`, whose `:DOWN`
+  reason `Helyx.Session.end_reason/1` maps.
 
   Returns the counter of the notices that the feed dropped, which
   `dropped/1` reads. A watcher whose mailbox is at

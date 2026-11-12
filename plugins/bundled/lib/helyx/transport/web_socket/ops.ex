@@ -94,11 +94,19 @@ defmodule Helyx.Transport.WebSocket.Ops do
   # one that holds it (2026-11-11). A key with no entry here is a bug.
   @option_atoms %{
     "after" => :after,
+    "answer" => :answer,
     "answers" => :answers,
+    "ask_id" => :ask_id,
+    "before" => :before,
     "cwd" => :cwd,
+    "id" => :id,
+    "instance_id" => :instance_id,
     "limit" => :limit,
     "model" => :model,
-    "tail" => :tail
+    "origin" => :origin,
+    "session" => :session,
+    "tail" => :tail,
+    "text" => :text
   }
 
   @core_codes Enum.map(@core_errors, &Atom.to_string/1)

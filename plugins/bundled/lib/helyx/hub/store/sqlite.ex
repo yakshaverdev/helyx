@@ -360,6 +360,10 @@ defmodule Helyx.Hub.Store.SQLite do
   @impl true
   defdelegate hub_records?(db, owner), to: Records
   @impl true
+  defdelegate owned(db, owner, limit), to: Records
+  @impl true
+  defdelegate rows(db, session_ids), to: Records
+  @impl true
   defdelegate schedules(db, owner, session_id), to: Schedules
   @impl true
   defdelegate schedule(db, id), to: Schedules
