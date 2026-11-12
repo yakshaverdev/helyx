@@ -85,6 +85,9 @@ enum Request {
         cwd: String,
     },
     Saved(Saved),
+    /// The records feed of the user (`docs/features/live-records.md`).
+    RecordsSubscribe,
+    RecordsUnsubscribe,
 }
 
 /// The params of a `sessions.saved` page: `cwd` for one folder, `after` the
@@ -255,6 +258,16 @@ impl Operation {
         Ok(Operation(Request::Saved(saved)))
     }
 
+    /// The records feed of the user (`docs/features/live-records.md`).
+    pub fn records_subscribe() -> Operation {
+        Operation(Request::RecordsSubscribe)
+    }
+
+    /// Ends the records subscription of the connection.
+    pub fn records_unsubscribe() -> Operation {
+        Operation(Request::RecordsUnsubscribe)
+    }
+
     /// The op of the schema.
     pub fn name(&self) -> &'static str {
         match &self.0 {
@@ -269,6 +282,8 @@ impl Operation {
             Request::Start { .. } => "start",
             Request::Resume { .. } | Request::ResumeFolder { .. } => "resume",
             Request::Saved(_) => "sessions.saved",
+            Request::RecordsSubscribe => "records.subscribe",
+            Request::RecordsUnsubscribe => "records.unsubscribe",
         }
     }
 
@@ -286,7 +301,9 @@ impl Operation {
             Request::Start { .. }
             | Request::Resume { .. }
             | Request::ResumeFolder { .. }
-            | Request::Saved(_) => None,
+            | Request::Saved(_)
+            | Request::RecordsSubscribe
+            | Request::RecordsUnsubscribe => None,
         }
     }
 
@@ -357,6 +374,7 @@ impl Operation {
                 }
                 Json::Object(pairs)
             }
+            Request::RecordsSubscribe | Request::RecordsUnsubscribe => object([]),
         }
     }
 }

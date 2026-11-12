@@ -8,6 +8,7 @@ use helyx_client_core::json;
 use helyx_client_core::operation::{Invalid, Operation};
 use helyx_client_net::{self, Command, Server, Shared};
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
@@ -24,14 +25,19 @@ pub trait NetListener: Send + Sync {
 
 /// The network layer of one server: it starts the thread at `new` and stops it
 /// at drop, which waits for the thread and thus for a connect or an upgrade
-/// that it waits on (at most their waits). Each method states one intent of
-/// the host; the callback reports what became of it. A method that refuses
-/// its input throws `NetError`, because nothing went on the wire.
+/// that it waits on (at most their waits), unless the drop runs on that thread
+/// itself. Each method states one intent of the host; the callback reports
+/// what became of it. A method that refuses its input throws `NetError`,
+/// because nothing went on the wire.
 #[derive(uniffi::Object)]
 pub struct Connection {
     /// The channel of the network thread; none after the drop takes it.
     commands: Mutex<Option<Sender<Command>>>,
     thread: Mutex<Option<JoinHandle<()>>>,
+    /// The number of the next send: 1 at the start of the connection, and one
+    /// more for each operation that a method sends, as the window numbers its
+    /// sends (`helyx_client_net::send::SendId`).
+    next_send: AtomicU64,
 }
 
 #[uniffi::export]
@@ -72,6 +78,7 @@ impl Connection {
         Ok(Arc::new(Connection {
             commands: Mutex::new(Some(commands)),
             thread: Mutex::new(Some(thread)),
+            next_send: AtomicU64::new(1),
         }))
     }
 
@@ -92,55 +99,65 @@ impl Connection {
     }
 
     /// Starts a session in `cwd`, and follows the one that the server makes.
-    pub fn start_session(&self, cwd: String) -> Result<(), NetError> {
+    /// Gives the number of the send, whose outcome comes in the snapshot.
+    pub fn start_session(&self, cwd: String) -> Result<u64, NetError> {
         self.perform(Operation::start(&cwd, None))
     }
 
-    /// Resumes the session `id`, and follows it.
-    pub fn resume_session(&self, id: String) -> Result<(), NetError> {
+    /// Resumes the session `id`, and follows it. Gives the number of the send,
+    /// whose outcome comes in the snapshot.
+    pub fn resume_session(&self, id: String) -> Result<u64, NetError> {
         self.perform(Ok(Operation::resume(&id)))
     }
 
-    /// Sends `text` as the prompt of a turn of `session`.
-    pub fn prompt(&self, session: String, text: String) -> Result<(), NetError> {
+    /// Sends `text` as the prompt of a turn of `session`. Gives the number of
+    /// the send, whose outcome comes in the snapshot.
+    pub fn prompt(&self, session: String, text: String) -> Result<u64, NetError> {
         self.perform(Operation::prompt(&session, &text))
     }
 
-    /// Sends `text` to the running turn of `session`.
-    pub fn steer(&self, session: String, text: String) -> Result<(), NetError> {
+    /// Sends `text` to the running turn of `session`. Gives the number of the
+    /// send, whose outcome comes in the snapshot.
+    pub fn steer(&self, session: String, text: String) -> Result<u64, NetError> {
         self.perform(Operation::steer(&session, &text))
     }
 
-    /// Sends `text` to the session after its running turn.
-    pub fn follow_up(&self, session: String, text: String) -> Result<(), NetError> {
+    /// Sends `text` to the session after its running turn. Gives the number
+    /// of the send, whose outcome comes in the snapshot.
+    pub fn follow_up(&self, session: String, text: String) -> Result<u64, NetError> {
         self.perform(Operation::follow_up(&session, &text))
     }
 
-    /// Aborts the running turn of `session`.
-    pub fn abort(&self, session: String) -> Result<(), NetError> {
+    /// Aborts the running turn of `session`. Gives the number of the send,
+    /// whose outcome comes in the snapshot.
+    pub fn abort(&self, session: String) -> Result<u64, NetError> {
         self.perform(Ok(Operation::abort(&session)))
     }
 
     /// Stops `session`: a running turn aborts first, and the session ends.
-    pub fn stop(&self, session: String) -> Result<(), NetError> {
+    /// Gives the number of the send, whose outcome comes in the snapshot.
+    pub fn stop(&self, session: String) -> Result<u64, NetError> {
         self.perform(Ok(Operation::stop(&session)))
     }
 
     /// Switches `session` to `model` for its next turn. The core checks the
-    /// ref before it goes.
-    pub fn set_model(&self, session: String, model: String) -> Result<(), NetError> {
+    /// ref before it goes. Gives the number of the send, whose outcome comes
+    /// in the snapshot.
+    pub fn set_model(&self, session: String, model: String) -> Result<u64, NetError> {
         self.perform(Operation::set_model(&session, &model))
     }
 
     /// Compacts `session` with `text` as the instructions, or with none when
-    /// the text is empty.
-    pub fn compact(&self, session: String, text: String) -> Result<(), NetError> {
+    /// the text is empty. Gives the number of the send, whose outcome comes
+    /// in the snapshot.
+    pub fn compact(&self, session: String, text: String) -> Result<u64, NetError> {
         self.perform(Operation::compact(&session, &text))
     }
 
     /// Answers the ask `ask_id` of `session`. `answer` is the answer as a JSON
-    /// text, which the core checks before it goes.
-    pub fn answer(&self, session: String, ask_id: String, answer: String) -> Result<(), NetError> {
+    /// text, which the core checks before it goes. Gives the number of the
+    /// send, whose outcome comes in the snapshot.
+    pub fn answer(&self, session: String, ask_id: String, answer: String) -> Result<u64, NetError> {
         let answer = json::decode(&answer).map_err(|_| NetError::Invalid {
             reason: "the answer is not JSON".to_owned(),
         })?;
@@ -164,22 +181,26 @@ impl Connection {
         }
     }
 
-    fn perform(&self, operation: Result<Operation, Invalid>) -> Result<(), NetError> {
+    fn perform(&self, operation: Result<Operation, Invalid>) -> Result<u64, NetError> {
         let operation = operation.map_err(|invalid| NetError::Invalid {
             reason: invalid.text().to_owned(),
         })?;
+        let send = self.next_send.fetch_add(1, Ordering::SeqCst);
         self.send(Command::Operation {
-            send: None,
+            send: Some(send),
             operation,
-        })
+        })?;
+        Ok(send)
     }
 }
 
 impl Drop for Connection {
     fn drop(&mut self) {
         // The wake-up ends the connection as a lost connection does, and the
-        // channel that the drop closes keeps the thread from opening another:
-        // the socket of the host closes within the poll of a read.
+        // closed channel ends the loop at its next wait, so the thread opens no
+        // new connection: the socket of the host closes within the poll of a
+        // read, the pause of a reconnect, or the wait of a connect or an
+        // upgrade.
         let sender = self
             .commands
             .lock()
@@ -194,7 +215,12 @@ impl Drop for Connection {
             .unwrap_or_else(PoisonError::into_inner)
             .take();
         if let Some(thread) = thread {
-            let _ = thread.join();
+            // A host that releases the last handle of the connection in
+            // `on_snapshot` drops it on the thread of the network layer: a
+            // join of that thread would wait for itself.
+            if thread.thread().id() != std::thread::current().id() {
+                let _ = thread.join();
+            }
         }
     }
 }

@@ -10,15 +10,18 @@ defmodule Helyx.Test.HubWake do
   alias Helyx.Test.WireClient, as: Client
   alias Helyx.Transport.WebSocket
 
-  def serve(%{tmp_dir: dir}, hub_opts \\ []) do
+  def serve(%{tmp_dir: dir} = context, hub_opts \\ []) do
     data = Path.join(dir, "data")
     File.mkdir_p!(data)
     File.chmod!(data, 0o700)
     core = :"core_#{System.unique_integer([:positive])}"
 
+    core_opts = if ms = context[:idle_stop_ms], do: [idle_stop_ms: ms], else: []
+
     ExUnit.Callbacks.start_supervised!(
       {Helyx.Core,
-       name: core, plugins: [Helyx.Provider.Fake, Helyx.Test.Tool.Block], sessions_dir: data},
+       [name: core, plugins: [Helyx.Provider.Fake, Helyx.Test.Tool.Block], sessions_dir: data] ++
+         core_opts},
       id: :core
     )
 

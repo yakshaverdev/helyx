@@ -8,13 +8,14 @@ use common::{at, load, matches, observe};
 use helyx_client_core::Broken;
 use helyx_client_core::client::{Client, Follow, Hold, MAX_IN_FLIGHT, Next, Output, Refusal, Wait};
 use helyx_client_core::json::{Json, Limits, WIRE, decode};
+use helyx_client_core::operation::Operation;
 use helyx_client_core::parts::{self, FRAME_BYTES, PART_BYTES, REQUEST_BYTES, TooLarge};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
 const CHALLENGE: &str =
     r#"{"type":"challenge","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}"#;
-const WELCOME: &str = r#"{"type":"welcome","protocol":10}"#;
+const WELCOME: &str = r#"{"type":"welcome","protocol":13}"#;
 
 /// The frames that the client sends among `outputs`, decoded.
 fn sent(outputs: &[Output]) -> Vec<Value> {
@@ -31,7 +32,7 @@ fn sent(outputs: &[Output]) -> Vec<Value> {
 fn welcomed(client: &mut Client) -> Vec<Output> {
     client.connect();
     let hello = client.receive(CHALLENGE).unwrap();
-    assert_eq!(sent(&hello), [json!({"type": "hello", "protocol": 10})]);
+    assert_eq!(sent(&hello), [json!({"type": "hello", "protocol": 13})]);
     let outputs = client.receive(WELCOME).unwrap();
     assert_eq!(outputs[0], Output::Welcome);
     outputs
@@ -172,7 +173,7 @@ fn a_reconnect_after_a_slow_close_subscribes_with_after() {
     assert_eq!(
         resubscribe,
         [json!({"type": "req", "id": "0", "op": "subscribe",
-                "params": {"session": "s1", "after": {"instance_id": "i1", "seq": 5}}})]
+                "params": {"session": "s1", "after": {"instance_id": "i1", "seq": 5}, "answers": true}})]
     );
     // A replay that crosses 1,024 acks its last seq.
     let replay: Vec<Value> = (6..=1_030)
@@ -211,6 +212,13 @@ fn a_close_before_the_welcome_or_after_a_break_stops() {
     let refused = r#"{"type":"refused","code":"protocol","server_protocol":4}"#;
     assert_eq!(client.receive(refused).unwrap(), [Output::Refused(4)]);
     assert_eq!(client.closed(Some(4426)).next, Next::Stop);
+    // A refused token stops after a welcome too: the server of the data
+    // folder makes a new token at each start, and a reconnect would send
+    // the old one for ever.
+    let mut client = following(4);
+    assert_eq!(client.closed(None).next, Next::Reconnect);
+    client.connect();
+    assert_eq!(client.closed(Some(4401)).next, Next::Stop);
     // Before any welcome, a failed open stops.
     assert_eq!(Client::new(None).closed(None).next, Next::Stop);
 }
@@ -227,8 +235,8 @@ fn no_handshake_frame_follows_its_answer() {
     let mut client = Client::new(None);
     client.connect();
     client.receive(CHALLENGE).unwrap();
-    let refused = r#"{"type":"refused","code":"protocol","server_protocol":11}"#;
-    assert_eq!(client.receive(refused).unwrap(), [Output::Refused(11)]);
+    let refused = r#"{"type":"refused","code":"protocol","server_protocol":14}"#;
+    assert_eq!(client.receive(refused).unwrap(), [Output::Refused(14)]);
     assert_eq!(client.receive(WELCOME), Err(Broken("no connection")));
     // A second challenge ends the handshake, and so does a nonce of the
     // wrong size.
@@ -262,8 +270,8 @@ fn after_a_welcome_a_failed_open_reconnects() {
     assert_eq!(client.closed(None).next, Next::Reconnect);
     client.connect();
     client.receive(CHALLENGE).unwrap();
-    let refused = r#"{"type":"refused","code":"protocol","server_protocol":11}"#;
-    assert_eq!(client.receive(refused).unwrap(), [Output::Refused(11)]);
+    let refused = r#"{"type":"refused","code":"protocol","server_protocol":14}"#;
+    assert_eq!(client.receive(refused).unwrap(), [Output::Refused(14)]);
     assert_eq!(client.closed(Some(4426)).next, Next::Stop);
     let mut client = following(4);
     assert!(client.receive(&notice(9)).is_err());
@@ -330,7 +338,7 @@ fn instance_changed_of_history_subscribes_again() {
     let outputs = client
         .receive(r#"{"type":"session_end","sub":"0","reason":"stopped"}"#)
         .unwrap();
-    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}});
+    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}, "answers": true});
     assert_eq!(sent(&outputs)[0]["params"], again);
     // The subscription has ended, and the wanted session is held: a page of
     // the instance of its state renews it, and the subscribe goes at once.
@@ -381,7 +389,10 @@ fn the_requests_in_flight_are_bounded() {
     let outputs = client
         .receive(r#"{"type":"res","id":"1","ok":true,"result":{}}"#)
         .unwrap();
-    assert_eq!(sent(&outputs)[0]["params"], json!({"session": "s2"}));
+    assert_eq!(
+        sent(&outputs)[0]["params"],
+        json!({"session": "s2", "answers": true})
+    );
     assert_eq!(client.request("abort", json_params()), Err(Refusal::Busy));
     // A reply of no request in flight is a break.
     assert!(
@@ -677,7 +688,7 @@ fn a_renewal_waits_for_a_free_place() {
     let outputs = client
         .receive(r#"{"type":"res","id":"2","ok":true,"result":{}}"#)
         .unwrap();
-    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}});
+    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}, "answers": true});
     assert_eq!(sent(&outputs)[0]["params"], again);
 }
 
@@ -696,7 +707,10 @@ fn a_huge_instance_id_subscribes_with_no_after() {
     }
     assert_eq!(client.closed(None).next, Next::Reconnect);
     let frames = sent(&welcomed(&mut client));
-    assert_eq!(frames[0]["params"], json!({"session": "s1"}));
+    assert_eq!(
+        frames[0]["params"],
+        json!({"session": "s1", "answers": true})
+    );
 }
 
 #[test]
@@ -782,7 +796,7 @@ fn a_subscribe_waiting_for_its_old_subscription() {
     let unsubscribe = id_of(&client.unsubscribe("s1"));
     assert_eq!(client.subscribe("s1"), Ok(vec![]));
     let outputs = client.receive(&res(&unsubscribe, json!({}))).unwrap();
-    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}});
+    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}, "answers": true});
     assert_eq!(sent(&outputs)[0]["params"], again);
 
     let mut client = following(4);
@@ -907,7 +921,10 @@ fn a_subscribe_waits_for_a_place_among_the_live_subscriptions() {
     let unsubscribe = id_of(&client.unsubscribe("s05"));
     assert_eq!(client.subscribe("a"), Ok(vec![]));
     let outputs = client.receive(&res(&unsubscribe, json!({}))).unwrap();
-    assert_eq!(sent(&outputs)[0]["params"], json!({"session": "a"}));
+    assert_eq!(
+        sent(&outputs)[0]["params"],
+        json!({"session": "a", "answers": true})
+    );
 }
 
 /// A statement again at the cap is taken; a 17th session is not.
@@ -959,7 +976,7 @@ fn a_late_refusal_holds_no_follow_stated_after_it() {
     assert_eq!(client.follow("s1"), Some(Follow::Waiting(Wait::Ending)));
     let outputs = client.receive(&res_error(&unsubscribe, "busy")).unwrap();
     assert!(!outputs.iter().any(|o| matches!(o, Output::Failed { .. })));
-    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}});
+    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}, "answers": true});
     assert_eq!(sent(&outputs)[0]["params"], again);
     assert_eq!(client.follow("s1"), Some(Follow::Subscribing));
     // The same `busy` with the sub still live: the follow stated after it
@@ -1050,7 +1067,10 @@ fn follow_tells_why_a_followed_session_has_no_subscription() {
     let unsubscribe = id_of(&client.unsubscribe("s05"));
     let outputs = client.receive(&res(&unsubscribe, json!({}))).unwrap();
     let subscribe = sent(&outputs).remove(0);
-    assert_eq!(subscribe["params"], json!({"session": "a"}));
+    assert_eq!(
+        subscribe["params"],
+        json!({"session": "a", "answers": true})
+    );
     // A refused subscribe holds; 16 requests in flight make a wait.
     client
         .receive(&res_error(&subscribe["id"], "session_not_found"))
@@ -1078,7 +1098,10 @@ fn a_late_answer_to_a_forgotten_session_holds_no_new_follow() {
     }
     let outputs = client.receive(&res_error(&unsubscribe, "busy")).unwrap();
     assert!(!outputs.iter().any(|o| matches!(o, Output::Failed { .. })));
-    assert_eq!(sent(&outputs)[0]["params"], json!({"session": "s1"}));
+    assert_eq!(
+        sent(&outputs)[0]["params"],
+        json!({"session": "s1", "answers": true})
+    );
     assert_eq!(client.follow("s1"), Some(Follow::Subscribing));
 }
 
@@ -1147,7 +1170,10 @@ fn a_late_refused_subscribe_holds_no_later_follow() {
     assert_eq!(client.subscribe("s1"), Ok(vec![]));
     let outputs = client.receive(&res_error(&first, "busy")).unwrap();
     assert!(!outputs.iter().any(|o| matches!(o, Output::Failed { .. })));
-    assert_eq!(sent(&outputs)[0]["params"], json!({"session": "s1"}));
+    assert_eq!(
+        sent(&outputs)[0]["params"],
+        json!({"session": "s1", "answers": true})
+    );
 }
 
 /// A sub id of the server over the request size, which no `unsubscribe` can
@@ -1177,7 +1203,7 @@ fn a_sub_id_over_the_request_size_holds_with_no_frame() {
 #[test]
 fn a_page_of_an_older_instance_keeps_the_replaced_one() {
     let older = || decode(r#"{"session":"s1","instance_id":"i0","before":"m1"}"#).unwrap();
-    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}});
+    let again = json!({"session": "s1", "after": {"instance_id": "i1", "seq": 4}, "answers": true});
     // The replies, then the end.
     let mut client = following(4);
     let (current, _) = client.request("history", history_params()).unwrap();
@@ -1211,4 +1237,87 @@ fn a_replay_of_a_replaced_instance_keeps_it_replaced() {
     client.receive(&res(&subscribe[0]["id"], replay)).unwrap();
     let outputs = client.receive(&stopped("1")).unwrap();
     assert_eq!(sent(&outputs)[0]["op"], json!("subscribe"));
+}
+
+/// A `record` frame comes after the `records.subscribe` reply and before the
+/// `records.unsubscribe` reply (`docs/features/live-records.md`, O7).
+#[test]
+fn the_records_feed_takes_its_frames_between_its_reply_and_its_unsubscribe() {
+    let change = r#"{"type":"record","change":{"kind":"removed","session":"s1"}}"#;
+
+    // A record frame before the reply is a break, and the connection ends.
+    let mut before = Client::new(None);
+    welcomed(&mut before);
+    assert_eq!(before.receive(change), Err(Broken("record frame")));
+
+    let mut client = Client::new(None);
+    welcomed(&mut client);
+
+    let (subscribe, _) = client.perform(Operation::records_subscribe()).unwrap();
+    let reply = format!(
+        r#"{{"type":"res","id":"{subscribe}","ok":true,"result":{{"more":true,"records":[]}}}}"#
+    );
+    assert_eq!(client.receive(&reply).unwrap(), [Output::RecordsChanged]);
+    assert!(client.records().rows().is_empty());
+    assert!(client.records().more());
+
+    assert_eq!(client.receive(change).unwrap(), [Output::RecordsChanged]);
+
+    let (unsubscribe, _) = client.perform(Operation::records_unsubscribe()).unwrap();
+    let reply = format!(r#"{{"type":"res","id":"{unsubscribe}","ok":true,"result":{{}}}}"#);
+    assert!(matches!(
+        client.receive(&reply).unwrap().as_slice(),
+        [Output::Reply { .. }]
+    ));
+    assert_eq!(client.receive(change), Err(Broken("record frame")));
+}
+
+/// The server sends `records_end` when the Hub ends; the rows stay, the feed
+/// is ended, and a record frame after it is a break.
+#[test]
+fn the_records_feed_ends_with_records_end() {
+    let change = r#"{"type":"record","change":{"kind":"removed","session":"s1"}}"#;
+    let mut client = Client::new(None);
+    welcomed(&mut client);
+
+    let (subscribe, _) = client.perform(Operation::records_subscribe()).unwrap();
+    let reply = format!(
+        r#"{{"type":"res","id":"{subscribe}","ok":true,"result":{{"more":false,"records":[]}}}}"#
+    );
+    client.receive(&reply).unwrap();
+
+    let outputs = client.receive(r#"{"type":"records_end"}"#).unwrap();
+    assert_eq!(outputs, [Output::RecordsEnded]);
+    assert!(client.records().ended());
+    assert_eq!(client.receive(change), Err(Broken("record frame")));
+}
+
+/// A refused `records.unsubscribe` leaves the subscription live, so its
+/// frames still apply; only an ok reply ends it.
+#[test]
+fn a_refused_records_unsubscribe_keeps_the_feed_live() {
+    let change = r#"{"type":"record","change":{"kind":"removed","session":"s1"}}"#;
+    let mut client = Client::new(None);
+    welcomed(&mut client);
+
+    let (subscribe, _) = client.perform(Operation::records_subscribe()).unwrap();
+    let reply = format!(
+        r#"{{"type":"res","id":"{subscribe}","ok":true,"result":{{"more":false,"records":[]}}}}"#
+    );
+    client.receive(&reply).unwrap();
+
+    let (unsubscribe, _) = client.perform(Operation::records_unsubscribe()).unwrap();
+    let refused = format!(
+        r#"{{"type":"res","id":"{unsubscribe}","ok":false,"error":{{"code":"busy","text":"busy"}}}}"#
+    );
+    assert!(matches!(
+        client.receive(&refused).unwrap().as_slice(),
+        [Output::Reply { .. }]
+    ));
+    assert_eq!(client.receive(change).unwrap(), [Output::RecordsChanged]);
+
+    let (unsubscribe, _) = client.perform(Operation::records_unsubscribe()).unwrap();
+    let ok = format!(r#"{{"type":"res","id":"{unsubscribe}","ok":true,"result":{{}}}}"#);
+    client.receive(&ok).unwrap();
+    assert_eq!(client.receive(change), Err(Broken("record frame")));
 }

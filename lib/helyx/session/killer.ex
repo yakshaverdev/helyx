@@ -1,8 +1,8 @@
 defmodule Helyx.Session.Killer do
   @moduledoc false
-  # A kill of a process at a deadline that can be moved and cancelled: the
-  # deadline of the open of a session (docs/features/session-lock.md) and of a
-  # removal from a session file (docs/features/session-edit.md).
+  # A kill of a process at a deadline that can be cancelled: the deadline of
+  # the open of a session (docs/features/session-lock.md) and of a removal
+  # from a session file (docs/features/session-edit.md).
   # `:timer.kill_after/1` cannot be cancelled once it fires: its kill can reach
   # the process after the cancel. `cancel/1` and `disarm/1` wait for the end of
   # the killer, and a signal of a process comes before its `:DOWN`, so no kill
@@ -18,10 +18,6 @@ defmodule Helyx.Session.Killer do
   # and the monitor of the caller on it.
   def arm(target \\ self(), ms),
     do: spawn_monitor(fn -> kill_at(target, Process.monitor(target), ms) end)
-
-  # A move restarts the wait with its own ms. One that comes after the kill finds
-  # no killer: the kill was sent.
-  def move({pid, _monitor}, ms), do: send(pid, {:move, ms})
 
   def cancel({pid, monitor}) do
     send(pid, :cancel)
@@ -48,7 +44,6 @@ defmodule Helyx.Session.Killer do
   defp kill_at(owner, monitor, ms) do
     receive do
       :cancel -> :ok
-      {:move, ms} -> kill_at(owner, monitor, ms)
       {:DOWN, ^monitor, :process, _pid, _reason} -> :ok
     after
       ms ->

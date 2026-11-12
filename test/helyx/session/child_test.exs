@@ -5,15 +5,20 @@ defmodule Helyx.Session.ChildTest do
   use ExUnit.Case, async: true
 
   import Helyx.Test.Events, only: [collect_until: 1]
-  import Helyx.Test.SessionCase, only: [start_core: 1, final_text: 1]
+  import Helyx.Test.SessionCase, only: [start_core: 2, final_text: 1]
 
   alias Helyx.Session
   alias Helyx.Session.File.Scan
 
   @moduletag :tmp_dir
 
-  setup do
-    %{core: start_core([Helyx.Test.Provider, Helyx.Test.Tool.Upcase, Helyx.Test.Tool.Context])}
+  setup %{tmp_dir: dir} do
+    %{
+      core:
+        start_core([Helyx.Test.Provider, Helyx.Test.Tool.Upcase, Helyx.Test.Tool.Context],
+          sessions_dir: dir
+        )
+    }
   end
 
   defp parent(call_id), do: %{session_id: "parent000000", call_id: call_id}
@@ -42,7 +47,7 @@ defmodule Helyx.Session.ChildTest do
       assert start(core, dir, tools: bad) == {:error, :invalid_tools}
     end
 
-    assert File.ls!(dir) == []
+    assert File.ls!(dir) -- ["core.lock"] == []
   end
 
   test "the header links the parent; the list and the newest pick leave the child out", %{
@@ -139,6 +144,6 @@ defmodule Helyx.Session.ChildTest do
       assert start(core, dir, parent: bad) == {:error, :invalid_parent}
     end
 
-    assert File.ls!(dir) == []
+    assert File.ls!(dir) -- ["core.lock"] == []
   end
 end

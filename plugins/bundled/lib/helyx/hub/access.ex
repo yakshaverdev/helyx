@@ -14,9 +14,6 @@ defmodule Helyx.Hub.Access do
 
   # The deadline of the find of the existence check (decision 8).
   @find_ms 5_000
-  # The bound of the `model` of a stored record (Bounds); the bound of its
-  # `cwd` is read from `Params`.
-  @max_model_bytes 256
   # The deadline of a `hub.*` operation on the wire, 6,000 ms, less 500 ms
   # for the reply: a write of the op commits before it or not at all. The
   # find of the existence check takes up to 5,000 ms of it.
@@ -77,10 +74,7 @@ defmodule Helyx.Hub.Access do
 
   def check(arg, auth, "resume", %{"id" => id} = params),
     do:
-      passed(
-        Hub.call(arg.hub, {:resume, auth, id, found(arg, id) != nil, running?(arg, id)}),
-        params
-      )
+      passed(Hub.call(arg.hub, {:resume, auth, id, exists?(arg, id), running?(arg, id)}), params)
 
   # The resume of a folder becomes the resume of the newest session of the
   # folder that the user owns (decision 7).
@@ -92,20 +86,155 @@ defmodule Helyx.Hub.Access do
   end
 
   def check(arg, auth, op, %{"session" => id} = params) when op in @read_ops,
-    do: passed(Hub.call(arg.hub, {:session, auth, :read, id, running?(arg, id), nil}), params)
+    do: passed(Hub.call(arg.hub, {:session, auth, :read, id, exists?(arg, id), nil}), params)
 
   def check(arg, auth, op, %{"session" => id, "text" => text} = params) when op in @text_ops,
     do:
       passed(
         Hub.call(
           arg.hub,
-          {:session, auth, :write, id, running?(arg, id), {:touch, Params.cut(text)}}
+          {:session, auth, :write, id, exists?(arg, id), {:touch, Params.cut(text)}}
         ),
         params
       )
 
   def check(arg, auth, op, %{"session" => id} = params) when op in @write_ops,
     do: passed(Hub.call(arg.hub, {:session, auth, :write, id, running?(arg, id), nil}), params)
+
+  # A text op to a session that a stop unloaded resumes it as the `resume` op
+  # does: the place of the user's live sessions, the Core resume, and the
+  # starter (docs/features/idle-unload.md). A session that runs needs none.
+  @impl true
+  def load(arg, auth, op, %{"session" => id}) when op in @text_ops do
+    if running?(arg, id) do
+      :ok
+    else
+      case resume(arg, auth, id) do
+        {:ok, _session} -> :ok
+        {:close, 4403} = close -> close
+        {:error, reason} -> load_error(reason)
+      end
+    end
+  end
+
+  def load(_arg, _auth, _op, _params), do: :ok
+
+  # The load of a stopped session for a text, shared by the wire authority
+  # and the Elixir API (`Helyx.Hub.Api`): the place of the user's live
+  # sessions, the Core resume, and the starter. A session that runs is
+  # attached with no place; a load stops only a process that its own resume
+  # started, so a loader that attached leaves the process of the loader that
+  # started it alone. A place that a load took goes back when a later step
+  # fails. The result is `{:ok, session}`, `{:close, 4403}`, or
+  # `{:error, code}`, each caller mapping the error at its edge.
+  @doc false
+  @spec resume(map(), map(), String.t()) ::
+          {:ok, Helyx.Session.t()} | {:error, term()} | {:close, 4403}
+  def resume(arg, auth, id) do
+    if running?(arg, id) do
+      resume_check(arg, auth, id)
+    else
+      load_stopped(arg, auth, id)
+    end
+  end
+
+  # A session that runs, or that another loader started between the check
+  # for running and the check's place: an attach takes no place, so two
+  # loads of one session take one place.
+  defp load_stopped(arg, auth, id) do
+    case check(arg, auth, "resume", %{"id" => id}) do
+      {:ok, _params} ->
+        resume_core(arg, auth, id)
+
+      {:error, "too_many_sessions"} = error ->
+        if running?(arg, id), do: resume_check(arg, auth, id), else: error
+
+      {:error, code} ->
+        {:error, code_atom(code)}
+
+      {:close, 4403} = close ->
+        close
+    end
+  end
+
+  defp resume_check(arg, auth, id) do
+    case check(arg, auth, "resume", %{"id" => id}) do
+      {:ok, _params} -> resume_core(arg, auth, id)
+      {:error, code} -> {:error, code_atom(code)}
+      {:close, 4403} = close -> close
+    end
+  end
+
+  defp resume_core(arg, auth, id) do
+    case Helyx.Sessions.resume(arg.core, id: id) do
+      {:ok, session, origin} ->
+        bind(arg, auth, id, session, origin)
+
+      {:error, reason} ->
+        give_back(arg)
+        {:error, resume_error(reason)}
+    end
+  end
+
+  # The starter binds the session to its user; a session with none acts for
+  # no user in its coordinator tools, so the caller gets no session.
+  defp bind(arg, auth, id, session, origin) do
+    case hub_call(arg.hub, {:resumed, auth, id, Helyx.Session.pid(session)}) do
+      :ok ->
+        {:ok, session}
+
+      other ->
+        if origin == :started, do: Helyx.Sessions.stop(session)
+        give_back(arg)
+        {:error, hub_error(other)}
+    end
+  end
+
+  # The Hub calls of a load: an exit of a call is a timeout, as on the wire,
+  # and the place goes back.
+  defp hub_call(hub, request) do
+    Hub.call(hub, request)
+  catch
+    :exit, _reason -> {:error, :timeout}
+  end
+
+  # The place of decision 14 goes back at once; an attach holds none, so a
+  # release changes nothing.
+  defp give_back(arg) do
+    _ = hub_call(arg.hub, :release)
+    :ok
+  end
+
+  defp hub_error(:revoked), do: :revoked
+  defp hub_error({:error, code}), do: code
+  defp hub_error(_other), do: :timeout
+
+  # The check gives its codes as names of the wire; a load gives the codes of
+  # the Hub and Core as atoms, and each caller maps them.
+  defp code_atom("session_not_found"), do: :session_not_found
+  defp code_atom("not_found"), do: :not_found
+  defp code_atom("forbidden"), do: :forbidden
+  defp code_atom("too_many_sessions"), do: :too_many_sessions
+  defp code_atom("busy"), do: :busy
+  defp code_atom("timeout"), do: :timeout
+  defp code_atom(_other), do: :failed
+
+  # A file that a resume does not find answers as a missing session.
+  defp resume_error(reason) when reason in [:not_found, :invalid_id], do: :session_not_found
+  defp resume_error(reason), do: reason
+
+  # A client of a text op knows these errors; a load that fails for another
+  # reason answers `failed`, so no client meets a code that its text does not
+  # name. A revoked credential still closes the connection.
+  defp load_error(:revoked), do: {:close, 4403}
+
+  defp load_error(reason) when reason in [:session_not_found, :not_found, :invalid_id],
+    do: {:error, "session_not_found"}
+
+  defp load_error(reason) when reason in [:forbidden, :busy, :timeout],
+    do: {:error, Atom.to_string(reason)}
+
+  defp load_error(_reason), do: {:error, "failed"}
 
   # The existence check of decision 8, before the Hub call. An operation
   # that needs a running session asks the Registry.
@@ -131,7 +260,8 @@ defmodule Helyx.Hub.Access do
   # bounds neither the project folders nor their files: a find that does not
   # end in time finds nothing. Every value, from the disk or from Core,
   # passes one check: a `cwd` or `model` that a record cannot hold finds
-  # nothing.
+  # nothing. A parent link that does not pass its check is dropped, as at a
+  # resume of the session.
   defp found(%{dir: nil} = arg, id), do: checked(live(arg, id))
   defp found(arg, id), do: checked(file(arg.dir, id) || running(arg, id))
 
@@ -139,8 +269,11 @@ defmodule Helyx.Hub.Access do
     task = Task.async(fn -> Helyx.Session.File.Scan.find(dir, id) end)
 
     case Task.yield(task, @find_ms) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {:ok, _path, %{"cwd" => cwd} = header}} -> %{cwd: cwd, model: header["model"]}
-      _ -> nil
+      {:ok, {:ok, _path, %{"cwd" => cwd} = header}} ->
+        %{cwd: cwd, model: header["model"], parent: parent(header["parent"])}
+
+      _ ->
+        nil
     end
   end
 
@@ -148,16 +281,25 @@ defmodule Helyx.Hub.Access do
 
   defp live(arg, id) do
     Enum.find_value(Helyx.Sessions.list_live(arg.core), fn
-      %{id: ^id, cwd: cwd, model: model} -> %{cwd: cwd, model: model}
-      _ -> nil
+      %{id: ^id, cwd: cwd, model: model, parent: parent} ->
+        %{cwd: cwd, model: model, parent: parent}
+
+      _ ->
+        nil
     end)
   end
 
-  # A `cwd` is any UTF-8 path of 1 to 4,096 bytes; a model a text of 1 to
-  # 256 bytes, the bound of a model ref (Bounds).
+  defp parent(link) do
+    case Helyx.Session.Input.header_parent(link) do
+      {:ok, checked} -> checked
+      {:error, :invalid_parent} -> nil
+    end
+  end
+
+  # The `cwd` and `model` of a record hold their bounds, else the find finds
+  # nothing (`Params.record_fields?/2`).
   defp checked(%{cwd: cwd, model: model} = found) do
-    cwd? = is_binary(cwd) and byte_size(cwd) in 1..Params.max_cwd_bytes() and String.valid?(cwd)
-    if cwd? and Params.text?(model, 1, @max_model_bytes), do: found
+    if Params.record_fields?(cwd, model), do: found
   end
 
   defp checked(nil), do: nil
@@ -248,8 +390,11 @@ defmodule Helyx.Hub.Access do
 
   defp hub_op(arg, auth, "hub.records.search", filters) do
     case Hub.call(arg.hub, {:record_search, auth, filters}, arg.until) do
-      {:ok, views, next} -> {:ok, %{"items" => Enum.map(views, &view/1), "next" => next}}
-      other -> error(other)
+      {:ok, views, next} ->
+        {:ok, %{"items" => Enum.map(views, &record_wire/1), "next" => next}}
+
+      other ->
+        error(other)
     end
   end
 
@@ -284,7 +429,7 @@ defmodule Helyx.Hub.Access do
   defp token(token),
     do: %{"id" => token.id, "name" => token.name, "created_at" => token.created_at}
 
-  defp record({:ok, view}), do: {:ok, %{"record" => view(view)}}
+  defp record({:ok, view}), do: {:ok, %{"record" => record_wire(view)}}
   defp record(other), do: error(other)
 
   defp empty(:ok), do: {:ok, %{}}
@@ -300,20 +445,8 @@ defmodule Helyx.Hub.Access do
 
   defp project(p), do: %{"id" => p.id, "name" => p.name, "created_at" => p.created_at}
 
-  defp view(v) do
-    %{
-      "session" => v.session,
-      "owner" => %{"id" => v.owner.id, "name" => v.owner.name},
-      "project" => v.project,
-      "title" => v.title,
-      "labels" => v.labels,
-      "visibility" => v.visibility,
-      "archived" => v.archived,
-      "stored" => v.stored,
-      "created_at" => v.created_at,
-      "updated_at" => v.updated_at
-    }
-  end
+  # The one shape of a record on the wire, shared with the records feed.
+  defp record_wire(view), do: Helyx.Hub.Records.wire(view)
 
   # The codes of the Hub operations and of `sessions.saved`, with the text
   # of the code; a name that another project of the user has is
@@ -339,6 +472,20 @@ defmodule Helyx.Hub.Access do
   @impl true
   def webhook(arg, id, request), do: Helyx.Hub.Access.Subscriptions.webhook(arg, id, request)
 
+  # The records subscription of the connection (`docs/features/live-records.md`):
+  # one Hub call registers the process and gives the first list. The Hub
+  # process it names is the one that the transport monitors, so a Hub that
+  # restarts ends the subscription.
+  @impl true
+  def records(arg, auth, pid) do
+    hub = GenServer.whereis(arg.hub)
+
+    case Hub.call(arg.hub, {:records_subscribe, auth, pid}) do
+      {:ok, result} -> {:ok, result, hub}
+      other -> error(other)
+    end
+  end
+
   @impl true
   def result(arg, auth, "sessions.live", _params, %{"sessions" => lines} = result) do
     case Hub.call(arg.hub, {:readable, auth, Enum.map(lines, & &1["id"])}) do
@@ -352,7 +499,12 @@ defmodule Helyx.Hub.Access do
   end
 
   def result(arg, auth, "start", params, %{"session" => id} = result) do
-    start = %{session_id: id, cwd: params["cwd"], model: Map.get(params, "model")}
+    start = %{
+      session_id: id,
+      cwd: params["cwd"],
+      model: Map.get(params, "model"),
+      thread_of: Map.get(params, "thread_of")
+    }
 
     case Hub.call(arg.hub, {:started, auth, start, session_pid(arg, id)}) do
       :ok -> {:ok, result}

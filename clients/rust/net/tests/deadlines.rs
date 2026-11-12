@@ -86,9 +86,11 @@ fn the_silence_holds_while_sends_stall() {
     let (elapsed, _) = after_welcome(waits, commands, |_, stopped| {
         let _ = stopped.recv();
     });
-    // Ends at the silence after the welcome, far below the send wait of 20 s.
+    // Ends at the silence after the welcome, not at the send wait. A loaded
+    // machine passes any margin near the silence, so the bound is the send
+    // wait, which the wrong rule would reach.
     assert!(elapsed >= waits.silence, "{elapsed:?}");
-    assert!(elapsed < waits.silence + LOAD_MARGIN, "{elapsed:?}");
+    assert!(elapsed < waits.send, "{elapsed:?}");
 }
 
 /// The deadline of a batch of sends: a batch that a slow reader takes
@@ -201,7 +203,7 @@ fn a_failed_send_after_a_binary_frame_is_a_break() {
     let (server, stub) = stub::one(move |mut ws| {
         challenge(&mut ws);
         let _hello = next_text(&mut ws);
-        let welcome = br#"{"type":"welcome","protocol":10}"#;
+        let welcome = br#"{"type":"welcome","protocol":13}"#;
         let mut bytes = vec![0x81, welcome.len() as u8];
         bytes.extend(welcome);
         bytes.extend([0x02, 0x01, b'x']);
@@ -240,7 +242,7 @@ fn a_failed_send_keeps_the_frames_read_before_it() {
     let (server, stub) = stub::one(move |mut ws| {
         challenge(&mut ws);
         let _hello = next_text(&mut ws);
-        let welcome = br#"{"type":"welcome","protocol":10}"#;
+        let welcome = br#"{"type":"welcome","protocol":13}"#;
         let mut bytes = vec![0x81, welcome.len() as u8];
         bytes.extend(welcome);
         // The subscribe of the follow takes id 0 at the welcome, and

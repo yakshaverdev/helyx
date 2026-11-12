@@ -8,7 +8,7 @@ use net::stub;
 use helyx_client_core::json::{Json, decode};
 use helyx_client_net as net;
 use net::Server;
-use net::socket::WAITS;
+use net::socket::{WAITS, Waits};
 use net::{Command, RequestState, Shared};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{Receiver, channel};
@@ -82,7 +82,7 @@ fn a_follow_survives_a_slow_close() {
     let subscribe = request(&mut ws, "subscribe");
     assert_eq!(
         subscribe.get("params"),
-        Some(&decode(r#"{"session":"s1"}"#).unwrap())
+        Some(&decode(r#"{"session":"s1","answers":true}"#).unwrap())
     );
     ws.send(Message::text(format!(
         r#"{{"type":"res","id":"{}","ok":true,"result":{{"sub":"0","snapshot":{}}}}}"#,
@@ -105,7 +105,7 @@ fn a_follow_survives_a_slow_close() {
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     welcome(&mut ws, token);
     let texts = [next_text(&mut ws), next_text(&mut ws)];
-    let after = r#""params":{"session":"s1","after":{"instance_id":"i1","seq":5}}"#;
+    let after = r#""params":{"session":"s1","after":{"instance_id":"i1","seq":5},"answers":true}"#;
     assert!(texts.iter().any(|t| t.contains(after)), "{texts:?}");
     assert!(
         texts.iter().any(|t| t.contains(r#""op":"sessions.live""#)),
@@ -162,12 +162,12 @@ fn refused_keeps_its_line() {
         challenge(&mut ws);
         next_text(&mut ws);
         ws.send(Message::text(
-            r#"{"type":"refused","code":"protocol","server_protocol":11}"#,
+            r#"{"type":"refused","code":"protocol","server_protocol":14}"#,
         ))
         .unwrap();
         let _ = ws.read();
     });
-    assert_eq!(line, "the server speaks protocol 11: update the app");
+    assert_eq!(line, "the server speaks protocol 14: update the app");
 }
 
 #[test]
@@ -429,7 +429,7 @@ fn a_failed_open_after_a_welcome_reconnects() {
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     welcome(&mut ws, "tok-q4");
     let texts = [next_text(&mut ws), next_text(&mut ws)];
-    let after = r#""params":{"session":"s1","after":{"instance_id":"i1","seq":4}}"#;
+    let after = r#""params":{"session":"s1","after":{"instance_id":"i1","seq":4},"answers":true}"#;
     assert!(texts.iter().any(|t| t.contains(after)), "{texts:?}");
 
     // The window is gone: the thread ends at the end of the connection.
@@ -490,6 +490,96 @@ fn an_active_app_replaces_a_dead_socket_without_the_silence() {
     stop.send(()).unwrap();
     stub.join().unwrap();
     thread.join().unwrap();
+}
+
+/// A wake-up that comes before the first welcome names no socket that a
+/// suspend left dead: the connection goes on to the welcome, and its thread
+/// reconnects at its end rather than stopping as a connection that never came
+/// up.
+#[test]
+fn a_wake_up_before_the_welcome_leaves_the_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = stub::local(port);
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (commands, receive) = channel();
+    // The launch: the host reports that it is active before the thread meets
+    // the server.
+    net::became_active(&commands);
+    let thread_shared = shared.clone();
+    let thread = std::thread::spawn(move || net::run(&server, &thread_shared, &receive, &|| {}));
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let _live = request(&mut ws, "sessions.live");
+    ws.send(Message::text(LIVE)).unwrap();
+    let _saved = request(&mut ws, "sessions.saved");
+    // The host is gone: the thread ends at the end of the connection.
+    drop(commands);
+    drop(ws);
+    assert_eq!(thread.join().unwrap(), "reconnecting");
+    assert_eq!(shared.lock().unwrap().live.len(), 1);
+}
+
+/// The pause of a reconnect is a wait on the commands: a host that goes during
+/// it ends the thread at once, and the server sees no second connection.
+#[test]
+fn a_drop_in_the_pause_opens_no_connection() {
+    /// A margin for load: other worktrees run tests on this machine.
+    const LOAD_MARGIN: Duration = Duration::from_secs(3);
+    let pause = Duration::from_secs(6);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = stub::local(port);
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (commands, receive) = channel();
+    let (lines, notified) = channel();
+    let waits = Waits { pause, ..WAITS };
+    let thread_shared = shared.clone();
+    let thread = std::thread::spawn(move || {
+        let read = thread_shared.clone();
+        let notify = move || {
+            let _ = lines.send(read.lock().unwrap().line.clone());
+        };
+        net::run_with(&server, &thread_shared, &receive, &notify, waits)
+    });
+    let (ended, at_end) = channel();
+    let (checked, at_check) = channel();
+    let stub = std::thread::spawn(move || {
+        let mut ws = accept(listener.accept().unwrap().0).unwrap();
+        welcome(&mut ws, "tok-q4");
+        let _live = ws.read();
+        let _saved = ws.read();
+        // A close: the thread reconnects after its pause.
+        let _ = ws.close(None);
+        let _ = ws.flush();
+        // Whether a connection comes while the host is gone.
+        at_end.recv().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        checked.send(listener.accept().is_ok()).unwrap();
+    });
+    // The end of the connection, then the return of the commands between
+    // connections: the pause starts after the second line.
+    let mut ended_once = 0;
+    while ended_once < 2 {
+        if notified.recv().unwrap() == "reconnecting" {
+            ended_once += 1;
+        }
+    }
+    let dropped = Instant::now();
+    drop(commands);
+    assert_eq!(thread.join().unwrap(), "reconnecting");
+    // Well before the pause, and the server took no second connection.
+    assert!(
+        dropped.elapsed() < pause - LOAD_MARGIN,
+        "{:?}",
+        dropped.elapsed()
+    );
+    ended.send(()).unwrap();
+    assert!(
+        !at_check.recv().unwrap(),
+        "the server took a second connection"
+    );
+    stub.join().unwrap();
 }
 
 /// The welcome of a stub connection, with the answers of the two requests of
@@ -710,7 +800,7 @@ fn a_start_follows_the_session_that_it_made() {
     let subscribe = request(&mut ws, "subscribe");
     assert_eq!(
         subscribe.get("params"),
-        Some(&decode(r#"{"session":"s2"}"#).unwrap())
+        Some(&decode(r#"{"session":"s2","answers":true}"#).unwrap())
     );
     ok(
         &mut ws,

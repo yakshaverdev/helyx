@@ -14,7 +14,7 @@
 
 use crate::send::{SendId, SendOutcome};
 use crate::socket::{Tap, WAITS, Waits, Watchdog};
-use helyx_client_core::client::{Client, Follow, Hold, Next, Output, Refusal, Wait};
+use helyx_client_core::client::{Client, Follow, Hold, Next, Output, Refusal, UNAUTHORIZED, Wait};
 use helyx_client_core::frame::{LiveSession, Reply, SavedSession};
 use helyx_client_core::json::object;
 use helyx_client_core::operation::{MAX_LIMIT, Operation, Saved};
@@ -23,7 +23,7 @@ use helyx_client_core::vocabulary::head;
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::sync::Mutex;
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use tungstenite::error::ProtocolError;
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Error, Message, WebSocket};
@@ -348,7 +348,19 @@ pub fn run_with(
         if next == Next::Stop || gone {
             return line;
         }
-        std::thread::sleep(waits.pause);
+        // The pause before the next connection is a wait on the commands, so a
+        // host that goes during it ends the loop with no new connection. A
+        // command that comes is kept for the next connection, as one that
+        // comes between connections is.
+        match commands.recv_timeout(waits.pause) {
+            Ok(Command::BecameActive) => {}
+            Ok(command) => {
+                drop(apply(&mut shared.lock().unwrap(), command));
+                notify();
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return line,
+        }
     }
 }
 
@@ -395,10 +407,13 @@ fn connection(
                 break;
             };
             // A socket that a suspend of the host left dead ends as a lost
-            // connection does: `closed` reconnects, and the next connection
-            // subscribes again with `after` of its state.
+            // connection does, once the server answered the handshake: a
+            // wake-up before it names no dead socket, so it is dropped.
             if command == Command::BecameActive {
-                return ended(&mut ws, welcomed);
+                if welcomed {
+                    return ended(&mut ws, welcomed);
+                }
+                continue;
             }
             let frames = apply(&mut shared.lock().unwrap(), command);
             if send(&mut ws, &watchdog, waits, frames).is_err() {
@@ -414,11 +429,12 @@ fn connection(
             // After a binary frame, a close ends the connection as a break.
             Ok(Message::Close(_)) if ws.get_ref().binary() => return broken(shared, &mut ws),
             Ok(Message::Close(frame)) => {
-                let next = close(shared, frame.map(|f| f.code.into()));
-                let line = if next == Next::Reconnect {
-                    "reconnecting"
-                } else {
-                    "the connection ended"
+                let code = frame.map(|f| u16::from(f.code));
+                let next = close(shared, code);
+                let line = match (code, next) {
+                    (Some(UNAUTHORIZED), _) => "the server refused the token",
+                    (_, Next::Reconnect) => "reconnecting",
+                    (_, Next::Stop) => "the connection ended",
                 };
                 return (next, line.into());
             }
