@@ -145,6 +145,12 @@ defmodule Helyx.Message do
   # A product id names one occurrence, such as a job id and a run number.
   @origin_id_max_bytes 256
 
+  @doc false
+  # The byte bound of an origin id, and of a registration id that is a module
+  # name: 256.
+  @spec max_origin_id_bytes() :: pos_integer()
+  def max_origin_id_bytes, do: @origin_id_max_bytes
+
   @doc """
   Whether `origin` is a valid origin of a new user message: `:user` with a
   nil id, or `:background`, `:product`, or `:hook` with an id of valid

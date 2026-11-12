@@ -71,6 +71,19 @@ defmodule Helyx.Transport.WebSocket.Authority do
   @callback release(arg(), auth(), op :: String.t(), params :: map()) :: :ok
 
   @doc """
+  The load of a session that a text operation, `prompt`, `steer`, or
+  `follow_up`, addresses, in the worker before the deadline of the
+  operation: `:ok` when the session runs or its load succeeded, else the
+  error of the operation, shaped as `check/4` gives it. A session that a
+  stop unloaded resumes through the authority, so the place of the user and
+  the starter hold as at a wire `resume` (`docs/features/idle-unload.md`).
+  An authority that does not export it gets the resume of
+  `Helyx.Transport.WebSocket.Ops.load/3`.
+  """
+  @callback load(arg(), auth(), op :: String.t(), params :: map()) ::
+              :ok | {:error, code()} | {:close, 4403}
+
+  @doc """
   A request of the webhook path of the transport, `POST /hooks/<id>`
   (`docs/features/hub.md`, decision 17). The transport read the body within
   its bound and checked nothing else: `id` is the path segment, `headers`
@@ -84,5 +97,5 @@ defmodule Helyx.Transport.WebSocket.Authority do
             }) ::
               {:ok, status :: 200..599, body :: String.t()}
 
-  @optional_callbacks webhook: 3
+  @optional_callbacks webhook: 3, load: 4
 end

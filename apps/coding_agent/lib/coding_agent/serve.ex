@@ -26,6 +26,20 @@ defmodule CodingAgent.Serve do
   @connect_ms 5_000
   # The server file is about 150 bytes.
   @max_file_bytes 4_096
+  # The idle stop of a session, the same value as the provider idle timer of
+  # a session (`provider_ms.idle` in `Helyx.Session.Server.State`). A session
+  # that closed its provider for idleness then has one more idle period of
+  # the same length before it unloads, so the session that the idle close
+  # left is the one that unloads next (docs/features/idle-unload.md).
+  @idle_stop_ms 1_800_000
+
+  @doc """
+  The time with no work after which a session of `helyx serve` stops, in
+  milliseconds: the value of the provider idle timer of a session. The
+  reason and the rule are in `docs/features/idle-unload.md`.
+  """
+  @spec idle_stop_ms() :: pos_integer()
+  def idle_stop_ms, do: @idle_stop_ms
 
   @doc """
   The bound of the wait of a second start for the server file and its
@@ -112,10 +126,27 @@ defmodule CodingAgent.Serve do
           {:error, "could not remove the stale server file: " <> text}
 
         :ok ->
+          telemetry(dir)
           start(lock, dir, opts)
       end
     end
   end
+
+  # Only the process that holds the lock of the data folder opens the file,
+  # so two servers never write one. Telemetry never stops a server: a line
+  # says that it is off, and the server goes on.
+  defp telemetry(dir) do
+    case Helyx.Telemetry.Recorder.open(
+           Path.join(dir, "telemetry.jsonl"),
+           CodingAgent.LogFile.max_bytes()
+         ) do
+      :ok -> :ok
+      {:error, reason} -> _ = print("helyx: telemetry is off: " <> telemetry_error(reason))
+    end
+  end
+
+  defp telemetry_error(:not_regular), do: "is not a regular file"
+  defp telemetry_error(reason), do: to_string(:file.format_error(reason))
 
   defp register do
     Process.register(self(), __MODULE__)
@@ -267,7 +298,8 @@ defmodule CodingAgent.Serve do
            Helyx.Core.start_link(
              plugins: CodingAgent.plugins(),
              sessions_dir: dir,
-             model: Keyword.fetch!(opts, :model)
+             model: Keyword.fetch!(opts, :model),
+             idle_stop_ms: idle_stop_ms()
            ),
          do: {:error, CodingAgent.error_text(reason)}
   end
@@ -364,14 +396,22 @@ defmodule CodingAgent.Serve do
   # The parts stop in order, the transport, then the Hub, then Core, so no
   # client is served while the Hub or Core stops, and no Hub call waits
   # while the Hub stops; a part that ended already is skipped. Then the
-  # holder of the lock removes the file, which a lock that ended does not
-  # do, since the file can be the file of the next server, and the lock
-  # goes last.
+  # telemetry file closes, then the holder of the lock removes the file,
+  # which a lock that ended does not do, since the file can be the file of
+  # the next server, and the lock goes last.
   defp stop(parts, lock, dir, result) do
     Enum.each(parts, &stop_supervisor/1)
+    close_telemetry()
     _ = Lock.remove_file(lock, server_file(dir))
     Lock.release(lock)
     result
+  end
+
+  # A recorder that ended already has nothing to close.
+  defp close_telemetry do
+    Helyx.Telemetry.Recorder.close()
+  catch
+    :exit, _ -> :ok
   end
 
   # Each part stops with the bound of its own stop, with no kill: Core

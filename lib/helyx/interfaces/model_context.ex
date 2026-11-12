@@ -26,7 +26,24 @@ defmodule Helyx.ModelContext do
   A Core can register several. A session uses the one that its start
   names with `:model_context`, or the first one registered
   (`docs/features/session-model-context.md`).
+
+  The optional `user_text/2` replaces the checked text of a user message (`docs/features/skills.md`).
   """
 
   @callback build(context :: Helyx.Context.t(), opts :: keyword()) :: Helyx.Context.t()
+
+  @doc """
+  The text of a user message, in place of the text that the caller gives.
+
+  Core calls it for each text of `Helyx.Session.prompt/3`, `steer/3`, and
+  `follow_up/3` whose origin is the user (the default origin, kind `:user`),
+  after the text checks. A text of another origin, such as one of product
+  code or of a hook, is not passed. `opts` has `:core`, `:session_id`, and
+  `:cwd`. It runs in the process of the caller, so the caller's own deadline
+  bounds it. A return that is not a binary is a contract break and raises in
+  the caller. The returned text takes the checks of a text again, valid UTF-8
+  and at most 4 MiB, with their usual errors.
+  """
+  @callback user_text(text :: String.t(), opts :: keyword()) :: String.t()
+  @optional_callbacks user_text: 2
 end

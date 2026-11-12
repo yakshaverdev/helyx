@@ -155,7 +155,7 @@ defmodule Helyx.Session.OutputLimitTest do
     assert text(session) == "7"
     :ok = Helyx.Sessions.stop(session)
 
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir, cwd: dir, id: session.id)
+    {:ok, resumed, _} = Session.resume(core, sessions_dir: dir, cwd: dir, id: session.id)
     assert text(subscribed(resumed)) == "nil"
   end
 end

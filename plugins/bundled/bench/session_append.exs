@@ -129,7 +129,7 @@ defmodule Helyx.Bench.SessionAppend do
     :ok =
       Helyx.Provider.Fake.script(core, "bench", Enum.concat(List.duplicate(turn, @batches + 1)))
 
-    {:ok, session} = Session.resume(core, sessions_dir: dir, cwd: @cwd)
+    {:ok, session, _} = Session.resume(core, sessions_dir: dir, cwd: @cwd)
     {:ok, _snapshot, _ref} = Session.subscribe(session, tail: 1)
 
     [file] = Path.wildcard(Path.join(dir, "*/*.jsonl"))

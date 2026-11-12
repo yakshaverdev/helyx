@@ -136,6 +136,11 @@ defmodule Helyx.Session.Input do
   # integer takes it (docs/features/output-limit.md).
   @max_output_tokens 2_147_483_647
 
+  @doc false
+  # The largest signed 32-bit integer, the bound of `:max_output_tokens`.
+  @spec max_output_tokens() :: pos_integer()
+  def max_output_tokens, do: @max_output_tokens
+
   defp max_output_tokens(nil), do: {:ok, nil}
 
   defp max_output_tokens(limit) when is_integer(limit) and limit in 1..@max_output_tokens,

@@ -161,6 +161,11 @@ defmodule CodingAgent.ServeTest do
     handlers = :gen_event.which_handlers(:erl_signal_server)
     task = serve(["--model", "fake/echo"])
     info = ready(file)
+
+    # The server gives Core the idle stop of `Serve.idle_stop_ms/0`
+    # (docs/features/idle-unload.md).
+    assert Helyx.Core.config(Helyx.Core, :idle_stop_ms) == Serve.idle_stop_ms()
+
     # The server leaves the signal server as it is.
     assert :gen_event.which_handlers(:erl_signal_server) == handlers
 
@@ -187,6 +192,24 @@ defmodule CodingAgent.ServeTest do
     assert [_] = Path.wildcard(Path.join([sessions, "*", id <> ".jsonl"]))
     assert {:ok, lock} = Lock.take(Path.join(sessions, "server"))
     Lock.release(lock)
+    free()
+  end
+
+  # Only the process that holds the lock opens the telemetry file, and the
+  # stop closes it: no server, no open file.
+  test "serve records telemetry in the data folder while it runs", %{
+    sessions: sessions,
+    server_file: file
+  } do
+    data_folder(sessions)
+    task = serve(["--model", "fake/echo"])
+    ready(file)
+
+    assert Helyx.Telemetry.Recorder.path() == Path.join(sessions, "telemetry.jsonl")
+
+    assert {0, _out, ""} = stop(task)
+    assert Helyx.Telemetry.Recorder.path() == nil
+    assert File.exists?(Path.join(sessions, "telemetry.jsonl"))
     free()
   end
 

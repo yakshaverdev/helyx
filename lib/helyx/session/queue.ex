@@ -99,6 +99,17 @@ defmodule Helyx.Session.Queue do
   def open(%__MODULE__{ends: ends} = queue),
     do: %{queue | ends: %{ends | wake: :on, steer: :open}}
 
+  # Whether the session has no text to run: no queued steer or follow-up, no
+  # waiting continue, no background end that no turn took, and no sent steer
+  # that waits for its answer. An idle stop needs this, so an end that a
+  # resume would rewrite as lost keeps the session
+  # (docs/features/idle-unload.md).
+  @spec empty?(t()) :: boolean()
+  def empty?(%__MODULE__{steers: steers, follow_ups: follow_ups, sent: sent} = queue) do
+    steers == [] and follow_ups == [] and sent == [] and
+      queue.continue == nil and queue.ends.items == []
+  end
+
   # The counts that a client sees (`queue_update`, the snapshot): the queued
   # steers and follow-ups, the running runs, and the ends that no turn took,
   # split into the ends that hold and the others (`waiting`).

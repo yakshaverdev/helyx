@@ -438,7 +438,7 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
     %{session: session, id: id} = started(core, sessions_dir: dir)
     stop_session(session, &GenServer.stop/1)
 
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+    {:ok, resumed, _} = Session.resume(core, sessions_dir: dir)
     # #591: a lost run is not live, so it does not count as running.
     assert {:ok, %{queue: queue}, _} = Session.subscribe(resumed)
     assert queue == counts(0, 1, 0)
@@ -451,7 +451,7 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
 
     # Once it joined a turn, the lost end is a user message of the file.
     stop_session(resumed, &GenServer.stop/1)
-    {:ok, again} = Session.resume(core, sessions_dir: dir)
+    {:ok, again, _} = Session.resume(core, sessions_dir: dir)
     {:ok, snapshot, _} = Session.subscribe(again)
     assert Background.lost(snapshot.messages) == []
   end
