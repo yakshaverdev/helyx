@@ -12,6 +12,7 @@ defmodule Helyx.Tool.BundledNamesTest do
     Helyx.Tool.Question,
     Helyx.Tool.Read,
     Helyx.Tool.Skill,
+    Helyx.Tool.Todo,
     Helyx.Tool.ToolSearch,
     Helyx.Tool.Write,
     Helyx.Memory.Markdown
@@ -24,6 +25,6 @@ defmodule Helyx.Tool.BundledNamesTest do
     assert {:ok, tools} = Helyx.Tool.specs(core)
 
     assert Enum.map(tools, fn {_tool, spec} -> spec.name end) ==
-             ~w(agent bash edit find grep memory_write question read skill tool_search write)
+             ~w(agent bash edit find grep memory_write question read skill todo tool_search write)
   end
 end

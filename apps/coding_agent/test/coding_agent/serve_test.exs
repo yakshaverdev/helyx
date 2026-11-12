@@ -185,6 +185,24 @@ defmodule CodingAgent.ServeTest do
     free()
   end
 
+  # Only the process that holds the lock opens the telemetry file, and the
+  # stop closes it: no server, no open file.
+  test "serve records telemetry in the data folder while it runs", %{
+    sessions: sessions,
+    server_file: file
+  } do
+    data_folder(sessions)
+    task = serve(["--model", "fake/echo"])
+    ready(file)
+
+    assert Helyx.Telemetry.Recorder.path() == Path.join(sessions, "telemetry.jsonl")
+
+    assert {0, _out, ""} = stop(task)
+    assert Helyx.Telemetry.Recorder.path() == nil
+    assert File.exists?(Path.join(sessions, "telemetry.jsonl"))
+    free()
+  end
+
   # A stale file goes once the lock is held, before Core, the Hub, and the
   # listener; the stop runs the transport, the Hub, Core, the remove of the
   # file by the holder of the lock, and the release, in this order
