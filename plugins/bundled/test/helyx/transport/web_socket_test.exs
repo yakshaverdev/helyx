@@ -6,6 +6,7 @@ defmodule Helyx.Transport.WebSocketTest do
 
   alias Helyx.Provider.Fake
   alias Helyx.Test.Events
+  alias Helyx.Test.Idle
   alias Helyx.Test.WireClient, as: Client
   alias Helyx.Transport.WebSocket
   alias Helyx.Transport.WebSocket.{Frame, Ops, Outbound}
@@ -14,7 +15,11 @@ defmodule Helyx.Transport.WebSocketTest do
 
   defp serve(context, opts \\ [], core_opts \\ []) do
     core = :"core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, [name: core, plugins: [Fake]] ++ core_opts})
+
+    start_supervised!(
+      {Helyx.Core, [name: core, plugins: [Fake, Helyx.Test.Tool.Block]] ++ core_opts}
+    )
+
     transport = start_supervised!({WebSocket, [core: core, port: 0] ++ opts})
     Map.merge(context, %{core: core, port: WebSocket.port(transport), transport: transport})
   end
@@ -602,6 +607,133 @@ defmodule Helyx.Transport.WebSocketTest do
 
     assert %{"ok" => true, "result" => %{"items" => [%{"id" => ^id, "mtime" => 0}]}} =
              Client.request(Client.open(port), "1", "sessions.saved", %{})
+  end
+
+  # A text op loads a session that a stop unloaded; a subscribe does not
+  # (docs/features/idle-unload.md). The loaded turn is held by a blocked
+  # call, so the live check does not race the idle stop.
+  @tag :tmp_dir
+  test "a prompt to a session that stopped for idleness loads it, and a subscribe does not",
+       %{tmp_dir: dir} = context do
+    %{core: core, port: port} =
+      serve(context, [], sessions_dir: dir, idle_stop_ms: Idle.idle_ms())
+
+    holder = block_holder(core, "block")
+    socket = Client.open(port)
+
+    %{"ok" => true, "result" => %{"session" => id}} =
+      Client.request(socket, "1", "start", %{"cwd" => File.cwd!(), "model" => "fake/block"})
+
+    # The session has no subscriber, so it stops for idleness.
+    Events.wait_until(fn -> Helyx.Sessions.list_live(core) == [] end)
+
+    assert %{"ok" => false, "error" => %{"code" => "session_not_found"}} =
+             Client.request(socket, "2", "subscribe", %{"session" => id})
+
+    assert %{"ok" => true} =
+             Client.request(socket, "3", "prompt", %{"session" => id, "text" => "again"})
+
+    assert_receive {:blocked, ^id}
+    assert Enum.any?(Helyx.Sessions.list_live(core), &(&1.id == id))
+    assert is_atom(holder)
+  end
+
+  # The probe: the idle timer message is in the mailbox before the prompt, so
+  # the session stops and the prompt call meets a stopped session. The sender
+  # of the wire loads it once and sends again (docs/features/idle-unload.md).
+  @tag :tmp_dir
+  test "a prompt that meets the idle stop of the session loads it and sends again",
+       %{tmp_dir: dir} = context do
+    %{core: core, port: port} = serve(context, [], sessions_dir: dir)
+    _holder = block_holder(core, "block")
+    socket = Client.open(port)
+
+    %{"ok" => true, "result" => %{"session" => id}} =
+      Client.request(socket, "1", "start", %{"cwd" => File.cwd!(), "model" => "fake/block"})
+
+    session = %Helyx.Session{id: id, core: core}
+    Idle.arm_timer(session)
+    pid = Helyx.Session.pid(session)
+    ref = Process.monitor(pid)
+    :sys.suspend(pid)
+    # The timer message is in the mailbox before the prompt goes.
+    Events.wait_until(fn -> Process.info(pid, :message_queue_len) == {:message_queue_len, 1} end)
+
+    request =
+      Task.async(fn ->
+        Client.request(socket, "2", "prompt", %{"session" => id, "text" => "again"})
+      end)
+
+    # The timer message and the prompt call wait in the mailbox.
+    Events.wait_until(fn -> Process.info(pid, :message_queue_len) == {:message_queue_len, 2} end)
+    :sys.resume(pid)
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, :idle}}
+    assert %{"ok" => true} = Task.await(request)
+    assert_receive {:blocked, ^id}
+  end
+
+  # A session that dies with the prompt in its mailbox may have taken it: the
+  # sender sends no second prompt (docs/features/idle-unload.md).
+  @tag :tmp_dir
+  test "a prompt to a session that dies in flight gets no second prompt",
+       %{tmp_dir: dir} = context do
+    %{core: core, port: port} = serve(context, [], sessions_dir: dir)
+    _holder = block_holder(core, "block")
+    socket = Client.open(port)
+
+    %{"ok" => true, "result" => %{"session" => id}} =
+      Client.request(socket, "1", "start", %{"cwd" => File.cwd!(), "model" => "fake/block"})
+
+    session = %Helyx.Session{id: id, core: core}
+    pid = Helyx.Session.pid(session)
+    :sys.suspend(pid)
+
+    request =
+      Task.async(fn ->
+        Client.request(socket, "2", "prompt", %{"session" => id, "text" => "again"})
+      end)
+
+    Events.wait_until(fn -> Process.info(pid, :message_queue_len) == {:message_queue_len, 1} end)
+    Process.exit(pid, :kill)
+
+    assert %{"ok" => false, "error" => %{"code" => "session_not_found"}} =
+             Task.await(request)
+
+    # No load ran: no process of the id is back.
+    assert Helyx.Session.pid(session) == nil
+  end
+
+  # A process of the test with the name that the blocked call reports to, and
+  # the script of the model that calls it.
+  defp block_holder(core, model) do
+    holder = :"block_#{System.unique_integer([:positive])}"
+    Process.register(self(), holder)
+
+    :ok =
+      Fake.script(core, model, [
+        [
+          %Helyx.Message.ToolCall{
+            id: "b1",
+            name: "block",
+            arguments: %{"to" => Atom.to_string(holder)}
+          }
+        ]
+      ])
+
+    holder
+  end
+
+  @tag :tmp_dir
+  test "a prompt to an id with no file answers session_not_found", %{tmp_dir: dir} = context do
+    %{port: port} = serve(context, [], sessions_dir: dir)
+    socket = Client.open(port)
+
+    assert %{"ok" => false, "error" => %{"code" => "session_not_found"}} =
+             Client.request(socket, "1", "prompt", %{
+               "session" => "zzzzzzzzzzzz",
+               "text" => "hi"
+             })
   end
 
   # The idle check reads the clock, and a deadline timer fires, within this

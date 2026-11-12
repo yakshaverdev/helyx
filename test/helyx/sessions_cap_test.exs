@@ -30,7 +30,7 @@ defmodule Helyx.SessionsCapTest do
     assert Session.start(core, model: "test/ok") == {:error, :too_many_sessions}
     # A second child of a running link: the cap answers before the id.
     assert Session.start(core, model: "test/ok", parent: link) == {:error, :too_many_sessions}
-    assert {:ok, ^saved} = Session.resume(core, sessions_dir: dir, id: saved.id)
+    assert {:ok, ^saved, _} = Session.resume(core, sessions_dir: dir, id: saved.id)
 
     # A stop frees the place when the supervisor handles the exit, which
     # has no order with the return of the stop; a resume of a stopped

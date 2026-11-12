@@ -22,6 +22,31 @@ defmodule Helyx.Session.Call do
       {:error, :session_not_found}
   end
 
+  @doc false
+  # As `call/3`, but a call that got no reply gives the exit reason of the
+  # session: `{:error, {:stopped, reason}}`, or `:noproc` when no process held
+  # the id. `Helyx.Send` tells a session that took nothing (`:noproc`, the
+  # idle stop) from one that may have taken the text without it
+  # (docs/features/idle-unload.md).
+  @spec send(Helyx.Session.t(), term(), timeout()) ::
+          term() | {:error, {:stopped, term()}}
+  def send(session, request, timeout) do
+    case Helyx.Session.pid(session) do
+      nil -> {:error, {:stopped, :noproc}}
+      pid -> send_pid(pid, request, timeout)
+    end
+  end
+
+  defp send_pid(pid, request, timeout) do
+    GenServer.call(pid, with_deadline(request, timeout), timeout)
+  catch
+    :exit, {:timeout, _call} = reason ->
+      :erlang.raise(:exit, reason, __STACKTRACE__)
+
+    :exit, {reason, _call} ->
+      {:error, {:stopped, reason}}
+  end
+
   # The monitor comes before the call, so the real exit reason of the pid of the
   # reply is never lost.
   def subscribe(pid, opts, timeout), do: subscribe(pid, opts, timeout, Process.monitor(pid))

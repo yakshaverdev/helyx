@@ -289,7 +289,7 @@ defmodule Helyx.Session.MemoryTest do
       assert_receive {:sync, _, _}
       Helyx.Test.SessionCase.stop_session(session, &GenServer.stop/1)
 
-      {:ok, resumed} = Session.resume(core, sessions_dir: dir, id: session.id)
+      {:ok, resumed, _} = Session.resume(core, sessions_dir: dir, id: session.id)
       {:ok, _, _} = Session.subscribe(resumed)
       assert_receive {:sync, replay, opts}
       assert replay == Enum.map(first, &%{message: &1, persisted: true})

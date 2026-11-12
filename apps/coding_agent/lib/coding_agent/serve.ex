@@ -26,6 +26,20 @@ defmodule CodingAgent.Serve do
   @connect_ms 5_000
   # The server file is about 150 bytes.
   @max_file_bytes 4_096
+  # The idle stop of a session, the same value as the provider idle timer of
+  # a session (`provider_ms.idle` in `Helyx.Session.Server.State`). A session
+  # that closed its provider for idleness then has one more idle period of
+  # the same length before it unloads, so the session that the idle close
+  # left is the one that unloads next (docs/features/idle-unload.md).
+  @idle_stop_ms 1_800_000
+
+  @doc """
+  The time with no work after which a session of `helyx serve` stops, in
+  milliseconds: the value of the provider idle timer of a session. The
+  reason and the rule are in `docs/features/idle-unload.md`.
+  """
+  @spec idle_stop_ms() :: pos_integer()
+  def idle_stop_ms, do: @idle_stop_ms
 
   @doc """
   The bound of the wait of a second start for the server file and its
@@ -284,7 +298,8 @@ defmodule CodingAgent.Serve do
            Helyx.Core.start_link(
              plugins: CodingAgent.plugins(),
              sessions_dir: dir,
-             model: Keyword.fetch!(opts, :model)
+             model: Keyword.fetch!(opts, :model),
+             idle_stop_ms: idle_stop_ms()
            ),
          do: {:error, CodingAgent.error_text(reason)}
   end

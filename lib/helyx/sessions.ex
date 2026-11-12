@@ -6,7 +6,9 @@ defmodule Helyx.Sessions do
   The server configuration is the start options of `Helyx.Core`:
   `:sessions_dir` and the default `:model`. A Core runs at most 64
   sessions; a start or a resume over the cap gives
-  `{:error, :too_many_sessions}`. A resume of a session that runs in the
+  `{:error, :too_many_sessions}`. A session that no client watches and that
+  has no work stops for idleness and frees its place
+  (`docs/features/idle-unload.md`). A resume of a session that runs in the
   Core attaches to it, also at the cap, and concurrent resumes of one id
   get one result; an attach with other `:provider_opts` than the running
   session's gives `{:error, :provider_opts_differ}`.
@@ -239,11 +241,13 @@ defmodule Helyx.Sessions do
   `:sessions_dir` of `core`: the session `:id`, in the folder that its
   header names when `opts` names no `:cwd`, or the newest session of
   `:cwd`. A Core with no `:sessions_dir` gives `{:error, :not_found}`. The
-  errors of the find of an id are those of `Helyx.Session.File.Scan.find/2`,
-  and `:invalid_cwd` for a header folder that a start would reject. They
-  come after the tool checks.
+  result tells whether a process ran already (`:attached`) or this call
+  started it (`:started`). The errors of the find of an id are those of
+  `Helyx.Session.File.Scan.find/2`, and `:invalid_cwd` for a header folder
+  that a start would reject. They come after the tool checks.
   """
-  @spec resume(Helyx.Core.name(), keyword()) :: {:ok, Session.t()} | {:error, term()}
+  @spec resume(Helyx.Core.name(), keyword()) ::
+          {:ok, Session.t(), :started | :attached} | {:error, term()}
   def resume(core, opts) do
     case Helyx.Core.config(core, :sessions_dir) do
       nil -> {:error, :not_found}

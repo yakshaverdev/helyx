@@ -602,7 +602,7 @@ defmodule Helyx.TUITest do
 
     assert Session.pid(session) == nil
 
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir, cwd: dir)
+    {:ok, resumed, _} = Session.resume(core, sessions_dir: dir, cwd: dir)
     %{vm: vm} = mount!(session: resumed, resumed: true)
 
     # The live cell shapes: the user message, the assistant message and its
@@ -661,16 +661,21 @@ defmodule Helyx.TUITest do
     assert after_mount -- monitors == [process: link.conn]
   end
 
-  test "a send and a model switch to an ended session keep the composer", %{core: core} do
+  test "a send to an ended session loads it from its file", %{core: core} do
     state = mounted(core, "ended", [])
     :ok = GenServer.stop(Session.pid(core_session(state, core)))
 
     state = state |> press("x") |> press("enter")
-    assert ExRatatui.textarea_get_value(state.composer.input) == "x"
-    assert state.vm.reason == "not sent: the session ended"
 
-    state = state |> press("enter", ["alt"])
-    assert state.vm.reason == "not sent: the session ended"
+    # The text resumes the session, because its file exists
+    # (docs/features/idle-unload.md), so the composer takes it.
+    assert ExRatatui.textarea_get_value(state.composer.input) == ""
+    assert is_pid(Session.pid(core_session(state, core)))
+  end
+
+  test "a model switch to an ended session keeps the composer", %{core: core} do
+    state = mounted(core, "ended", [])
+    :ok = GenServer.stop(Session.pid(core_session(state, core)))
 
     ExRatatui.textarea_set_value(state.composer.input, "/model fake/other")
     state = press(state, "enter")

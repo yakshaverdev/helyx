@@ -54,12 +54,12 @@ defmodule Helyx.SessionsTest do
       turn(session, "hi")
       :ok = Sessions.stop(session)
 
-      assert {:ok, ^session} = Sessions.resume(core, id: session.id)
+      assert {:ok, ^session, _} = Sessions.resume(core, id: session.id)
       assert [%Live{cwd: "/elsewhere"}] = Sessions.list_live(core)
       :ok = Sessions.stop(session)
 
       # The rule is in `Session.resume/2` (#758).
-      assert {:ok, ^session} = Session.resume(core, sessions_dir: dir, id: session.id)
+      assert {:ok, ^session, _} = Session.resume(core, sessions_dir: dir, id: session.id)
       assert [%Live{cwd: "/elsewhere"}] = Sessions.list_live(core)
     end
 
@@ -80,8 +80,8 @@ defmodule Helyx.SessionsTest do
       turn(session, "hi")
       pid = Session.pid(session)
 
-      assert {:ok, ^session} = Sessions.resume(core, id: session.id)
-      assert {:ok, ^session} = Sessions.resume(core, cwd: "/repo")
+      assert {:ok, ^session, _} = Sessions.resume(core, id: session.id)
+      assert {:ok, ^session, _} = Sessions.resume(core, cwd: "/repo")
       assert Session.pid(session) == pid
       assert [%Live{}] = Sessions.list_live(core)
     end
@@ -102,8 +102,8 @@ defmodule Helyx.SessionsTest do
     test "both get the session when the open succeeds", %{core: core, tmp_dir: dir} do
       {first, pid, second} = held_pair(core, dir)
       send(pid, {:go, :ok})
-      assert_receive {:started, ^first, {:ok, %Session{}}}
-      assert_receive {:started, ^second, {:ok, %Session{}}}
+      assert_receive {:started, ^first, {:ok, %Session{}, _}}
+      assert_receive {:started, ^second, {:ok, %Session{}, _}}
     end
 
     test "both get the error of the open", %{core: core, tmp_dir: dir} do
@@ -138,7 +138,7 @@ defmodule Helyx.SessionsTest do
 
       assert_receive {:in_open, again}
       send(again, {:go, :ok})
-      assert_receive {:started, ^second, {:ok, %Session{}}}
+      assert_receive {:started, ^second, {:ok, %Session{}, _}}
     end
   end
 
@@ -252,7 +252,7 @@ defmodule Helyx.SessionsTest do
 
       assert Sessions.stop(session) == {:error, :session_not_found}
       assert Sessions.list_live(core) == []
-      assert {:ok, ^session} = Sessions.resume(core, id: session.id)
+      assert {:ok, ^session, _} = Sessions.resume(core, id: session.id)
     end
 
     # The "stuck" call holds a handle whose release waits for the gate, and
