@@ -12,8 +12,8 @@ use tungstenite::{Message, WebSocket, accept};
 
 const NONCE: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
-/// The reply of the server to `sessions.live`, the first request of a
-/// connection: one session, `s1`.
+/// The reply of the server to `sessions.live` on a server with no Hub: one
+/// session, `s1`. The tests give it the id of the request that they answer.
 pub const LIVE: &str = r#"{"type":"res","id":"0","ok":true,"result":{"sessions":[{"id":"s1","instance_id":"i1","cwd":"/r","model":"fake/echo","status":"idle"}]}}"#;
 
 /// The next text frame of the client: a ping or a pong is passed over.

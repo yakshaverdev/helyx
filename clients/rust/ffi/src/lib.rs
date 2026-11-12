@@ -14,6 +14,6 @@ mod types;
 
 pub use connection::{Connection, NetListener};
 pub use types::{
-    Ask, Block, LiveSession, Message, NetError, Outcome, Queue, RequestLine, RequestState, Role,
-    Row, SavedSession, SendOutcome, SessionState, Shown, Snapshot,
+    Ask, Block, LiveSession, Message, NetError, Outcome, Queue, Record, RequestLine, RequestState,
+    Role, Row, SavedSession, SendOutcome, SessionState, Shown, Snapshot, Status,
 };

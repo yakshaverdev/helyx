@@ -24,6 +24,7 @@ use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::time::Instant;
 use tungstenite::error::ProtocolError;
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Error, Message, WebSocket};
@@ -89,7 +90,8 @@ pub enum Command {
     /// before, or none for the first page.
     Saved { after: Option<String> },
     /// Ask the live sessions of the server now, as the welcome of a
-    /// connection does.
+    /// connection with no records feed does. With a feed the list comes from
+    /// the feed, and this command sends nothing.
     Live,
     /// The host is active again: a socket that a suspend left dead is
     /// dropped, and the next connection starts on the path of a lost
@@ -159,8 +161,16 @@ impl RequestLine {
 #[derive(Debug)]
 pub struct Shared {
     pub client: Client,
-    /// The live sessions of the server, from `sessions.live` at each welcome.
+    /// The live sessions of the server, from `sessions.live`: the list of a
+    /// connection with no records feed, and empty on a server with a Hub.
     pub live: Vec<LiveSession>,
+    /// Whether the connection has the records feed: a server with a Hub
+    /// answers `records.subscribe`, and the window takes its list from
+    /// `client.records()`. False on a server with no Hub, whose list is
+    /// `live`, and false again at each new connection until its reply. A
+    /// `records_end` keeps it true, because the thread subscribes again on
+    /// the same connection.
+    pub records: bool,
     /// The session that the host follows.
     pub followed: Option<String>,
     /// One line of the state of the connection.
@@ -187,6 +197,7 @@ impl Shared {
         Shared {
             client: Client::new(Some(token)),
             live: vec![],
+            records: false,
             followed: None,
             line: "connecting".into(),
             saved: vec![],
@@ -371,6 +382,14 @@ fn connection(
     };
     shared.lock().unwrap().client.connect();
     let mut welcomed = false;
+    // The records feed of this connection: whether a subscription is
+    // wanted, the id of the one in flight, when the pause after a feed end
+    // allows the next, and whether the server has no feed. One request is in
+    // flight at most.
+    let mut records_wanted = false;
+    let mut records_request: Option<String> = None;
+    let mut records_at: Option<Instant> = None;
+    let mut records_off = false;
     // The end of the connection after an error: a break when the server
     // sent a binary frame, whatever error ended it, else a lost connection.
     let ended = |ws: &mut Socket, welcomed: bool| {
@@ -389,6 +408,19 @@ fn connection(
         (next, line)
     };
     loop {
+        // The subscribe that waits for a free place, or for the pause after
+        // the end of the feed.
+        if records_wanted && records_request.is_none() && !records_off {
+            let due = records_at.is_none_or(|at| Instant::now() >= at);
+            if due && let Some((id, frames)) = records_subscribe(&mut shared.lock().unwrap()) {
+                records_at = None;
+                records_request = Some(id);
+                records_wanted = false;
+                if send(&mut ws, &watchdog, waits, frames).is_err() {
+                    return ended(&mut ws, welcomed);
+                }
+            }
+        }
         // After a failed write, the commands wait for the next connection.
         while !ws.get_ref().write_failed() {
             let Ok(command) = commands.try_recv() else {
@@ -458,7 +490,19 @@ fn connection(
                     welcomed = true;
                     heard(&watchdog, welcomed, waits);
                     guard.line = "connected".into();
-                    frames.extend(live(&mut guard));
+                    // The records feed first: a server with a Hub answers
+                    // it, and then no `sessions.live` goes on this
+                    // connection. A server with no Hub answers `unknown_op`,
+                    // and the live list follows at that reply.
+                    guard.records = false;
+                    records_at = None;
+                    records_off = false;
+                    records_wanted = true;
+                    if let Some((id, subscribe)) = records_subscribe(&mut guard) {
+                        records_request = Some(id);
+                        records_wanted = false;
+                        frames.extend(subscribe);
+                    }
                     if !guard.saved_asked {
                         guard.saved_asked = true;
                         frames.extend(saved(&mut guard, None));
@@ -479,6 +523,28 @@ fn connection(
                     guard.line = format!("{op} of {session}: {code}");
                 }
                 Output::Reply { id, result } => {
+                    if records_request.as_deref() == Some(id.as_str()) {
+                        // The reply of the records subscription: its list is
+                        // the host's, and it has no request line.
+                        records_request = None;
+                        match &result {
+                            Err((code, _)) if code == "unknown_op" => {
+                                // The server has no Hub: the rest of this
+                                // connection keeps the path of `sessions.live`.
+                                guard.records = false;
+                                records_wanted = false;
+                                records_off = true;
+                                frames.extend(live(&mut guard));
+                            }
+                            Err((code, text)) => {
+                                records_wanted = false;
+                                records_off = true;
+                                guard.line = format!("records.subscribe: {code}: {text}");
+                            }
+                            Ok(_) => guard.records = true,
+                        }
+                        continue;
+                    }
                     guard.answered(&id, &result);
                     // The reply ends the page on its way, ok or not: the mode
                     // belongs to this request, not to the latest one.
@@ -510,6 +576,23 @@ fn connection(
                         }
                         _ => {}
                     }
+                }
+                // The feed's reply or one of its frames: the list in the
+                // client changed, and the host reads it there. The reply
+                // takes no line, as the request is not the host's.
+                Output::RecordsChanged => {
+                    guard.records = true;
+                    records_request = None;
+                    records_wanted = false;
+                }
+                Output::RecordsEnded => {
+                    // The Hub behind the feed ended, and the connection
+                    // lives: subscribe again after the pause of a reconnect,
+                    // with no end of the connection. The connection keeps its
+                    // feed, so `records` stays true.
+                    records_request = None;
+                    records_wanted = true;
+                    records_at = Some(Instant::now() + waits.pause);
                 }
                 _ => {}
             }
@@ -630,8 +713,11 @@ fn apply(shared: &mut Shared, command: Command) -> Vec<String> {
 }
 
 /// The live sessions of the server, asked for now: its frames and the line of
-/// its request.
+/// its request. A connection with a records feed does not send it.
 fn live(shared: &mut Shared) -> Vec<String> {
+    if shared.records {
+        return vec![];
+    }
     let requested = shared.client.request("sessions.live", object([]));
     record(
         shared,
@@ -640,6 +726,14 @@ fn live(shared: &mut Shared) -> Vec<String> {
         None,
         requested,
     )
+}
+
+/// The records subscription of the user, with no line of the host: the host
+/// did not ask for it, as it does not ask for the live list of a welcome.
+/// Gives the id of the request and its frames, or none while the connection
+/// has no free place, which the next step of the thread tries again.
+fn records_subscribe(shared: &mut Shared) -> Option<(String, Vec<String>)> {
+    shared.client.perform(Operation::records_subscribe()).ok()
 }
 
 /// Sends an operation of the host and records its line, and the outcome of

@@ -1,14 +1,15 @@
 //! The network thread against a stub server on the loopback: the handshake
-//! with the proof of the token, `sessions.live`, a follow, the `4408` slow
-//! close, the reconnect with `after`, the waits before the welcome, and the
-//! breaks of the wire contract.
+//! with the proof of the token, the records feed and the live list of a
+//! server with no Hub, a follow, the `4408` slow close, the reconnect with
+//! `after`, the waits before the welcome, and the breaks of the wire contract.
 
 use net::stub;
 
 use helyx_client_core::json::{Json, decode};
+use helyx_client_core::records::Status;
 use helyx_client_net as net;
 use net::Server;
-use net::socket::WAITS;
+use net::socket::{WAITS, Waits};
 use net::{Command, RequestState, Shared};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{Receiver, channel};
@@ -68,13 +69,18 @@ fn a_follow_survives_a_slow_close() {
         })
     });
 
-    // The first connection: the live list and the saved list, a follow, an
-    // event, then 4408.
+    // The first connection: the records subscription refused, the live list
+    // and the saved list, a follow, an event, then 4408.
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     welcome(&mut ws, token);
+    let records = request(&mut ws, "records.subscribe");
+    assert_eq!(id_of(&records), "0");
+    error(&mut ws, id_of(&records), "unknown_op");
     let live = request(&mut ws, "sessions.live");
-    assert_eq!(id_of(&live), "0");
-    ws.send(Message::text(LIVE)).unwrap();
+    ws.send(Message::text(
+        LIVE.replace(r#""id":"0""#, &format!(r#""id":"{}""#, id_of(&live))),
+    ))
+    .unwrap();
     while shared.lock().unwrap().live.is_empty() {
         changes.recv().unwrap();
     }
@@ -101,16 +107,17 @@ fn a_follow_survives_a_slow_close() {
     ws.close(Some(close)).unwrap();
     let _ = ws.flush();
 
-    // The second connection: the subscribe with `after` of the state.
+    // The second connection: the records subscription refused again, the
+    // subscribe with `after` of the state, and the live list.
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     welcome(&mut ws, token);
-    let texts = [next_text(&mut ws), next_text(&mut ws)];
+    let records = request(&mut ws, "records.subscribe");
+    let subscribe = next_text(&mut ws);
     let after = r#""params":{"session":"s1","after":{"instance_id":"i1","seq":5}}"#;
-    assert!(texts.iter().any(|t| t.contains(after)), "{texts:?}");
-    assert!(
-        texts.iter().any(|t| t.contains(r#""op":"sessions.live""#)),
-        "{texts:?}"
-    );
+    assert!(subscribe.contains(after), "{subscribe}");
+    error(&mut ws, id_of(&records), "unknown_op");
+    let live = next_text(&mut ws);
+    assert!(live.contains(r#""op":"sessions.live""#), "{live}");
     // The window is gone: the thread ends at the end of the connection.
     drop(commands);
     drop(ws);
@@ -296,10 +303,21 @@ fn every_frame_before_a_binary_frame_is_taken() {
     for ping in [vec![], vec![0x89, 0x00]] {
         let (line, shared) = against_state(move |mut ws| {
             welcome(&mut ws, "tok-q4");
-            let _live = next_text(&mut ws);
+            // The records subscription of the welcome, refused: the live
+            // list of a server with no Hub follows.
+            let records = decode(&next_text(&mut ws)).unwrap();
+            let refused = format!(
+                r#"{{"type":"res","id":"{}","ok":false,"error":{{"code":"unknown_op","text":"x"}}}}"#,
+                id_of(&records)
+            );
+            // The live request takes id 2: the records subscription is 0 and
+            // the saved list is 1.
+            let live = LIVE.replace(r#""id":"0""#, r#""id":"2""#);
             let mut bytes = ping;
-            bytes.extend([0x81, 126, (LIVE.len() >> 8) as u8, LIVE.len() as u8]);
-            bytes.extend(LIVE.as_bytes());
+            bytes.extend([0x81, 126, (refused.len() >> 8) as u8, refused.len() as u8]);
+            bytes.extend(refused.as_bytes());
+            bytes.extend([0x81, 126, (live.len() >> 8) as u8, live.len() as u8]);
+            bytes.extend(live.as_bytes());
             bytes.extend([0x02, 0x01, b'x']);
             use std::io::Write;
             let _ = ws.get_mut().write_all(&bytes);
@@ -392,13 +410,9 @@ fn a_failed_open_after_a_welcome_reconnects() {
 
     // The first connection: a follow and its snapshot, then a lost end.
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
-    welcome(&mut ws, "tok-q4");
-    let live = request(&mut ws, "sessions.live");
-    ws.send(Message::text(format!(
-        r#"{{"type":"res","id":"{}","ok":true,"result":{{"sessions":[]}}}}"#,
-        id_of(&live)
-    )))
-    .unwrap();
+    let (saved, live) = no_hub(&mut ws, "tok-q4");
+    ok(&mut ws, id_of(&live), r#"{"sessions":[]}"#);
+    ok(&mut ws, id_of(&saved), r#"{"items":[],"next":null}"#);
     commands.send(Command::Follow("s1".into())).unwrap();
     let subscribe = request(&mut ws, "subscribe");
     ws.send(Message::text(format!(
@@ -428,9 +442,11 @@ fn a_failed_open_after_a_welcome_reconnects() {
     let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     welcome(&mut ws, "tok-q4");
-    let texts = [next_text(&mut ws), next_text(&mut ws)];
+    let records = request(&mut ws, "records.subscribe");
+    error(&mut ws, id_of(&records), "unknown_op");
+    let subscribe = next_text(&mut ws);
     let after = r#""params":{"session":"s1","after":{"instance_id":"i1","seq":4}}"#;
-    assert!(texts.iter().any(|t| t.contains(after)), "{texts:?}");
+    assert!(subscribe.contains(after), "{subscribe}");
 
     // The window is gone: the thread ends at the end of the connection.
     drop(commands);
@@ -492,14 +508,59 @@ fn an_active_app_replaces_a_dead_socket_without_the_silence() {
     thread.join().unwrap();
 }
 
-/// The welcome of a stub connection, with the answers of the two requests of
-/// the first frame: the live sessions and the saved ones.
-fn start(ws: &mut WebSocket<TcpStream>, token: &str) {
+/// The wait for a frame that a test expects: a bound of the stub, so a frame
+/// that does not come fails the test instead of blocking it.
+const FRAME_WAIT: Duration = Duration::from_secs(5);
+/// A margin for load when a test waits for a frame that must not come: other
+/// worktrees run tests on this machine.
+const LOAD_MARGIN: Duration = Duration::from_millis(500);
+
+/// The welcome of a server with no Hub: `records.subscribe` is refused with
+/// `unknown_op`, and the requests of the old path follow. Gives the
+/// `sessions.saved` and the `sessions.live` request, which the test answers.
+fn no_hub(ws: &mut WebSocket<TcpStream>, token: &str) -> (Json, Json) {
     welcome(ws, token);
-    let live = request(ws, "sessions.live");
-    ok(ws, id_of(&live), r#"{"sessions":[]}"#);
+    let records = request(ws, "records.subscribe");
+    error(ws, id_of(&records), "unknown_op");
     let saved = request(ws, "sessions.saved");
+    let live = request(ws, "sessions.live");
+    (saved, live)
+}
+
+/// The welcome of a stub connection with no Hub, with the answers of the two
+/// requests of the old path: the live sessions and the saved ones.
+fn start(ws: &mut WebSocket<TcpStream>, token: &str) {
+    let (saved, live) = no_hub(ws, token);
+    ok(ws, id_of(&live), r#"{"sessions":[]}"#);
     ok(ws, id_of(&saved), r#"{"items":[],"next":null}"#);
+}
+
+/// One `record` of the records feed, as the server sends it.
+fn record(
+    session: &str,
+    title: &str,
+    prompt: &str,
+    status: &str,
+    active_at: u64,
+    parent: Option<&str>,
+) -> String {
+    let parent = match parent {
+        None => "null".to_owned(),
+        Some(id) => format!(r#"{{"session":"{id}","kind":"child"}}"#),
+    };
+    format!(
+        r#"{{"session":"{session}","owner":{{"id":"u1","name":"ada"}},"project":null,"title":"{title}","labels":[],"visibility":"private","archived":false,"created_at":1,"updated_at":1,"cwd":"/r/{session}","model":"fake/echo","prompt":"{prompt}","active_at":{active_at},"parent":{parent},"status":"{status}"}}"#
+    )
+}
+
+/// Whether the stub reads no frame within the margin. The margin holds the
+/// poll of the network thread, 100 ms, so a frame that the thread sends goes
+/// before the end of it.
+fn silent(ws: &mut WebSocket<TcpStream>) -> bool {
+    ws.get_mut().set_read_timeout(Some(LOAD_MARGIN)).unwrap();
+    let quiet = matches!(ws.read(), Err(tungstenite::Error::Io(_)));
+    ws.get_mut().set_read_timeout(None).unwrap();
+    quiet
 }
 
 fn ok(ws: &mut WebSocket<TcpStream>, id: &str, result: &str) {
@@ -528,14 +589,309 @@ fn drive(
     server: Server,
     shared: Arc<Mutex<Shared>>,
 ) -> (std::sync::mpsc::Sender<Command>, Receiver<()>) {
+    drive_with(server, shared, WAITS)
+}
+
+/// `drive` with other waits.
+fn drive_with(
+    server: Server,
+    shared: Arc<Mutex<Shared>>,
+    waits: Waits,
+) -> (std::sync::mpsc::Sender<Command>, Receiver<()>) {
     let (commands, receive) = channel();
     let (changed, changes) = channel();
     std::thread::spawn(move || {
-        net::run(&server, &shared, &receive, &|| {
-            let _ = changed.send(());
-        })
+        net::run_with(
+            &server,
+            &shared,
+            &receive,
+            &|| {
+                let _ = changed.send(());
+            },
+            waits,
+        )
     });
     (commands, changes)
+}
+
+#[test]
+fn the_welcome_asks_for_the_records_first() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (_commands, changes) = drive(stub::local(port), shared.clone());
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    ws.get_mut().set_read_timeout(Some(FRAME_WAIT)).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let records = next_request(&mut ws);
+    assert_eq!(
+        records.get("op").and_then(Json::as_str),
+        Some("records.subscribe")
+    );
+    assert_eq!(records.get("params"), Some(&decode("{}").unwrap()));
+    let waiting = record("s1", "fix the build", "", "waiting", 100, None);
+    let idle = record("s2", "", "go", "idle", 200, None);
+    ok(
+        &mut ws,
+        id_of(&records),
+        &format!(r#"{{"records":[{waiting},{idle}],"more":true}}"#),
+    );
+    until(&changes, &shared, |s| {
+        s.records && s.client.records().rows().len() == 2
+    });
+    {
+        let shared = shared.lock().unwrap();
+        let rows = shared.client.records().rows();
+        assert_eq!(rows[0].session, "s1");
+        assert_eq!(rows[0].status, Status::Waiting);
+        assert_eq!(rows[1].session, "s2");
+        assert!(shared.client.records().more());
+        // The request is not one of the host's, so it has no line.
+        assert!(
+            shared
+                .requests
+                .iter()
+                .all(|line| line.op != "records.subscribe"),
+            "{:?}",
+            shared.requests
+        );
+    }
+    // The saved page of the welcome is not a live list: read it, so the next
+    // read waits for a frame of the feed or the live list only.
+    let _saved = request(&mut ws, "sessions.saved");
+    // A server with a feed gets no `sessions.live` on this connection.
+    assert!(silent(&mut ws));
+}
+
+#[test]
+fn a_record_change_notifies_the_host_and_moves_a_waiting_row_first() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (_commands, changes) = drive(stub::local(port), shared.clone());
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    ws.get_mut().set_read_timeout(Some(FRAME_WAIT)).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let records = next_request(&mut ws);
+    let idle = record("s2", "", "go", "idle", 200, None);
+    ok(
+        &mut ws,
+        id_of(&records),
+        &format!(r#"{{"records":[{idle}],"more":false}}"#),
+    );
+    until(&changes, &shared, |s| {
+        s.records && s.client.records().rows().len() == 1
+    });
+    let waiting = record("s1", "", "", "waiting", 400, None);
+    ws.send(Message::text(format!(
+        r#"{{"type":"record","change":{{"kind":"changed","record":{waiting}}}}}"#
+    )))
+    .unwrap();
+    until(&changes, &shared, |s| {
+        let rows = s.client.records().rows();
+        rows.len() == 2
+            && rows[0].session == "s1"
+            && rows[0].status == Status::Waiting
+            && rows[1].session == "s2"
+    });
+}
+
+#[test]
+fn a_server_without_a_hub_falls_back_to_the_live_list() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (_commands, changes) = drive(stub::local(port), shared.clone());
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    ws.get_mut().set_read_timeout(Some(FRAME_WAIT)).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let records = next_request(&mut ws);
+    error(&mut ws, id_of(&records), "unknown_op");
+    let live = request(&mut ws, "sessions.live");
+    ok(
+        &mut ws,
+        id_of(&live),
+        r#"{"sessions":[{"id":"s1","instance_id":"i1","cwd":"/r","model":"fake/echo","status":"idle"}]}"#,
+    );
+    until(&changes, &shared, |s| s.live.len() == 1);
+    let shared = shared.lock().unwrap();
+    assert!(!shared.records);
+    assert!(
+        shared
+            .requests
+            .iter()
+            .all(|line| line.op != "records.subscribe"),
+        "{:?}",
+        shared.requests
+    );
+}
+
+#[test]
+fn records_end_subscribes_again_after_the_pause() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let waits = Waits {
+        pause: Duration::from_millis(150),
+        ..WAITS
+    };
+    let (_commands, changes) = drive_with(stub::local(port), shared.clone(), waits);
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    ws.get_mut().set_read_timeout(Some(FRAME_WAIT)).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let first = request(&mut ws, "records.subscribe");
+    ok(
+        &mut ws,
+        id_of(&first),
+        &format!(
+            r#"{{"records":[{}],"more":false}}"#,
+            record("s1", "", "", "idle", 1, None)
+        ),
+    );
+    until(&changes, &shared, |s| {
+        s.records && s.client.records().rows().len() == 1
+    });
+    ws.send(Message::text(r#"{"type":"records_end"}"#)).unwrap();
+    let ended = Instant::now();
+    let second = request(&mut ws, "records.subscribe");
+    // The subscribe waits the pause of a reconnect; load only makes it later.
+    assert!(ended.elapsed() >= waits.pause, "{:?}", ended.elapsed());
+    // The connection keeps its feed across the end: the window keeps its
+    // list while the new one waits.
+    assert!(shared.lock().unwrap().records);
+    ok(
+        &mut ws,
+        id_of(&second),
+        &format!(
+            r#"{{"records":[{}],"more":false}}"#,
+            record("s2", "", "", "idle", 2, None)
+        ),
+    );
+    until(&changes, &shared, |s| {
+        let rows = s.client.records().rows();
+        s.records && rows.len() == 1 && rows[0].session == "s2"
+    });
+    // A second end does the same.
+    ws.send(Message::text(r#"{"type":"records_end"}"#)).unwrap();
+    let third = request(&mut ws, "records.subscribe");
+    ok(
+        &mut ws,
+        id_of(&third),
+        &format!(
+            r#"{{"records":[{}],"more":false}}"#,
+            record("s3", "", "", "idle", 3, None)
+        ),
+    );
+    until(&changes, &shared, |s| {
+        let rows = s.client.records().rows();
+        s.records && rows.len() == 1 && rows[0].session == "s3"
+    });
+}
+
+#[test]
+fn a_new_connection_subscribes_again() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (_commands, changes) = drive(stub::local(port), shared.clone());
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    ws.get_mut().set_read_timeout(Some(FRAME_WAIT)).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let first = request(&mut ws, "records.subscribe");
+    ok(
+        &mut ws,
+        id_of(&first),
+        &format!(
+            r#"{{"records":[{}],"more":false}}"#,
+            record("s1", "", "", "idle", 1, None)
+        ),
+    );
+    until(&changes, &shared, |s| {
+        s.records && s.client.records().rows().len() == 1
+    });
+    drop(ws);
+    // The next connection opens after the pause of a reconnect, and
+    // subscribes again.
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    ws.get_mut().set_read_timeout(Some(FRAME_WAIT)).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let again = request(&mut ws, "records.subscribe");
+    let second = record("s2", "", "", "idle", 2, None);
+    let first = record("s1", "", "", "idle", 1, None);
+    ok(
+        &mut ws,
+        id_of(&again),
+        &format!(r#"{{"records":[{first},{second}],"more":false}}"#),
+    );
+    until(&changes, &shared, |s| {
+        s.records && s.client.records().rows().len() == 2
+    });
+}
+
+#[test]
+fn another_error_of_the_records_subscribe_is_one_line() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (_commands, changes) = drive(stub::local(port), shared.clone());
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    ws.get_mut().set_read_timeout(Some(FRAME_WAIT)).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let records = next_request(&mut ws);
+    error(&mut ws, id_of(&records), "too_many_subscriptions");
+    let _saved = request(&mut ws, "sessions.saved");
+    until(&changes, &shared, |s| {
+        s.line.contains("too_many_subscriptions")
+    });
+    {
+        let shared = shared.lock().unwrap();
+        assert!(!shared.records);
+        assert!(
+            shared
+                .requests
+                .iter()
+                .all(|line| line.op != "records.subscribe"),
+            "{:?}",
+            shared.requests
+        );
+    }
+    // The line is once, and the thread does not ask again on this connection.
+    assert!(silent(&mut ws));
+}
+
+#[test]
+fn a_live_command_sends_nothing_with_a_feed() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let (commands, changes) = drive(stub::local(port), shared.clone());
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    ws.get_mut().set_read_timeout(Some(FRAME_WAIT)).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let records = next_request(&mut ws);
+    ok(
+        &mut ws,
+        id_of(&records),
+        &format!(
+            r#"{{"records":[{}],"more":false}}"#,
+            record("s1", "", "", "idle", 1, None)
+        ),
+    );
+    until(&changes, &shared, |s| {
+        s.records && s.client.records().rows().len() == 1
+    });
+    // The saved page of the welcome is answered, so the command below goes.
+    let saved = request(&mut ws, "sessions.saved");
+    ok(&mut ws, id_of(&saved), r#"{"items":[],"next":null}"#);
+    // The live command sends nothing; the saved one that follows sends its
+    // page. The commands go in order, so the first request is the saved one.
+    commands.send(Command::Live).unwrap();
+    commands.send(Command::Saved { after: None }).unwrap();
+    let next = next_request(&mut ws);
+    assert_eq!(
+        next.get("op").and_then(Json::as_str),
+        Some("sessions.saved")
+    );
 }
 
 #[test]
@@ -636,11 +992,17 @@ fn a_close_with_a_request_out_takes_its_reply_as_unknown_and_never_resends() {
         (s.requests.iter()).any(|line| line.op == "abort" && line.state == RequestState::Unknown)
     });
     // The next connection sends no abort of its own: its first request is
-    // the live list that every welcome asks for, and the request lines still
-    // hold only the abort.
+    // the records subscription of every welcome, then the live list of a
+    // server with no Hub, and the request lines still hold only the abort.
     let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     welcome(&mut ws, "tok-q4");
+    let records = next_request(&mut ws);
+    assert_eq!(
+        records.get("op").and_then(Json::as_str),
+        Some("records.subscribe")
+    );
+    error(&mut ws, id_of(&records), "unknown_op");
     let frame = next_request(&mut ws);
     assert_eq!(
         frame.get("op").and_then(Json::as_str),
@@ -651,7 +1013,7 @@ fn a_close_with_a_request_out_takes_its_reply_as_unknown_and_never_resends() {
     let ops: Vec<&str> = (shared.requests.iter()).map(|line| line.op).collect();
     assert_eq!(
         ops,
-        ["sessions.live", "sessions.saved", "abort", "sessions.live"]
+        ["sessions.saved", "sessions.live", "abort", "sessions.live"]
     );
     let abort = (shared.requests.iter())
         .find(|line| line.op == "abort")
@@ -727,10 +1089,8 @@ fn more_saved_sessions_append_the_next_page() {
     let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
     let (commands, changes) = drive(stub::local(port), shared.clone());
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
-    welcome(&mut ws, "tok-q4");
-    let live = request(&mut ws, "sessions.live");
+    let (saved, live) = no_hub(&mut ws, "tok-q4");
     ok(&mut ws, id_of(&live), r#"{"sessions":[]}"#);
-    let saved = request(&mut ws, "sessions.saved");
     let page =
         r#"{"items":[{"id":"a","cwd":"/r","model":"m","mtime":0,"prompt":"first"}],"next":"c1"}"#;
     ok(&mut ws, id_of(&saved), page);
@@ -768,10 +1128,8 @@ fn two_more_pages_before_a_reply_do_not_replace_the_first_page() {
     let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
     let (commands, changes) = drive(stub::local(port), shared.clone());
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
-    welcome(&mut ws, "tok-q4");
-    let live = request(&mut ws, "sessions.live");
+    let (saved, live) = no_hub(&mut ws, "tok-q4");
     ok(&mut ws, id_of(&live), r#"{"sessions":[]}"#);
-    let saved = request(&mut ws, "sessions.saved");
     let page =
         r#"{"items":[{"id":"a","cwd":"/r","model":"m","mtime":0,"prompt":"first"}],"next":"c1"}"#;
     ok(&mut ws, id_of(&saved), page);
@@ -804,10 +1162,8 @@ fn a_refresh_then_a_more_keeps_the_first_page() {
     let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
     let (commands, changes) = drive(stub::local(port), shared.clone());
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
-    welcome(&mut ws, "tok-q4");
-    let live = request(&mut ws, "sessions.live");
+    let (saved, live) = no_hub(&mut ws, "tok-q4");
     ok(&mut ws, id_of(&live), r#"{"sessions":[]}"#);
-    let saved = request(&mut ws, "sessions.saved");
     let page =
         r#"{"items":[{"id":"a","cwd":"/r","model":"m","mtime":0,"prompt":"first"}],"next":"c1"}"#;
     ok(&mut ws, id_of(&saved), page);
@@ -904,6 +1260,8 @@ fn a_send_between_connections_is_not_sent_and_its_line_stays() {
     let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     welcome(&mut ws, "tok-q4");
+    let records = request(&mut ws, "records.subscribe");
+    error(&mut ws, id_of(&records), "unknown_op");
     let live = request(&mut ws, "sessions.live");
     ok(&mut ws, id_of(&live), r#"{"sessions":[]}"#);
     let shared = shared.lock().unwrap();
