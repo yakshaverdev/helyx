@@ -58,6 +58,10 @@ defmodule Helyx.Plugins.MixProject do
       # when #660 added Bandit.
       {:thousand_island, "~> 1.5.0"},
       {:plug, "~> 1.16"},
+      # The attempt events of a provider, and `Helyx.Telemetry.Recorder`
+      # (docs/features/provider-telemetry.md). It is in the lock already, as
+      # a dependency of Req and Bandit.
+      {:telemetry, "~> 1.0"},
       # The SQLite store of Helyx.Hub (docs/features/hub.md, decision 9).
       {:exqlite, "~> 0.42"},
       {:stream_data, "~> 1.2", only: :test},
