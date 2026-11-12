@@ -1,5 +1,5 @@
 {
-  "protocol": 12,
+  "protocol": 13,
   "reply": [
     {
       "name": "a reply orders the waiting record first, then the newest activity",
@@ -475,6 +475,44 @@
         "more": false
       },
       "expect": "broken"
+    },
+    {
+      "name": "the records feed ends and the rows stay",
+      "start": [
+        {
+          "session": "s1",
+          "owner": {
+            "id": "u1",
+            "name": "ada"
+          },
+          "project": null,
+          "title": "",
+          "labels": [],
+          "visibility": "private",
+          "archived": false,
+          "created_at": 1,
+          "updated_at": 1,
+          "cwd": "/tmp",
+          "model": "fake/echo",
+          "prompt": "",
+          "active_at": 100,
+          "parent": null,
+          "status": "idle"
+        }
+      ],
+      "frame": {
+        "type": "records_end"
+      },
+      "expect": {
+        "rows": [
+          "s1"
+        ],
+        "statuses": [
+          "idle"
+        ],
+        "more": false,
+        "ended": true
+      }
     }
   ],
   "folds": [
@@ -656,6 +694,23 @@
               "idle"
             ],
             "more": true
+          }
+        },
+        {
+          "server": {
+            "type": "records_end"
+          }
+        },
+        {
+          "expect": {
+            "rows": [
+              "s3"
+            ],
+            "statuses": [
+              "idle"
+            ],
+            "more": true,
+            "ended": true
           }
         }
       ]

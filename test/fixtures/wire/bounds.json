@@ -1,5 +1,5 @@
 {
-  "protocol": 12,
+  "protocol": 13,
   "frame_bytes": 1048576,
   "part_bytes": 786000,
   "integer_chars": 1024,
@@ -15,6 +15,7 @@
   "connections": 64,
   "outbound_queue_bytes": 67108864,
   "record_page": 256,
+  "record_live": 64,
   "record_pending": 256,
   "record_subscribers": 64,
   "record_rows": 1024,

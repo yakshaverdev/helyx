@@ -72,8 +72,10 @@ defmodule Helyx.Hub.RecordFeedTest do
 
   test "the numbers are those of bounds.json", %{tmp_dir: _dir} do
     assert RecordFeed.page() == Bounds.get("record_page")
+    assert RecordFeed.max_live() == Bounds.get("record_live")
     assert RecordFeed.max_pending() == Bounds.get("record_pending")
     assert RecordFeed.max_subscribers() == Bounds.get("record_subscribers")
+    assert RecordFeed.max_reply() == RecordFeed.page() + RecordFeed.max_live()
   end
 
   test "a burst while a send waits becomes one change, the newest", context do
@@ -177,7 +179,31 @@ defmodule Helyx.Hub.RecordFeedTest do
 
     assert Map.has_key?(state.asks, session.id)
     refute Map.has_key?(state.asks, "gone")
-    refute Map.has_key?(state.ask_epoch, "gone")
+  end
+
+  test "a seed whose snapshot read failed keeps the set of the session", context do
+    context = serve(context)
+    state = :sys.get_state(context.hub)
+    state = RecordFeed.ask(state, "s1", "a1")
+    state = RecordFeed.seed(state, [{"s1", :error}, {"s2", {:ok, ["b1"]}}])
+
+    assert Map.get(state.asks, "s1") == MapSet.new(["a1"])
+    assert Map.get(state.asks, "s2") == MapSet.new(["b1"])
+  end
+
+  test "a failed store read marks every subscriber for the full list", context do
+    context = serve(context)
+    state = :sys.get_state(context.hub)
+    {:ok, state} = RecordFeed.subscribe(state, state.default_owner_id, subscriber())
+    state = %{state | store: Helyx.Hub.RecordFeedTest.FailingStore, db: :db}
+
+    state = RecordFeed.changed(state, "s1", "changed")
+    assert %{dropped: true} = state.records |> Map.values() |> hd()
+  end
+
+  defmodule FailingStore do
+    @moduledoc false
+    def record(_db, _session_id), do: {:error, :failed}
   end
 
   defp wait_row(state, id) do

@@ -1,4 +1,4 @@
-//! The server frames of protocol 12 after the handshake: `res`, `event`,
+//! The server frames of protocol 13 after the handshake: `res`, `event`,
 //! `session_end`, and the records feed frames, each checked by the schema of
 //! `docs/features/wire-protocol.md`. A `res` is read by the op of its
 //! request, which the caller keeps by `id`.
@@ -77,8 +77,10 @@ pub enum ServerFrame {
         sub: String,
         crashed: bool,
     },
-    /// A `record` or `records` frame of the records feed.
+    /// A `record` or `records` frame of the records feed, or its end.
     Record(RecordFrame),
+    /// The records subscription ended without the client's unsubscribe.
+    RecordsEnd,
 }
 
 pub const OPS: &[&str] = &[
@@ -179,6 +181,7 @@ pub fn parse(
                 == "crashed",
         }),
         "record" | "records" => Ok(ServerFrame::Record(records::parse_frame(value)?)),
+        "records_end" => Ok(ServerFrame::RecordsEnd),
         _ => Err(Broken("frame type")),
     }
 }

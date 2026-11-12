@@ -7,23 +7,31 @@ defmodule Helyx.Hub.RecordFeed do
   # each records subscription of a connection. `pending` holds the ids of the
   # changes that wait for the process to drain, so many changes of one record
   # become one, the newest, and `dropped` says that the process passed the
-  # bound and gets the full list at the next poll.
+  # bound, or a store read failed, and gets the full list at the next poll.
+  #
+  # `silent`: the session ids whose first record row was written while a start
+  # of another user was in flight, so no client of the default owner was told
+  # of it. Its removal goes to no client of that owner (`docs/features/
+  # live-records.md`, "A start of another user").
   #
   # `asks`: session id => the ids of its open asks, from the `:ask` and
   # `:ask_end` notices of the feed, and the seed of the session snapshots.
-  # `ask_epoch`: session id => the number of the last ask notice of it, so a
-  # seed replaces a set only when no notice came while it ran.
 
   alias Helyx.Hub.{Live, Records}
   alias Helyx.Transport.WebSocket.Bounds
 
-  # The rows of the first reply, the waiting changes of one subscriber, and
-  # the subscriptions of a Hub (live-records.md, "Bounds").
+  # The rows of the first reply, the live records beside them, the waiting
+  # changes of one subscriber, and the subscriptions of a Hub
+  # (live-records.md, "Bounds").
   def page, do: Bounds.get("record_page")
+  def max_live, do: Bounds.get("record_live")
   def max_pending, do: Bounds.get("record_pending")
   def max_subscribers, do: Bounds.get("record_subscribers")
 
-  def init(state), do: Map.merge(state, %{records: %{}, asks: %{}, ask_epoch: %{}})
+  @doc "The most records of one reply: the page and the live records beside it."
+  def max_reply, do: page() + max_live()
+
+  def init(state), do: Map.merge(state, %{records: %{}, asks: %{}, silent: MapSet.new()})
 
   # One subscriber, with a monitor of its process. At most the 64 connections
   # of the transport, one records subscription each.
@@ -39,23 +47,38 @@ defmodule Helyx.Hub.RecordFeed do
 
   def down(state, ref), do: %{state | records: Map.delete(state.records, ref)}
 
-  # The first reply or a full list: the records of the user, waiting first,
-  # then by activity time, newest first, then by id. `more` is true when the
-  # user owns more than the page, and a live record of the user is in the page
-  # whatever its age.
+  # The first reply or a full list: the page of the order, and every live
+  # record of the user that the page cuts, so a live record is never left out.
+  # `more` is true when the user owns more than the page. The reply holds at
+  # most `max_reply/0` records.
   def list(state, user) do
     %{store: mod, db: db} = state
 
     with {:ok, newest} <- mod.owned(db, user, page() + 1),
          {:ok, live} <- mod.rows(db, Live.ids(state)) do
-      rows =
-        (newest ++ live)
-        |> Enum.uniq_by(& &1.session_id)
+      live_rows =
+        live
         |> Enum.filter(&(&1.owner == user))
+        |> Enum.uniq_by(& &1.session_id)
+
+      live_ids = MapSet.new(live_rows, & &1.session_id)
+
+      rows =
+        (newest ++ live_rows)
+        |> Enum.uniq_by(& &1.session_id)
         |> order(state)
 
-      with {:ok, views} <- Records.views(Enum.take(rows, page()), user, state) do
-        {:ok, Enum.map(views, &Records.wire/1), length(rows) > page()}
+      {prefix, _rest} = Enum.split(rows, page())
+      prefix_ids = MapSet.new(prefix, & &1.session_id)
+
+      extras =
+        Enum.filter(rows, fn row ->
+          MapSet.member?(live_ids, row.session_id) and
+            not MapSet.member?(prefix_ids, row.session_id)
+        end)
+
+      with {:ok, views} <- Records.views(prefix ++ extras, user, state) do
+        {:ok, Enum.map(views, &Records.wire/1), length(newest) > page()}
       end
     end
   end
@@ -78,8 +101,29 @@ defmodule Helyx.Hub.RecordFeed do
     end
   end
 
+  # The owner of a record now, or nil when it has none or no subscriber of the
+  # feed needs the answer.
+  def owner(%{records: records}, _session_id) when map_size(records) == 0, do: nil
+
+  def owner(state, session_id) do
+    case state.store.record(state.db, session_id) do
+      {:ok, row} -> row.owner
+      _missing_or_failed -> nil
+    end
+  end
+
+  # A row whose first notice goes to no client: a `Live` of a session with no
+  # row, while a start of another user is in flight.
+  def silent(%{records: records} = state, _session_id) when map_size(records) == 0, do: state
+
+  def silent(state, session_id), do: %{state | silent: MapSet.put(state.silent, session_id)}
+
+  # The session ended: its silent mark and its change wait for no one.
+  def forget(state, session_id), do: %{state | silent: MapSet.delete(state.silent, session_id)}
+
   # A change of a record that has a row. A user owns its rows only, so a
-  # record of another user reaches none of its clients.
+  # record of another user reaches none of its clients. A failed read marks
+  # every subscriber, and the next poll sends the full list.
   def changed(%{records: records} = state, _session_id, _kind) when map_size(records) == 0,
     do: state
 
@@ -88,43 +132,57 @@ defmodule Helyx.Hub.RecordFeed do
       {:ok, row} ->
         case Records.view(row, row.owner, state) do
           {:ok, view} -> send_row(state, row.owner, change(kind, view))
-          _failed -> state
+          _failed -> failed(state)
         end
 
-      _missing_or_failed ->
+      {:error, :not_found} ->
         state
+
+      _failed ->
+        failed(state)
     end
   end
 
   # A start of a user who is not the default owner moves the owner of the row
-  # that the feed may have written: the new owner gets the record, every other
-  # user gets its removal, which a client that never held it drops.
-  def moved(%{records: records} = state, _session_id) when map_size(records) == 0, do: state
+  # that the feed may have written: the new owner gets the record, and the
+  # owner before it gets the removal, unless that row was silent. No other
+  # user is told of the id.
+  def moved(%{records: records} = state, _session_id, _prior_owner) when map_size(records) == 0,
+    do: state
 
-  def moved(state, session_id) do
+  def moved(state, session_id, prior_owner) do
     with {:ok, row} <- state.store.record(state.db, session_id),
          {:ok, view} <- Records.view(row, row.owner, state) do
-      changed = change("changed", view)
-      removed = change("removed", session_id)
-
-      Enum.reduce(state.records, state, fn {ref, sub}, state ->
-        send_change(state, ref, session_id, moved_change(sub, row, changed, removed))
-      end)
+      moved_change(state, row, change("changed", view), prior_owner)
     else
-      _missing_or_failed -> state
+      _missing_or_failed -> failed(state)
     end
   end
 
-  defp moved_change(sub, row, changed, removed),
-    do: if(sub.user == row.owner, do: changed, else: removed)
+  defp moved_change(state, row, changed, prior_owner) do
+    if MapSet.member?(state.silent, row.session_id) do
+      state |> forget(row.session_id) |> send_row(row.owner, changed)
+    else
+      state = send_row(state, row.owner, changed)
 
-  # A record that is gone: every client drops it, one that never held it too.
-  def removed(%{records: records} = state, _session_id) when map_size(records) == 0, do: state
+      if prior_owner != nil and prior_owner != row.owner,
+        do: send_row(state, prior_owner, change("removed", row.session_id)),
+        else: state
+    end
+  end
 
-  def removed(state, session_id) do
-    Enum.reduce(state.records, state, fn {ref, _sub}, state ->
-      send_change(state, ref, session_id, change("removed", session_id))
-    end)
+  # A record that is gone: the subscribers of the owner that it had drop it.
+  # A client that never held it is not told of the id.
+  def removed(%{records: records} = state, _session_id, _owner) when map_size(records) == 0,
+    do: state
+
+  def removed(state, session_id, owner) do
+    silent? = MapSet.member?(state.silent, session_id)
+    state = forget(state, session_id)
+
+    if owner != nil and not silent?,
+      do: send_row(state, owner, change("removed", session_id)),
+      else: state
   end
 
   # A new list for the subscribers of `user`, after a scan wrote rows that a
@@ -140,66 +198,63 @@ defmodule Helyx.Hub.RecordFeed do
         end)
 
       _failed ->
-        state
+        failed_for(state, user)
     end
+  end
+
+  # A store read failed: every subscriber gets the full list at the next poll,
+  # so no change is lost.
+  def failed(state) do
+    Enum.reduce(state.records, state, fn {ref, _sub}, state -> drop(state, ref) end)
+  end
+
+  defp failed_for(state, user) do
+    Enum.reduce(state.records, state, fn
+      {ref, %{user: ^user}}, state -> drop(state, ref)
+      {_ref, _other}, state -> state
+    end)
   end
 
   # -- The open asks ---------------------------------------------------------
 
   def ask(state, session_id, ask_id) do
     set = state.asks |> Map.get(session_id, MapSet.new()) |> MapSet.put(ask_id)
-
-    %{
-      state
-      | asks: Map.put(state.asks, session_id, set),
-        ask_epoch: bump(state.ask_epoch, session_id)
-    }
+    %{state | asks: Map.put(state.asks, session_id, set)}
   end
 
   def ask_end(state, session_id, ask_id) do
     set = Map.get(state.asks, session_id, MapSet.new()) |> MapSet.delete(ask_id)
-
-    state = %{
-      state
-      | asks: put_set(state.asks, session_id, set),
-        ask_epoch: bump(state.ask_epoch, session_id)
-    }
-
-    state
+    %{state | asks: put_set(state.asks, session_id, set)}
   end
 
   # The `:DOWN` of a session: its asks end with it.
-  def clear_asks(state, session_id) do
-    %{
-      state
-      | asks: Map.delete(state.asks, session_id),
-        ask_epoch: Map.delete(state.ask_epoch, session_id)
-    }
-  end
+  def clear_asks(state, session_id), do: %{state | asks: Map.delete(state.asks, session_id)}
 
-  # The ask notices that Hub has seen, for the guard of a seed.
-  def epochs(state), do: state.ask_epoch
-
-  # `seeds`: `{session id, [ask id]}` for each live session of a snapshot.
-  # A set whose session had a notice while the seed ran keeps the notices.
-  def seed(state, epochs, seeds) do
-    Enum.reduce(seeds, state, fn {session_id, ask_ids}, state ->
-      if Map.get(epochs, session_id, 0) == Map.get(state.ask_epoch, session_id, 0) do
-        %{state | asks: put_set(state.asks, session_id, MapSet.new(ask_ids))}
-      else
+  # `seeds`: `{session id, {:ok, [ask id]}}` for each live session of a
+  # snapshot, or `:error` for a session whose snapshot read failed and keeps
+  # its old set. A notice that waits in the mailbox is applied after the seed,
+  # and an add or a remove of an id is idempotent.
+  def seed(state, seeds) do
+    Enum.reduce(seeds, state, fn
+      {_session_id, :error}, state ->
         state
-      end
+
+      {session_id, {:ok, ask_ids}}, state ->
+        %{state | asks: put_set(state.asks, session_id, MapSet.new(ask_ids))}
     end)
   end
 
-  # Drops the sets and epochs of sessions that no longer run, after a seed
-  # and the live set that it read: a notice that the feed dropped leaves no
-  # state behind (`docs/features/live-records.md`, "Bounds").
+  # Drops the sets of sessions that no longer run, after a seed and the live
+  # set that it read: a notice that the feed dropped leaves no state behind
+  # (`docs/features/live-records.md`, "Bounds").
   def prune(state) do
     live = MapSet.new(Live.ids(state))
-    keep = fn {session_id, _value} -> MapSet.member?(live, session_id) end
 
-    %{state | asks: Map.filter(state.asks, keep), ask_epoch: Map.filter(state.ask_epoch, keep)}
+    %{
+      state
+      | asks:
+          Map.filter(state.asks, fn {session_id, _set} -> MapSet.member?(live, session_id) end)
+    }
   end
 
   # The poll of the Hub: a subscriber that passed the bound gets the full
@@ -244,18 +299,18 @@ defmodule Helyx.Hub.RecordFeed do
 
       true ->
         state = put_sub(state, ref, %{sub | pending: Map.delete(sub.pending, session_id)})
-        {:cont, flush_change(state, sub, session_id)}
+        {:cont, flush_change(state, ref, sub, session_id)}
     end
   end
 
-  defp flush_change(state, sub, session_id) do
+  defp flush_change(state, ref, sub, session_id) do
     case current(state, session_id, sub.user) do
-      nil ->
-        state
-
-      change ->
+      {:ok, change} ->
         send(sub.pid, {:record_change, change})
         state
+
+      :error ->
+        drop(state, ref)
     end
   end
 
@@ -265,12 +320,18 @@ defmodule Helyx.Hub.RecordFeed do
     case state.store.record(state.db, session_id) do
       {:ok, %{owner: ^user} = row} ->
         case Records.view(row, user, state) do
-          {:ok, view} -> change("changed", view)
-          _failed -> nil
+          {:ok, view} -> {:ok, change("changed", view)}
+          _failed -> :error
         end
 
-      _gone_or_moved ->
-        change("removed", session_id)
+      {:ok, _other} ->
+        {:ok, change("removed", session_id)}
+
+      {:error, :not_found} ->
+        {:ok, change("removed", session_id)}
+
+      _failed ->
+        :error
     end
   end
 
@@ -278,6 +339,8 @@ defmodule Helyx.Hub.RecordFeed do
   defp change(kind, view), do: %{"kind" => kind, "record" => Records.wire(view)}
 
   defp send_row(state, user, change) do
+    state = forget(state, change_id(change))
+
     Enum.reduce(state.records, state, fn
       {ref, %{user: ^user}}, state -> send_change(state, ref, change_id(change), change)
       {_ref, _other}, state -> state
@@ -343,6 +406,4 @@ defmodule Helyx.Hub.RecordFeed do
       do: Map.delete(sets, session_id),
       else: Map.put(sets, session_id, set)
   end
-
-  defp bump(epochs, session_id), do: Map.update(epochs, session_id, 1, &(&1 + 1))
 end

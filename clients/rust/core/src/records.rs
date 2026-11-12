@@ -86,11 +86,13 @@ pub enum RecordFrame {
     },
 }
 
-/// The ordered rows of the feed and whether the server holds more.
+/// The ordered rows of the feed, whether the server holds more, and whether
+/// the subscription ended on the server.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Feed {
     rows: Vec<Record>,
     more: bool,
+    ended: bool,
 }
 
 impl Feed {
@@ -99,6 +101,7 @@ impl Feed {
         let mut feed = Feed {
             rows: records,
             more,
+            ended: false,
         };
         feed.order();
         feed.trim();
@@ -133,6 +136,17 @@ impl Feed {
     /// Whether the server holds more records than the page that it sent.
     pub fn more(&self) -> bool {
         self.more
+    }
+
+    /// Whether the subscription ended on the server: the rows are stale, and
+    /// the host subscribes again.
+    pub fn ended(&self) -> bool {
+        self.ended
+    }
+
+    /// The server ended the subscription without the client's unsubscribe.
+    pub fn end(&mut self) {
+        self.ended = true;
     }
 
     fn row(&self, session: &str) -> Option<usize> {

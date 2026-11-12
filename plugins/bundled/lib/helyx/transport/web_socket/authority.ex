@@ -87,12 +87,13 @@ defmodule Helyx.Transport.WebSocket.Authority do
   @doc """
   A records subscription of the connection (`docs/features/live-records.md`):
   it registers `pid`, the process of the transport that writes the frames,
-  and answers the first list or the error of the wire. The transport holds at
-  most one such subscription for a connection. A transport whose authority
-  does not export it answers `unknown_op`.
+  and answers the first list, the process that holds the Hub, or the error of
+  the wire. The transport monitors the Hub process and sends `records_end`
+  when it ends. A transport whose authority does not export it answers
+  `unknown_op`.
   """
   @callback records(arg(), auth(), pid()) ::
-              {:ok, map()}
+              {:ok, map(), pid() | nil}
               | {:error, code(), text :: String.t()}
               | {:close, 4403}
 

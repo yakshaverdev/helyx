@@ -44,6 +44,12 @@ defmodule Helyx.Hub.Live do
     end
   end
 
+  # Whether a start of a user who is not the default owner is in flight: its
+  # reserved place names no session id, so a `Live` of a session with no row
+  # cannot be told from it (`docs/features/live-records.md`).
+  def start_in_flight?(%{reserved: reserved}),
+    do: Enum.any?(reserved, fn {_caller, place} -> place.record? end)
+
   defp record_room(_state, _user, _places, false), do: :ok
 
   defp record_room(%{store: mod, db: db}, user, places, true) do

@@ -41,6 +41,9 @@ pub enum Output {
     Changed(String),
     /// The records feed changed: its reply, a change, or a full list.
     RecordsChanged,
+    /// The records subscription ended without the client's unsubscribe: the
+    /// rows stay, and the host subscribes again.
+    RecordsEnded,
     /// The session ended; its state stays, and no subscribe for it goes on
     /// this connection until the host states its intent again or a `history`
     /// reply says that the instance that ended was replaced (`Follow::Held`).
@@ -428,6 +431,15 @@ impl Client {
                 Ok(vec![Output::Ended { session, crashed }])
             }
             ServerFrame::Record(frame) => self.record(frame),
+            ServerFrame::RecordsEnd => {
+                let c = self.connection.as_mut().expect("a connection");
+                if !c.records {
+                    return Err(Broken("records end"));
+                }
+                c.records = false;
+                self.records.end();
+                Ok(vec![Output::RecordsEnded])
+            }
         }
     }
 
@@ -496,7 +508,11 @@ impl Client {
                 Ok(vec![Output::RecordsChanged])
             }
             ("records.unsubscribe", _, result) => {
-                c.records = false;
+                // A refusal such as `busy` leaves the server subscription
+                // live, so its frames still apply; only an ok reply ends it.
+                if result.is_ok() {
+                    c.records = false;
+                }
                 Ok(vec![Output::Reply { id, result }])
             }
             // The session started again: the instance that the page named

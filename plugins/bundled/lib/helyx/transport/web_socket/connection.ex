@@ -274,6 +274,18 @@ defmodule Helyx.Transport.WebSocket.Connection do
 
   def handle_info({:acked, pid}, state), do: {:ok, next_ack(state, pid)}
 
+  # The records process sent `records_end` (its Hub ended): the connection
+  # holds no records subscription from here, so a subscribe that follows the
+  # frame finds a free place.
+  def handle_info({:records_ended, pid}, state) do
+    {:ok,
+     %{
+       state
+       | writers: Map.delete(state.writers, pid),
+         waiting: :queue.delete(pid, state.waiting)
+     }}
+  end
+
   def handle_info({:slot, pid}, state) do
     writer = put_slot(Map.fetch!(state.writers, pid), :wait)
     {:ok, grant(%{put_writer(state, pid, writer) | waiting: :queue.in(pid, state.waiting)})}
@@ -381,11 +393,13 @@ defmodule Helyx.Transport.WebSocket.Connection do
         state = put_writer(state, pid, {:sub, sub, req, nil, ack, slot})
         next_ack(state, pid)
 
+      {:records, nil, ^id, _slot} ->
+        # The unsubscribe reply: the subscription is gone, so a subscribe
+        # that follows the reply finds no records writer.
+        %{state | writers: Map.delete(state.writers, pid)}
+
       {:records, ^id, unsub, slot} ->
         put_writer(state, pid, {:records, nil, unsub, slot})
-
-      {:records, req, ^id, slot} ->
-        put_writer(state, pid, {:records, req, nil, slot})
     end
   end
 
@@ -439,11 +453,16 @@ defmodule Helyx.Transport.WebSocket.Connection do
   defp put_slot({:sub, sub, req, unsub, ack, _}, slot), do: {:sub, sub, req, unsub, ack, slot}
   defp put_slot({:records, req, unsub, _}, slot), do: {:records, req, unsub, slot}
 
-  # The records writer that is not unsubscribing, with its tuple.
+  # The records writer that is not unsubscribing, with its tuple. A writer
+  # whose process is gone is not one: its `:EXIT` is on the way, and a
+  # subscribe that follows `records_end` or an unsubscribe reply must pass.
   defp records_writer(state) do
     Enum.find_value(state.writers, fn
-      {pid, {:records, _req, nil, _slot} = writer} -> {pid, writer}
-      _other -> nil
+      {pid, {:records, _req, nil, _slot} = writer} ->
+        if Process.alive?(pid), do: {pid, writer}
+
+      _other ->
+        nil
     end)
   end
 end

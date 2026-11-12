@@ -67,7 +67,7 @@ fn hello_carries_the_proof_of_the_token_and_not_the_token() {
     let proof = "4S4uSYUrpAhYdX9/8bK9oHO08/6IFKJIHMUaRdEiUyQ=";
     assert_eq!(
         s(&hello),
-        json!({"type": "hello", "protocol": 12, "proof": proof})
+        json!({"type": "hello", "protocol": 13, "proof": proof})
     );
     assert!(!hello.encode().contains("secret"));
     // A second challenge is a break of O1.
@@ -82,7 +82,7 @@ fn hello_with_no_token_has_no_proof() {
     let Ok(Step::Send(hello)) = handshake.step(&j(&challenge)) else {
         panic!()
     };
-    assert_eq!(s(&hello), json!({"type": "hello", "protocol": 12}));
+    assert_eq!(s(&hello), json!({"type": "hello", "protocol": 13}));
 }
 
 #[test]
@@ -168,7 +168,8 @@ fn folds() {
                     ServerFrame::Event { event, .. } => state.apply(*event),
                     ServerFrame::Res { .. }
                     | ServerFrame::SessionEnd { .. }
-                    | ServerFrame::Record(_) => Ok(()),
+                    | ServerFrame::Record(_)
+                    | ServerFrame::RecordsEnd => Ok(()),
                 };
                 applied.unwrap_or_else(|broken| panic!("{name}: {broken:?}"));
             } else if let Some(expect) = step.get("expect") {

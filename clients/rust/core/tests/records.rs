@@ -42,6 +42,7 @@ fn observe(feed: &Feed) -> Json {
             strings(feed.rows().iter().map(|row| status(row.status)).collect()),
         ),
         ("more", Json::Bool(feed.more())),
+        ("ended", Json::Bool(feed.ended())),
     ])
 }
 
@@ -49,6 +50,7 @@ fn apply(feed: &mut Feed, parsed: ServerFrame) {
     match parsed {
         ServerFrame::Record(RecordFrame::Change(change)) => feed.applied(change),
         ServerFrame::Record(RecordFrame::Full { records, more }) => feed.full(records, more),
+        ServerFrame::RecordsEnd => feed.end(),
         other => panic!("{other:?}"),
     }
 }

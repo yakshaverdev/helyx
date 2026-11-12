@@ -60,23 +60,37 @@ holds only the records that the user owns, as the sidebar of the user: unlike
   ```
 
   The client replaces its list with it.
+- The subscription ends without the client's unsubscribe when the Hub process
+  that holds it ends, such as a restart of Hub under its supervisor: the
+  server sends
+
+  ```text
+  {type: "records_end"}
+  ```
+
+  as the last frame of the feed, the connection holds no records subscription
+  after it, and the client subscribes again. The rows that it holds stay until
+  the new reply.
 - A connection holds at most one records subscription. A second
   `records.subscribe` answers `too_many_subscriptions`.
 - `records.unsubscribe` takes no params and answers `{}`. The connection holds
   no records subscription after it. An unsubscribe with none answers
-  `unknown_sub`.
+  `unknown_sub`, as it does on a server with no Hub: a client that never
+  subscribed has no subscription to end.
 - The `record` shape is the one of `hub.records.*` (`docs/features/hub.md`,
   decision 8) with one change: `status` is `"idle" | "running" | "waiting" |
   "stopped"`. The shape stays one shape: every operation that returns a
   record carries `"waiting"` when a session has an open ask. `live_session`
   keeps its `"idle" | "running"`.
 - A server with no Hub answers `records.subscribe` with `unknown_op`, as it
-  answers every `hub.*` operation. A transport whose authority exports no
-  `records/3` callback answers the same.
+  answers every `hub.*` operation, and `records.unsubscribe` with
+  `unknown_sub`. A transport whose authority exports no `records/3` callback
+  answers `records.subscribe` with `unknown_op` too.
 
-The order rule O7: the `records.subscribe` reply comes before every `record`
-and `records` frame of the connection, and no such frame comes after the
-`records.unsubscribe` reply.
+The order rule O7: the `records.subscribe` reply comes before every `record`,
+`records`, and `records_end` frame of the connection, and no such frame comes
+after the `records.unsubscribe` reply. `records_end` is the last frame of the
+feed.
 
 ### The status `"waiting"`
 
@@ -94,9 +108,12 @@ session drops the subscriber):
 - at the start of Hub, and at each repair of a dropped feed notice, one Task
   reads the live sessions and their snapshots, under the seed bound of
   `Helyx.Hub.Server` (5,000 ms);
-- a seed replaces the set of a session only when no `:ask` or `:ask_end`
-  notice of that session came while the seed ran. A session with a notice
-  keeps the notices, which are newer; the epoch of the notices says which.
+- the snapshot is the baseline, and the `:ask` and `:ask_end` notices that
+  wait in the mailbox of the Hub process are applied after the seed: adding or
+  removing an ask id is idempotent, so the set is right without an epoch;
+- a snapshot read that fails keeps the old set of its session; at a repair, a
+  read of the live sessions that fails or passes the bound keeps the old live
+  set and the old sets, and the next poll reads again.
 
 With no records subscription, Hub writes no record view and sends no frame.
 It keeps the open-ask set from the feed: one map update for each `:ask` and
@@ -106,14 +123,34 @@ It keeps the open-ask set from the feed: one map update for each `:ask` and
 
 - `Helyx.Hub.RecordFeed` (new, internal): the subscribers of the records
   feed in the state of the Hub process, the ordered list of a user, the change
-  events, the full list of a slow subscriber, and the open-ask sets. It is
-  the only writer of `records`, `asks`, and `ask_epoch` in the Hub state.
+  events, the full list of a slow subscriber, the open-ask sets, and the
+  silent marks of the starts below. It is the only writer of `records`,
+  `asks`, and `silent` in the Hub state.
 - `Helyx.Hub.Server` calls `RecordFeed.changed/3` after each write or derived
   change of a record: the row of a `Live` of the feed, a start of a user who
-  is not the default owner, a resume, a prompt, a steer, a follow-up, a
-  record update, a record delete, an `:ask`, an `:ask_end`, and the `:DOWN` of
-  a session. A scan of `sessions.saved` sends the full list to the default
-  owner, since it can write 256 rows at once.
+  is not the default owner, a resume, a prompt, a steer, a follow-up, a record
+  get that writes a row, a record update, a record delete, an `:ask`, an
+  `:ask_end`, a wake-up that the session took, and the `:DOWN` of a session.
+  A scan of `sessions.saved` and the scan of a `resume` of a folder send the
+  full list to the default owner, since each can write 256 rows at once, and
+  a project delete sends the full list to its owner, since its records lose
+  the project. No one place wraps every write: the writes go through the
+  `Helyx.Hub.Store` behaviour from `Helyx.Hub.Records`, `Helyx.Hub.Rules`,
+  `Helyx.Hub.Wake`, and the server, and the feed needs the row before a
+  delete, the two owners of a move, and whether a row existed for the kind of
+  its change, which a store wrapper cannot give without reading the row on
+  each write itself. Each write path names its change, and a test covers each
+  one.
+- **A start of another user.** A `start` of a user who is not the default
+  owner holds a reserved place of `Helyx.Hub.Live` (`record?: true`), and the
+  place names no session id. A `Live` of a session with no row while such a
+  place is in flight cannot be told from that start, so its row is written
+  and its first change is **silent**: no client is told. The `result` of the
+  start knows the owner; it sends the record to that owner, and, if the row
+  was the default owner's, the removal to the default owner's subscribers
+  only. A removal never names the id to a user who could not have held the
+  record: a record delete and a wake-up that loses its file tell the
+  subscribers of the owner that the row had.
 - `Helyx.Hub.Store` gains `owned/3` (the rows of an owner, newest
   `active_at` first, at most a limit) and `rows/2` (the rows of a list of
   session ids). `Helyx.Hub.Store.SQLite` implements them.
@@ -121,20 +158,23 @@ It keeps the open-ask set from the feed: one map update for each `:ask` and
   `wire/1` (a record as the wire shows it), so every answer of a record uses
   one shape.
 - `Helyx.Hub.Access` implements the optional authority callback
-  `records/3`: it makes one Hub call and returns the reply of
-  `records.subscribe`, or the error of the wire. The subscribe is one Hub
-  call; a change is a message from the Hub process to the records process,
-  which writes it.
-  - The Hub process builds the record view and decides the subscribers.
+  `records/3`: it makes one Hub call, returns the reply of
+  `records.subscribe` and the Hub process that it registered, or the error of
+  the wire. The subscribe is one Hub call; a change is a message from the Hub
+  process to the records process, which writes it. The Hub process builds the
+  record view and decides the subscribers.
 - `Helyx.Transport.WebSocket.Authority` gains the optional callback
   `records/3` (`arg`, `auth`, the pid of the records process).
 - `Helyx.Transport.WebSocket.Records` (new, internal): one process under the
   connection, like a session subscription. It calls the authority, replies
-  with the list once, writes each change, and ends at the unsubscribe or with
-  the connection.
+  with the list once, writes each change, monitors the Hub process, and ends
+  at the unsubscribe, at the end of its Hub (with `records_end`), or with the
+  connection.
 - `Helyx.Transport.WebSocket.Connection` gains the two ops and the writer kind
   `{:records, req, unsub, slot}`. It holds at most one records writer that is
-  not unsubscribing.
+  not unsubscribing. The unsubscribe reply removes the writer before it goes,
+  and a `records_end` removes it before the frame goes, so a subscribe that
+  follows either finds a free place.
 - Core does not change: the feed already sends `Live`, `:ask`, and `:ask_end`,
   and the session snapshot already holds the open asks.
 
@@ -162,13 +202,13 @@ It keeps the open-ask set from the feed: one map update for each `:ask` and
 
 | What | Bound | Over the bound | Where enforced |
 | ---- | ----- | -------------- | -------------- |
-| records in the first reply, and in a full list | `Helyx.Hub.RecordFeed.page/0`, read from `record_page` of `test/fixtures/wire/bounds.json`: the newest in the order of "The wire", with every live record of the user of the reply included | the reply holds the newest page and `more: true`; the client learns that more exist from `more` and reads the rest with `hub.records.search` | Hub |
+| records in the first reply, and in a full list | `Helyx.Hub.RecordFeed.max_reply/0`: the page of `page/0` read from `record_page` of `test/fixtures/wire/bounds.json`, plus the live records of the user outside it, at most `max_live/0` read from `record_live` (64, the Core cap) | the reply holds the page and every live record of the user, and `more: true` when the user owns more than the page; the client learns that more exist from `more` and reads the rest with `hub.records.search` | Hub |
 | change events that wait for one subscriber | `Helyx.Hub.RecordFeed.max_pending/0`, read from `record_pending` of `bounds.json`: the mailbox of the records process at that length | Hub drops the changes that wait and sends a full list at the next poll; the client is correct with no gap | Hub |
 | a burst of changes of one record while its send waits | one change: the newest value is built when it goes | n/a | Hub |
-| the full list after a drop | one frame of at most `page/0` records, sent at the next poll, `Helyx.Hub.Wake.poll_ms/0` (1,000 ms) after the client drains | the next poll tries again | Hub |
+| the full list after a drop, and the first list after a `records_end` | one frame of at most `max_reply/0` records, sent at the next poll, `Helyx.Hub.Wake.poll_ms/0` (1,000 ms) after the client drains | the next poll tries again | Hub |
 | records subscriptions of a Hub | `Helyx.Hub.RecordFeed.max_subscribers/0`, read from `record_subscribers` of `bounds.json`: the 64 connections of the transport, one subscription each | `busy` at the subscribe | Hub |
 | open asks of a session | one for each call that waits; Core bounds the calls of a turn (the concurrency of its tools) | n/a | Core |
-| the seed of the open-ask sets | one Task of `Helyx.Hub.Server`'s `@seed_ms` (5,000 ms) that reads `Helyx.Sessions.list_live/1` and one snapshot of each live session; past it the sets stay as they are | the repair at the next poll reads them again | Hub |
+| the seed of the open-ask sets | one Task of `Helyx.Hub.Server`'s `@seed_ms` (5,000 ms) that reads `Helyx.Sessions.list_live/1` and one snapshot of each live session; at a repair past it the old sets and the old live set stay, and the next poll reads again, and a snapshot read that fails keeps that session's set | the repair at the next poll reads them again | Hub |
 | the rows in a seed snapshot | `tail: 1`, so one message; the asks are the snapshot's | n/a | Core |
 | the reply of `records.subscribe` | the 6,000 ms of every other operation: one Hub call of 5,000 ms | `timeout` | the transport, Hub |
 | records in the fold of the client | `records`'s `MAX_ROWS`: the first page plus the changes, and when a change passes it the fold drops the oldest stopped record, then the oldest record that does not wait | the fold stays at `MAX_ROWS` rows | the client core |
@@ -185,11 +225,11 @@ the Hub for its changes.
 
 | Resource | Created by | Held by | Released on normal end | Released when the holder crashes | Released on abort |
 | -------- | ---------- | ------- | ---------------------- | -------------------------------- | ----------------- |
-| a records subscription of a connection | `records.subscribe` in the connection | the connection, as a linked writer; a process of the transport | `records.unsubscribe`, or the end of the connection | the connection monitor of the writer; the connection ends | the connection kills its writers |
+| a records subscription of a connection | `records.subscribe` in the connection | the connection, as a linked writer; a process of the transport | `records.unsubscribe`, `records_end`, or the end of the connection | the connection monitor of the writer; the connection ends | the connection kills its writers |
 | a records subscriber of Hub | the Hub call of `records/3` | the Hub process, with a monitor of the records process | the `:DOWN` of the process | the `:DOWN` | n/a |
-| the open-ask sets | the `:ask` and `:ask_end` notices, and the seed Task | the Hub process | the `:DOWN` of the session removes its set; the stop of Hub frees them | gone with Hub; the next start seeds them | n/a |
+| the monitor of the Hub by a records process | `Process.monitor/1` in the records process | the records process | the `records_end` that the `:DOWN` sends; the process ends | the process ends | the connection kills it |
+| the open-ask sets and the silent marks | the `:ask` and `:ask_end` notices, the seed Task, and a `Live` of a start in flight | the Hub process | the `:DOWN` of the session removes its set; the stop of Hub frees them | gone with Hub; the next start seeds the sets | n/a |
 | the snapshot subscription of a seed | the seed Task | the Task | the Task ends, and the session drops the subscriber at its `:DOWN` | the Task dies, and the session drops the subscriber | the Task is killed at `@seed_ms` |
-| the monitor of a records process | `RecordFeed.subscribe/3` | the Hub process | the `:DOWN` | the `:DOWN` | n/a |
 
 ## Replaced mechanism
 

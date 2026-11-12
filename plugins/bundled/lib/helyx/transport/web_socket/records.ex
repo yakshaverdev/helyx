@@ -3,7 +3,11 @@ defmodule Helyx.Transport.WebSocket.Records do
   # One records subscription of a connection (`docs/features/live-records.md`).
   # It asks the authority of the connection once, replies with the first list,
   # and writes the change frames and the full lists that the authority sends
-  # until its unsubscribe or the end of the connection.
+  # until its unsubscribe, the end of its Hub, or the end of the connection.
+  #
+  # It monitors the Hub process of the authority: a Hub that restarts leaves a
+  # subscription that no Hub holds, so the process sends `records_end` and
+  # ends, and the client subscribes again (`wire-protocol.md`, O7).
 
   alias Helyx.Transport.WebSocket.{Ops, Outbound}
 
@@ -18,9 +22,10 @@ defmodule Helyx.Transport.WebSocket.Records do
     Outbound.slot(out)
 
     case subscribe(mod, arg, auth) do
-      {:ok, result} ->
+      {:ok, result, hub} ->
+        ref = if is_pid(hub), do: Process.monitor(hub)
         Outbound.reply(out, req_id, {:ok, result})
-        loop(out)
+        loop(out, ref)
 
       answer ->
         reply(out, req_id, answer)
@@ -48,18 +53,25 @@ defmodule Helyx.Transport.WebSocket.Records do
     end
   end
 
-  defp loop(out) do
+  defp loop(out, ref) do
     receive do
       {:record_change, change} ->
-        if Outbound.add(out, %{"type" => "record", "change" => change}) == :ok, do: loop(out)
+        if Outbound.add(out, %{"type" => "record", "change" => change}) == :ok,
+          do: loop(out, ref)
 
       {:records_full, records, more} ->
         frame = %{"type" => "records", "records" => records, "more" => more}
 
-        if Outbound.add(out, frame) == :ok, do: loop(out)
+        if Outbound.add(out, frame) == :ok, do: loop(out, ref)
 
       {:unsubscribe, req_id} ->
         Outbound.reply(out, req_id, {:ok, %{}})
+
+      {:DOWN, ^ref, :process, _pid, _reason} ->
+        # The connection frees the writer before the frame goes, so a
+        # subscribe that follows the records_end finds no subscription.
+        send(out.conn, {:records_ended, self()})
+        Outbound.add(out, %{"type" => "records_end"})
     end
   end
 end

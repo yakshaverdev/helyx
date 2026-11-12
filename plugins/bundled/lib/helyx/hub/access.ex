@@ -341,11 +341,15 @@ defmodule Helyx.Hub.Access do
   def webhook(arg, id, request), do: Helyx.Hub.Access.Subscriptions.webhook(arg, id, request)
 
   # The records subscription of the connection (`docs/features/live-records.md`):
-  # one Hub call registers the process and gives the first list.
+  # one Hub call registers the process and gives the first list. The Hub
+  # process it names is the one that the transport monitors, so a Hub that
+  # restarts ends the subscription.
   @impl true
   def records(arg, auth, pid) do
+    hub = GenServer.whereis(arg.hub)
+
     case Hub.call(arg.hub, {:records_subscribe, auth, pid}) do
-      {:ok, result} -> {:ok, result}
+      {:ok, result} -> {:ok, result, hub}
       other -> error(other)
     end
   end
