@@ -661,6 +661,76 @@ impl Desktop {
     }
 
     fn status(&self, requests: &[RequestLine]) -> gpui::Div {
+        use helyx_client_core::usage::{Level, context_percent, cost_text, level, tokens_text};
+
+        // The usage of the followed session, as its fold holds it.
+        let (usage, context, model) = {
+            let shared = self.shared();
+            match shared
+                .followed
+                .as_deref()
+                .and_then(|session| shared.client.state(session))
+            {
+                Some(state) => (
+                    state.usage.clone(),
+                    state.context.clone(),
+                    state.model.clone(),
+                ),
+                None => (Default::default(), None, String::new()),
+            }
+        };
+        let prompt = usage
+            .input
+            .saturating_add(usage.cache_read)
+            .saturating_add(usage.cache_write);
+        let mut parts: Vec<(String, u32)> = Vec::new();
+        if prompt.saturating_add(usage.output) > 0 {
+            parts.push((
+                format!(
+                    "in {} out {}",
+                    tokens_text(prompt),
+                    tokens_text(usage.output)
+                ),
+                DIM,
+            ));
+        }
+        if prompt > 0 {
+            let percent = u128::from(usage.cache_read) * 100 / u128::from(prompt);
+            parts.push((format!("cache {percent}%"), DIM));
+        }
+        if let Some(cost) = cost_text(&usage) {
+            parts.push((cost, DIM));
+        }
+        if let Some(context) = context.as_ref()
+            && let Some(percent) = context_percent(context, &model)
+        {
+            // The display caps the percent; the level follows the exact one.
+            let text = if percent > 999 {
+                ">999%".to_owned()
+            } else {
+                format!("{percent}%")
+            };
+            let color = match level(percent) {
+                Level::Normal => DIM,
+                Level::Warn => 0xffb000,
+                Level::Bad => FAILED,
+            };
+            parts.push((text, color));
+        }
+        let followed = (!parts.is_empty()).then(|| {
+            div()
+                .flex()
+                .gap_1()
+                .px_2()
+                .text_size(px(11.))
+                .text_color(rgb(DIM))
+                .children(
+                    parts
+                        .into_iter()
+                        .map(|(text, color)| div().text_color(rgb(color)).child(text)),
+                )
+        });
+
         let shown = &requests[requests.len().saturating_sub(SHOWN_REQUESTS)..];
         let older = requests.len() - shown.len();
         div()
@@ -680,6 +750,7 @@ impl Desktop {
                     .text_size(px(11.))
                     .child(line.text())
             }))
+            .when_some(followed, |d, row| d.child(row))
             .when_some(self.input.notice.as_ref(), |d, notice| {
                 d.child(
                     div()
