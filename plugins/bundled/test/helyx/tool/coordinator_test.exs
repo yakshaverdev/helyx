@@ -176,6 +176,87 @@ defmodule Helyx.Tool.CoordinatorTest do
       [result] = coordinate(context, nil, [create(%{"folder" => context.dir, "prompt" => ""})])
       assert Message.text(result) =~ ~r/^session \S+ started in .* with the mode echo\.$/
     end
+
+    test "with worktree, the session starts in the new worktree", context do
+      repo = git_repo(Path.join(context.dir, "repo"))
+      sub = Path.join(repo, "apps/web")
+      File.mkdir_p!(sub)
+      File.write!(Path.join(sub, "keep"), "")
+      script = Path.join([repo, ".helyx", "worktree-setup"])
+      File.mkdir_p!(Path.dirname(script))
+      File.write!(script, "echo ok\n")
+      git!(repo, ["add", "."])
+      git!(repo, ["commit", "-m", "script"])
+      worktree_root(context)
+
+      [rooted, nested] =
+        coordinate(context, context.ann, [
+          create(%{"folder" => repo, "worktree" => %{"branch" => "task"}}),
+          create(%{"folder" => sub, "worktree" => %{"branch" => "nested"}})
+        ])
+
+      refute rooted.is_error
+      refute nested.is_error
+
+      rooted_text = Message.text(rooted)
+      assert rooted_text =~ "on the branch helyx/task (setup ran)"
+      [_, root] = Regex.run(~r/in the worktree (\S+) on the branch helyx\/task/, rooted_text)
+
+      [_, path] =
+        Regex.run(~r/in the worktree (\S+) on the branch helyx\/nested/, Message.text(nested))
+
+      refute path == root
+      assert File.dir?(root)
+
+      live = Helyx.Sessions.list_live(context.core)
+      assert [%{cwd: ^root}] = Enum.filter(live, &(&1.id == created_id(rooted)))
+      assert [%{cwd: cwd}] = Enum.filter(live, &(&1.id == created_id(nested)))
+      assert cwd == Path.join(path, "apps/web")
+    end
+
+    @tag max_live: 1
+    test "a failure after the add names the worktree, which stays", context do
+      repo = git_repo(Path.join(context.dir, "repo"))
+      worktree_root(context)
+
+      [result] =
+        coordinate(context, context.ann, [
+          create(%{"folder" => repo, "worktree" => %{"branch" => "left"}})
+        ])
+
+      assert result.is_error
+      text = Message.text(result)
+      assert text =~ "you run as many sessions as you may"
+      [_, path] = Regex.run(~r/the worktree (\S+) on the branch helyx\/left stays/, text)
+      assert File.dir?(path)
+    end
+
+    test "a mode that does not exist makes no worktree", context do
+      repo = git_repo(Path.join(context.dir, "repo"))
+      root = worktree_root(context)
+
+      [result] =
+        coordinate(context, context.ann, [
+          create(%{"folder" => repo, "mode" => "nope", "worktree" => %{"branch" => "none"}})
+        ])
+
+      assert Message.text(result) =~ "no mode nope"
+      refute File.exists?(root)
+    end
+
+    test "a worktree with an unknown key, no branch, or a bad name is refused by its checks",
+         context do
+      calls = [
+        create(%{"folder" => context.dir, "worktree" => %{"branch" => "task", "extra" => 1}}),
+        create(%{"folder" => context.dir, "worktree" => %{}}),
+        create(%{"folder" => context.dir, "worktree" => %{"branch" => "Bad"}})
+      ]
+
+      texts = context |> coordinate(context.ann, calls) |> Enum.map(&Message.text/1)
+      assert Enum.at(texts, 0) =~ "worktree.extra is not a known argument"
+      assert Enum.at(texts, 1) =~ "worktree.branch is required"
+      assert Enum.at(texts, 2) =~ "the branch must be 1 to 64 bytes"
+    end
   end
 
   test "no Hub for the Core gives an error result", context do
@@ -440,5 +521,38 @@ defmodule Helyx.Tool.CoordinatorTest do
       tries == 0 -> flunk("the condition did not hold")
       true -> Process.sleep(10) && wait_until(fun, tries - 1)
     end
+  end
+
+  defp git_repo(dir) do
+    File.mkdir_p!(dir)
+    git!(dir, ["init"])
+    git!(dir, ["commit", "--allow-empty", "-m", "one"])
+    dir
+  end
+
+  # The worktree root of the test, put back at its end. The tools read the
+  # application env of `helyx_plugins`.
+  defp worktree_root(context) do
+    root = Path.join(context.dir, "worktrees")
+    previous = Application.get_env(:helyx_plugins, :worktree_root)
+    Application.put_env(:helyx_plugins, :worktree_root, root)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:helyx_plugins, :worktree_root, previous),
+        else: Application.delete_env(:helyx_plugins, :worktree_root)
+    end)
+
+    root
+  end
+
+  defp git!(dir, args) do
+    {out, 0} =
+      System.cmd("git", ["-c", "user.name=t", "-c", "user.email=t@t" | args],
+        cd: dir,
+        stderr_to_stdout: true
+      )
+
+    out
   end
 end

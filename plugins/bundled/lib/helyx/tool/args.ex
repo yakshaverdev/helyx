@@ -12,7 +12,7 @@ defmodule Helyx.Tool.Args do
   # raises, so a new tool cannot use a keyword that nothing checks.
 
   @keywords ~w(type properties required enum minimum maximum minLength maxLength
-               items minItems maxItems default description)
+               items minItems maxItems default description additionalProperties)
   @types ~w(object array string integer number boolean)
 
   # Each keyword that states a rule, and the types that it fits.
@@ -25,7 +25,8 @@ defmodule Helyx.Tool.Args do
     "maxLength" => ~w(string),
     "minItems" => ~w(array),
     "maxItems" => ~w(array),
-    "items" => ~w(array)
+    "items" => ~w(array),
+    "additionalProperties" => ~w(object)
   }
 
   @doc false
@@ -62,6 +63,10 @@ defmodule Helyx.Tool.Args do
 
         key == "type" and value not in @types ->
           raise ArgumentError, "unknown schema type #{inspect(value)} at #{where(path)}"
+
+        key == "additionalProperties" and not is_boolean(value) ->
+          raise ArgumentError,
+                "the schema keyword \"additionalProperties\" needs true or false at #{where(path)}"
 
         Map.has_key?(@constrained, key) and schema["type"] not in @constrained[key] ->
           raise ArgumentError,
@@ -161,14 +166,31 @@ defmodule Helyx.Tool.Args do
     properties = Map.get(schema, "properties", %{})
     required = Map.get(schema, "required", [])
 
-    Enum.reduce_while(properties, {:ok, value}, fn {name, sub}, {:ok, acc} ->
-      case property(sub, Map.get(value, name), name in required, path, name) do
-        :absent -> {:cont, {:ok, Map.delete(acc, name)}}
-        {:ok, checked} -> {:cont, {:ok, Map.put(acc, name, checked)}}
-        {:error, text} -> {:halt, {:error, text}}
-      end
-    end)
+    checked =
+      Enum.reduce_while(properties, {:ok, value}, fn {name, sub}, {:ok, acc} ->
+        case property(sub, Map.get(value, name), name in required, path, name) do
+          :absent -> {:cont, {:ok, Map.delete(acc, name)}}
+          {:ok, checked} -> {:cont, {:ok, Map.put(acc, name, checked)}}
+          {:error, text} -> {:halt, {:error, text}}
+        end
+      end)
+
+    case checked do
+      {:ok, checked} -> unknown(schema, checked, path, properties)
+      {:error, text} -> {:error, text}
+    end
   end
+
+  # `additionalProperties: false` refuses a key that the properties do not
+  # name, so a misspelled argument of an object fails here, at its entry.
+  defp unknown(%{"additionalProperties" => false}, value, path, properties) do
+    case value |> Map.keys() |> Enum.sort() |> Enum.find(&(not Map.has_key?(properties, &1))) do
+      nil -> {:ok, value}
+      name -> {:error, "#{join(path, name)} is not a known argument"}
+    end
+  end
+
+  defp unknown(_schema, value, _path, _properties), do: {:ok, value}
 
   defp property(_sub, nil, true, path, name), do: {:error, "#{join(path, name)} is required"}
   defp property(%{"default" => default}, nil, false, _path, _name), do: {:ok, default}
