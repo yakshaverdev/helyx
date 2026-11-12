@@ -274,8 +274,7 @@ defmodule Helyx.Hub.FeedTest do
           :ok = Helyx.Session.prompt(session, "hi")
           :ok = Helyx.Sessions.stop(session)
           send(self(), {:session, session.id})
-        end,
-        idle_stop_ms: Idle.idle_ms()
+        end
       )
 
     assert_received {:session, id}
