@@ -39,6 +39,14 @@ defmodule Helyx.Transport.WebSocket.TLS do
   def handshake_ms, do: @handshake_ms
 
   @doc """
+  The read timeout of the HTTP request of an upgrade, in milliseconds: two
+  waits of this value fit the handshake bound, `handshake_ms/0`, which is
+  the bound of the request in all.
+  """
+  @spec request_ms() :: pos_integer()
+  def request_ms, do: div(@handshake_ms, 2)
+
+  @doc """
   The TLS files of the data folder `data_folder`, made at the first call.
   Gives `{:ok, %{certfile, keyfile, pin}}`, or `{:error, {:tls_file, path,
   reason}}` when a file that exists cannot be read as its part, and

@@ -197,6 +197,19 @@ defmodule Helyx.Transport.WebSocket.TLSTest do
     end
 
     @tag :slow
+    test "a TLS connection that sends no HTTP request closes at handshake_ms", %{
+      port: port,
+      tls: tls
+    } do
+      {:ok, socket} = TlsClient.connect(port, tls.pin)
+
+      assert {:ok, line} = :ssl.recv(socket, 0, TLS.handshake_ms() + 5_000)
+      assert line =~ "408"
+      assert :ok = drain(socket, 5)
+      :ssl.close(socket)
+    end
+
+    @tag :slow
     test "a TLS connection that sends no ClientHello closes at handshake_ms", %{port: port} do
       {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false])
 
@@ -216,6 +229,16 @@ defmodule Helyx.Transport.WebSocket.TLSTest do
                  public: [ip: {127, 0, 0, 1}, port: 0, address: "127.0.0.1:0"],
                  tls: tls
                )
+    end
+  end
+
+  # The lines of a response, then the close of the server.
+  defp drain(_socket, 0), do: :no_close
+
+  defp drain(socket, left) do
+    case :ssl.recv(socket, 0, 5_000) do
+      {:ok, _line} -> drain(socket, left - 1)
+      {:error, :closed} -> :ok
     end
   end
 end

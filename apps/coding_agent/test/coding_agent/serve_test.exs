@@ -295,6 +295,10 @@ defmodule CodingAgent.ServeTest do
   defp server_json(port),
     do: JSON.encode!(%{address: "127.0.0.1", port: port, token: "the-token"})
 
+  defp ipv6_loopback? do
+    match?({:ok, _ip}, :inet.getaddr(~c"::1", :inet6))
+  end
+
   # A free TCP port for the public listener. Another process can take it
   # between the close and the start, and the test's start would then fail.
   defp free_port do
@@ -845,15 +849,16 @@ defmodule CodingAgent.ServeTest do
     {:ok, found} = Helyx.Transport.WebSocket.TLS.ensure(sessions)
     assert found.pin == pin
 
-    assert {:ok, socket} =
-             :ssl.connect(
-               ~c"127.0.0.1",
-               port,
-               [:binary, active: false, verify: :verify_none],
-               5_000
-             )
-
+    options = [:binary, {:active, false}, {:verify, :verify_none}]
+    assert {:ok, socket} = :ssl.connect(~c"127.0.0.1", port, options, 5_000)
     :ssl.close(socket)
+
+    # The one dual-stack socket reaches the IPv6 loopback too, on the
+    # machines that have one.
+    if ipv6_loopback?() do
+      assert {:ok, socket6} = :ssl.connect(~c"::1", port, options ++ [:inet6], 5_000)
+      :ssl.close(socket6)
+    end
 
     assert {0, _out, _err} = stop(task)
     free()

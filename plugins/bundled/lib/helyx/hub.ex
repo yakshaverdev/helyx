@@ -312,6 +312,10 @@ defmodule Helyx.Hub do
     {Helyx.Hub.Access, Map.put(config, :hub, hub)}
   end
 
+  @doc "The longest wait of one Hub call, in milliseconds."
+  @spec call_ms() :: pos_integer()
+  def call_ms, do: @call_ms
+
   # A Hub call (decision 5). No counter: the admission count is the mailbox.
   # `until`, a monotonic time in ms, is a deadline of the caller that can
   # come before the one of the call: a wire operation whose deadline holds

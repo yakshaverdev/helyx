@@ -41,7 +41,7 @@ defmodule CodingAgent.CLI.Pair do
          {port, ""} <- Integer.parse(port),
          true <- port in 1..65_535 do
       address = if bracketed or ipv6?(host), do: "[#{host}]:#{port}", else: "#{host}:#{port}"
-      {:ok, {{0, 0, 0, 0}, port, address}}
+      {:ok, {public_ip(), port, address}}
     else
       _bad -> public_error(value)
     end
@@ -62,6 +62,16 @@ defmodule CodingAgent.CLI.Pair do
     case :inet.parse_address(String.to_charlist(host)) do
       {:ok, ip} -> tuple_size(ip) == 8
       {:error, _not_ip} -> false
+    end
+  end
+
+  # The listener binds every interface of both families with one dual-stack
+  # socket when the host has IPv6, and every IPv4 interface otherwise
+  # (`docs/features/remote-hands.md`, "Public listener").
+  defp public_ip do
+    case :inet.getaddr(~c"::1", :inet6) do
+      {:ok, _loopback} -> {0, 0, 0, 0, 0, 0, 0, 0}
+      {:error, _no_ipv6} -> {0, 0, 0, 0}
     end
   end
 

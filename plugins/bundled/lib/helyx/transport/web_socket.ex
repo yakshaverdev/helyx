@@ -209,13 +209,20 @@ defmodule Helyx.Transport.WebSocket do
     )
   end
 
-  # The public listener shares the one gate of the server
-  # (`docs/features/remote-hands.md`, "Public listener"): ADR 0012 gives a
-  # server 64 connections, not 64 for each listener.
+  # Each listener has its own gate of `max_connections/0`
+  # (`docs/features/remote-hands.md`, "Public listener"): a public connection
+  # never takes a place of the loopback listener, in any state.
   defp public_parts(_sup, _config, nil, _tls, _pairing, _gate), do: {:ok, []}
 
-  defp public_parts(sup, config, public, tls, pairing, gate) do
-    with {:ok, bandit} <-
+  defp public_parts(sup, config, public, tls, pairing, _gate) do
+    with {:ok, gate} <-
+           Supervisor.start_child(
+             sup,
+             Supervisor.child_spec({Helyx.Transport.WebSocket.Gate, @max_connections},
+               id: :public_gate
+             )
+           ),
+         {:ok, bandit} <-
            Supervisor.start_child(
              sup,
              listener(
@@ -259,7 +266,7 @@ defmodule Helyx.Transport.WebSocket do
           # here; the gate bounds the upgraded ones.
           num_connections: tcp_connections(),
           shutdown_timeout: 15_000
-        ] ++ tls_options(tls),
+        ] ++ tls_options(tls, ip) ++ read_options(tls),
       websocket_options: [
         max_frame_size: Helyx.Transport.WebSocket.Frame.max_frame() + 14,
         max_fragmented_message_size: Helyx.Transport.WebSocket.Frame.max_frame(),
@@ -272,18 +279,30 @@ defmodule Helyx.Transport.WebSocket do
     Supervisor.child_spec({Bandit, options}, id: id)
   end
 
-  defp tls_options(nil), do: []
+  defp tls_options(nil, _ip), do: []
 
-  defp tls_options(tls) do
+  defp tls_options(tls, ip) do
+    dual_stack = if tuple_size(ip) == 8, do: [ipv6_v6only: false], else: []
+
     [
       transport_module: Helyx.Transport.WebSocket.TLS.Transport,
-      transport_options: [
-        certfile: String.to_charlist(tls.certfile),
-        keyfile: String.to_charlist(tls.keyfile),
-        versions: [:"tlsv1.3"]
-      ]
+      transport_options:
+        [
+          certfile: String.to_charlist(tls.certfile),
+          keyfile: String.to_charlist(tls.keyfile),
+          versions: [:"tlsv1.3"]
+        ] ++ dual_stack
     ]
   end
+
+  # The HTTP request of the upgrade gets the bound of the TLS handshake, so
+  # a TLS connection that sends no request does not hold a place. The read
+  # timeout of an upgraded WebSocket connection is the ping and the lease,
+  # not this value (`docs/features/remote-hands.md`, "Public listener").
+  defp read_options(nil), do: []
+
+  defp read_options(_tls),
+    do: [read_timeout: Helyx.Transport.WebSocket.TLS.request_ms()]
 
   @doc "The port of the public listener, for a start with port 0."
   @spec public_port(Supervisor.supervisor()) :: :inet.port_number()
@@ -482,10 +501,16 @@ defmodule Helyx.Transport.WebSocket do
         conn |> Plug.Conn.send_resp(503, "") |> Plug.Conn.halt()
 
       true ->
+        # The upgraded WebSocket of the public listener keeps no read
+        # timeout of the listener: its idle rule is the ping and the lease
+        # (`docs/features/remote-hands.md`, "Public listener").
+        options =
+          if config.listener == :public, do: [timeout: :infinity], else: []
+
         conn
         |> Plug.Conn.upgrade_adapter(
           :websocket,
-          {Helyx.Transport.WebSocket.Connection, config, []}
+          {Helyx.Transport.WebSocket.Connection, config, options}
         )
         |> Plug.Conn.halt()
     end

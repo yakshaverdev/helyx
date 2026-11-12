@@ -227,6 +227,34 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
       :gen_tcp.close(socket)
     end
 
+    test "the public gate takes no place of the loopback listener", context do
+      # Fill the public gate with upgrades that send no `hello`: each holds
+      # its place until the hello wait ends.
+      public =
+        for _ <- 1..WebSocket.max_connections() do
+          {:ok, socket} = TlsClient.upgrade(context.port, context.tls.pin)
+          socket
+        end
+
+      loop = WireClient.open(context.loop, @token)
+      assert %{"ok" => true} = WireClient.request(loop, "1", "sessions.live", %{})
+      :gen_tcp.close(loop)
+      Enum.each(public, &:ssl.close/1)
+    end
+
+    test "pair.revoke with a kind or name that is not a string is bad_params", context do
+      socket = WireClient.open(context.loop, @token)
+
+      for params <- [%{"kind" => 1, "name" => 2}, %{"kind" => "hands", "name" => 2}] do
+        assert %{"ok" => false, "error" => %{"code" => "bad_params"}} =
+                 WireClient.request(socket, "1", "pair.revoke", params)
+      end
+
+      # The pairing process and both listeners still serve.
+      assert %{"ok" => true} = WireClient.request(socket, "2", "sessions.live", %{})
+      :gen_tcp.close(socket)
+    end
+
     test "a server with no public listener answers no_public_listener", _context do
       core = :"core_#{System.unique_integer([:positive])}"
       start_supervised!({Helyx.Core, name: core, plugins: [Fake]}, id: :plain_core)
@@ -440,6 +468,27 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
       :gen_tcp.close(loop)
     end
 
+    @tag :slow
+    test "a Hub that does not answer closes with 4503, not a connection crash",
+         %{tls: tls} = context do
+      {link, _expires} = link(context)
+      {socket, {:frame, %{"type" => "welcome"}}, keys} = pair(context, link)
+      :ssl.close(socket)
+
+      :sys.suspend(context.hub)
+
+      try do
+        {_other, reply} =
+          TlsClient.open(context.port, tls.pin, fn nonce ->
+            signature_hello(nonce, tls.pin, keys, "mac")
+          end)
+
+        assert {:close, 4503} = reply
+      after
+        :sys.resume(context.hub)
+      end
+    end
+
     test "pair.create on the public listener is unknown_op", %{tls: tls} = context do
       {link, _expires} = link(context)
 
@@ -452,10 +501,11 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
       :ssl.close(socket)
     end
 
-    test "the two listeners share one connection gate", context do
+    test "each listener has its own connection gate", context do
       children = Supervisor.which_children(context.transport)
-      refute List.keymember?(children, :public_gate, 0)
-      assert List.keymember?(children, :listener, 0)
+      {_, loop_gate, :worker, _} = List.keyfind(children, Helyx.Transport.WebSocket.Gate, 0)
+      {_, public_gate, :worker, _} = List.keyfind(children, :public_gate, 0)
+      assert loop_gate != public_gate
       assert WebSocket.max_connections() == 64
     end
   end
@@ -577,7 +627,9 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
                  "folder" => "/tmp/project"
                })
 
-      # The server asks for liveness, and the runner sends no answer.
+      # The server asks for liveness, and the runner sends no answer. The
+      # connection is silent past the HTTP request bound of the public
+      # listener; the lease, not that bound, closes it.
       assert {:frame, %{"type" => "req", "op" => "hands.live"}} = next(socket)
       assert {:close, 4408} = TlsClient.until_close(socket)
     end
@@ -645,6 +697,41 @@ defmodule Helyx.Transport.WebSocket.PairingTest do
       {hello, _keys} = pair_hello(Base.encode64(nonce), link)
 
       assert {:close, 4503} = Pairing.hello(pairing, nonce, hello, self())
+    end
+
+    test "a link is not consumed for a caller that dies during the Hub call", context do
+      {:ok, pairing} =
+        Pairing.start_link(
+          hub: context.hub,
+          address: "127.0.0.1:0",
+          pin: context.tls.pin,
+          lease_ms: WebSocket.hands_lease_ms(),
+          clock: fn -> 0 end
+        )
+
+      {:ok, %{"link" => link}} = Pairing.create(pairing, "hands", "mac")
+      nonce = :crypto.strong_rand_bytes(32)
+      {hello, _keys} = pair_hello(Base.encode64(nonce), link)
+
+      :sys.suspend(context.hub)
+
+      caller = spawn(fn -> Pairing.hello(pairing, nonce, hello, self()) end)
+      # The Hub is suspended, so the Hub call of the Pairing stays in its
+      # mailbox; the caller dies before the row is written.
+      Helyx.Test.Events.wait_until(fn ->
+        {:message_queue_len, n} = Process.info(GenServer.whereis(context.hub), :message_queue_len)
+        n > 0
+      end)
+
+      Process.exit(caller, :kill)
+      :sys.resume(context.hub)
+
+      # The hello of the dead caller ends; the link is still pending.
+      assert {:ok, _peers} = Pairing.list(pairing)
+      nonce2 = :crypto.strong_rand_bytes(32)
+      {hello2, _keys2} = pair_hello(Base.encode64(nonce2), link)
+
+      assert {:ok, "hands", "mac"} = Pairing.hello(pairing, nonce2, hello2, self())
     end
 
     test "the link hash is out of the state and out of a crash report", context do
