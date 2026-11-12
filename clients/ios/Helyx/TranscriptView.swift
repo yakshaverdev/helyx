@@ -21,7 +21,7 @@ struct TranscriptView: View {
                                 RowView(row: row, expanded: $expanded)
                             }
                             if let partial = state.partial {
-                                MessageView(message: partial, expanded: $expanded)
+                                MessageView(message: partial, expanded: $expanded, calls: true)
                             }
                             ForEach(Array(state.uiBlocks.enumerated()), id: \.offset) { _, shown in
                                 UiBlockView(json: shown.block)
@@ -139,11 +139,13 @@ private struct CallView: View {
     }
 }
 
-/// A message: its text and thinking blocks, its tool calls, and the UI blocks
-/// of a result.
+/// A message: its text and thinking blocks, and the UI blocks of a result.
+/// `calls` shows its tool calls too: the partial message has no call rows
+/// yet, and a message of the rows has one `CallView` for each call.
 private struct MessageView: View {
     let message: Message
     @Binding var expanded: Set<String>
+    var calls = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -183,8 +185,10 @@ private struct MessageView: View {
                 expanded: $expanded
             )
         case .toolCall(_, let name, let arguments):
-            Text(name).font(.callout.bold())
-            BoundedText(text: arguments)
+            if calls {
+                Text(name).font(.callout.bold())
+                BoundedText(text: arguments)
+            }
         case .unknown(let kind):
             Text("[\(kind)]")
                 .font(.caption)
