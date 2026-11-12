@@ -9,6 +9,7 @@ struct TranscriptView: View {
     let state: SessionState
     @State private var expanded: Set<String> = []
     @State private var atBottom = true
+    @State private var bottomY: CGFloat = 0
     private let bottom = "bottom"
 
     var body: some View {
@@ -58,7 +59,16 @@ struct TranscriptView: View {
                 }
                 .coordinateSpace(name: "transcript")
                 .onPreferenceChange(BottomKey.self) { maxY in
+                    bottomY = maxY
                     atBottom = maxY <= outer.size.height + 1
+                }
+                // An ask or the keyboard takes room from the transcript: a
+                // reader who was at the bottom of the old height stays at
+                // the bottom of the new one.
+                .onChange(of: outer.size.height) { old, _ in
+                    if bottomY <= old + 1 {
+                        DispatchQueue.main.async { scroll(proxy) }
+                    }
                 }
                 .onChange(of: state) { _, _ in
                     if atBottom {
