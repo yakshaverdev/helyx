@@ -37,6 +37,8 @@ defmodule Helyx.Hub.Store do
   @typedoc """
   A record row (`docs/features/hub.md`, "Store schema"). `prompt` is the
   first user text that Hub authorized, cut to 1,024 bytes, or `""`.
+  `parent_id` is the session of the parent link and `parent_kind` is
+  `"child"` or `"thread"`, both nil for a session with no link.
   """
   @type record :: %{
           session_id: String.t(),
@@ -50,7 +52,9 @@ defmodule Helyx.Hub.Store do
           visibility: String.t(),
           archived: boolean(),
           created_at: integer(),
-          updated_at: integer()
+          updated_at: integer(),
+          parent_id: String.t() | nil,
+          parent_kind: String.t() | nil
         }
 
   @typedoc "The access of a session that has a row."
@@ -119,10 +123,33 @@ defmodule Helyx.Hub.Store do
 
   @doc """
   Inserts a new row with `session_id`, `owner`, `cwd`, `model`, `prompt`,
-  `active_at`, and `created_at`, unless its owner holds `max` rows.
+  `active_at`, `created_at`, and the optional parent link, unless its owner
+  holds `max` rows; `:none` means no cap, for the rows of the default owner.
+  The row of the id that a session start already wrote through the feed takes
+  the owner, the session facts, and a parent link of this start; a start with
+  no link keeps the parent of that row.
   """
-  @callback put_record(t(), record :: map(), max :: pos_integer(), deadline()) ::
+  @callback put_record(t(), record :: map(), max :: pos_integer() | :none, deadline()) ::
               :ok | {:error, :too_many_records | :timeout | :failed}
+
+  @doc """
+  Writes the row that a `Helyx.Sessions.Live` of the feed names: inserts a
+  row of the default owner, with the parent link of the session, or, for a
+  session that has one, sets its `model` and `active_at`. The owner, title,
+  labels, project, prompt, `created_at`, and parent of an existing row stay.
+  A row of the default owner has no cap: the session files bound it (hub.md,
+  decision 8).
+  """
+  @callback seen_record(t(), record :: map(), deadline()) ::
+              :ok | {:error, :busy | :failed | :timeout}
+
+  @doc """
+  Inserts each row that a session with no row names, with its parent link,
+  and changes no existing row: at most 256 rows, the bound of the caller
+  (hub.md, decision 8).
+  """
+  @callback ensure_records(t(), [record :: map()], deadline()) ::
+              :ok | {:error, :busy | :failed | :timeout}
 
   @doc """
   Sets `active_at` of the row of a session to `at`, and its `prompt` to
@@ -145,22 +172,14 @@ defmodule Helyx.Hub.Store do
               {:ok, %{String.t() => [String.t()]}} | {:error, :failed}
 
   @doc """
-  In one step: inserts `new` when it is not nil (a derived record that gets
-  its row, within `max` rows of its owner), then applies `changes` (`:title`,
-  `:visibility`, `:archived`, `:project_id`, `:labels`) and sets
-  `updated_at`. A project that the owner of the row does not own answers
-  `:unknown_project`.
+  In one step: applies `changes` (`:title`, `:visibility`, `:archived`,
+  `:project_id`, `:labels`) to the row of a session and sets `updated_at`. A
+  project that the owner of the row does not own answers `:unknown_project`;
+  a session with no row answers `:not_found`.
   """
-  @callback update_record(
-              t(),
-              String.t(),
-              new :: map() | nil,
-              changes :: map(),
-              pos_integer(),
-              deadline()
-            ) ::
+  @callback update_record(t(), String.t(), changes :: map(), deadline()) ::
               :ok
-              | {:error, :not_found | :too_many_records | :unknown_project | :timeout | :failed}
+              | {:error, :not_found | :unknown_project | :timeout | :failed}
 
   @doc "Deletes the row of a session with its labels."
   @callback delete_record(t(), String.t(), deadline()) ::
@@ -208,6 +227,17 @@ defmodule Helyx.Hub.Store do
 
   @doc "Whether `owner` owns a \"hub\" record."
   @callback hub_records?(t(), owner :: String.t()) :: {:ok, boolean()} | {:error, :failed}
+
+  @doc """
+  The rows that `owner` owns, newest `active_at` first, then by session id,
+  at most `limit` (`docs/features/live-records.md`).
+  """
+  @callback owned(t(), owner :: String.t(), limit :: pos_integer()) ::
+              {:ok, [record()]} | {:error, :failed}
+
+  @doc "The rows of `session_ids`, at most 256 ids (the feed of a user)."
+  @callback rows(t(), session_ids :: [String.t()]) ::
+              {:ok, [record()]} | {:error, :failed}
 
   @typedoc """
   A schedule row (`docs/features/hub.md`, decisions 11 and 12, "Store

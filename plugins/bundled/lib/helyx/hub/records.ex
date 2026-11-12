@@ -5,30 +5,35 @@ defmodule Helyx.Hub.Records do
   # 7, 8). The caller checked the params and ran the existence check of
   # decision 8; each request first checks the credential, as `Helyx.Hub.Rules`.
 
-  alias Helyx.Hub.Rules
+  alias Helyx.Hub.Live, as: HubLive
+  alias Helyx.Hub.{Params, Rules}
+  alias Helyx.Session.File.Scan.Summary
+  alias Helyx.Sessions.Live
 
   # The cap of Bounds.
   @max_projects 256
 
-  # A record that the user may read, stored or derived.
-  def handle({:record_get, auth, session_id, found}, _deadline, state) do
+  # A record that the user may read. An id that the existence check found
+  # gets its row first, so the default owner reads it as a stored record.
+  def handle({:record_get, auth, session_id, found}, deadline, state) do
     with :ok <- Rules.credential(auth, state),
+         :ok <- ensure(session_id, found, deadline, state),
          {:ok, access} <- Rules.access(session_id, found != nil, state),
          :ok <- Rules.allowed(:read, access, auth.user),
-         do: view(session_id, auth.user, state)
+         do: row_view(session_id, auth.user, state)
   end
 
-  # Only the owner writes; the first update of a derived record writes its
-  # row with the `cwd` and `model` that the existence check found.
+  # Only the owner writes; the row of a session that the existence check
+  # found comes before the change.
   def handle({:record_update, auth, session_id, found, changes}, deadline, state) do
     %{store: mod, db: db} = state
 
     with :ok <- Rules.credential(auth, state),
+         :ok <- ensure(session_id, found, deadline, state),
          {:ok, access} <- Rules.access(session_id, found != nil, state),
          :ok <- Rules.allowed(:write, access, auth.user),
-         new = new_row(access, session_id, found, state),
-         :ok <- mod.update_record(db, session_id, new, changes, Rules.max_records(), deadline),
-         do: view(session_id, auth.user, state)
+         :ok <- mod.update_record(db, session_id, changes, deadline),
+         do: row_view(session_id, auth.user, state)
   end
 
   def handle({:record_delete, auth, session_id, found}, deadline, %{store: mod, db: db} = state) do
@@ -36,7 +41,7 @@ defmodule Helyx.Hub.Records do
          {:ok, access} <- Rules.access(session_id, found != nil, state),
          :ok <- Rules.allowed(:write, access, auth.user) do
       case mod.delete_record(db, session_id, deadline) do
-        # A derived record has no row to delete.
+        # A session that the feed never saw has no row to delete.
         {:error, :not_found} -> :ok
         other -> other
       end
@@ -54,32 +59,27 @@ defmodule Helyx.Hub.Records do
     end
   end
 
-  # The two sources of `sessions.saved` (decision 7): the stored records
-  # that the user may read, at most `limit` + 1 after the cursor; and for the
-  # default owner, of the ids of the scan of Core, those with no row.
-  def handle({:saved, auth, cwd, cursor, limit, scanned}, _deadline, state) do
+  # The records that the user may read, at most `limit` + 1 after the cursor.
+  # The scan of the default owner writes the rows of the files that have
+  # none before the page reads them, so one source gives the page
+  # (decision 7).
+  def handle({:saved, auth, cwd, cursor, limit, scanned}, deadline, state) do
     %{store: mod, db: db} = state
 
     with :ok <- Rules.credential(auth, state),
-         {:ok, stored} <- mod.saved(db, auth.user, cwd, cursor, limit + 1),
-         {:ok, derived} <- without_row(scanned, auth.user, state),
-         do: {:ok, stored, derived}
+         :ok <- ensure_scan(scanned, auth.user, deadline, state) do
+      mod.saved(db, auth.user, cwd, cursor, limit + 1)
+    end
   end
 
-  # The session of the `resume` of a folder (decision 7): the newer of the
-  # newest own record of the folder and, for the default owner, the newest
-  # id of the scan with no row, with its kind, `:stored` or `:derived`.
-  # `scanned` maps each id of the scan to its `mtime`. The touch of a stored
-  # winner comes after the place of the resume (`Helyx.Hub.Server`), so a
-  # resume refused at the cap moves nothing.
-  def handle({:newest, auth, cwd, scanned}, _deadline, state) do
+  # The session of the `resume` of a folder (decision 7): the newest record
+  # of the folder that the user owns, after the scan of the default owner
+  # has written the rows of its files that have none.
+  def handle({:newest, auth, cwd, scanned}, deadline, %{store: mod, db: db} = state) do
     with :ok <- Rules.credential(auth, state),
-         {:ok, derived} <- without_row(Map.keys(scanned), auth.user, state),
-         {:ok, stored} <- newest_row(auth.user, cwd, state) do
-      (stored ++ for(id <- derived, do: {Map.fetch!(scanned, id), id, :derived}))
-      |> Enum.max_by(&Tuple.delete_at(&1, 2), fn -> nil end)
-      |> winner()
-    end
+         :ok <- ensure_scan(scanned, auth.user, deadline, state),
+         {:ok, row} <- mod.newest(db, auth.user, cwd),
+         do: {:ok, row.session_id}
   end
 
   def handle({:projects, auth}, _deadline, %{store: mod, db: db} = state) do
@@ -110,24 +110,100 @@ defmodule Helyx.Hub.Records do
          do: mod.delete_project(db, auth.user, project_id, deadline) |> unknown()
   end
 
-  # The ids of a scan of Core that have no row: the derived records of the
-  # default owner. Another user owns no derived record.
-  defp without_row(ids, user, %{default_owner_id: user, store: mod, db: db}) do
-    with {:ok, rows} <- mod.records(db, ids), do: {:ok, Enum.reject(ids, &Map.has_key?(rows, &1))}
-  end
+  # A Live of the feed writes the row of its session, or moves the model and
+  # `active_at` of the row it has (decision 8). A write that fails is dropped:
+  # the repair path writes the row the next time Hub sees the session. A
+  # parent link goes in a new row only. The result lets the records feed send
+  # a change only after a write that took.
+  def seen(%Live{} = live, deadline, %{store: mod, db: db} = state) do
+    if Params.record_fields?(live.cwd, live.model) do
+      now = System.os_time(:second)
 
-  defp without_row(_ids, _user, _state), do: {:ok, []}
-
-  defp newest_row(user, cwd, %{store: mod, db: db}) do
-    case mod.newest(db, user, cwd) do
-      {:ok, row} -> {:ok, [{row.active_at, row.session_id, :stored}]}
-      {:error, :not_found} -> {:ok, []}
-      error -> error
+      mod.seen_record(
+        db,
+        Map.merge(
+          %{
+            session_id: live.id,
+            owner: state.default_owner_id,
+            cwd: live.cwd,
+            model: live.model,
+            prompt: "",
+            active_at: now,
+            created_at: now
+          },
+          parent(live.parent)
+        ),
+        deadline
+      )
+    else
+      :ok
     end
   end
 
-  defp winner(nil), do: {:error, :not_found}
-  defp winner({_time, id, kind}), do: {:ok, id, kind}
+  # The row of a session that the existence check found, which Hub writes the
+  # first time it sees the session with a `cwd` and a model that a record
+  # holds (decision 8). A write that fails leaves no row, and the next get or
+  # update writes it.
+  defp ensure(_session_id, nil, _deadline, _state), do: :ok
+
+  defp ensure(session_id, found, deadline, %{store: mod, db: db} = state) do
+    if Params.record_fields?(found.cwd, found.model) and
+         mod.record(db, session_id) == {:error, :not_found} do
+      now = System.os_time(:second)
+
+      record =
+        Map.merge(
+          %{
+            session_id: session_id,
+            owner: state.default_owner_id,
+            cwd: found.cwd,
+            model: found.model,
+            prompt: "",
+            active_at: now,
+            created_at: now
+          },
+          parent(Map.get(found, :parent))
+        )
+
+      _ = mod.ensure_records(db, [record], deadline)
+    end
+
+    :ok
+  end
+
+  # The columns of the parent link: both, or neither, so the pair rule of the
+  # store holds (hub.md, "Store schema").
+  defp parent(nil), do: %{parent_id: nil, parent_kind: nil}
+  defp parent(%{session_id: id}), do: %{parent_id: id, parent_kind: "child"}
+
+  # The files of the scan of Core, for the default owner only, become rows
+  # before the page reads them (decision 8). Each file gives its own prompt
+  # and `mtime`; a session that has a row keeps it. The scan bounds the list
+  # to 256 files, and a page with no file writes nothing.
+  defp ensure_scan(summaries, user, deadline, %{default_owner_id: user} = state) do
+    rows =
+      for %Summary{} = summary <- summaries,
+          Params.record_fields?(summary.cwd, summary.model) do
+        %{
+          session_id: summary.id,
+          owner: user,
+          cwd: summary.cwd,
+          model: summary.model,
+          prompt: Params.cut(summary.prompt),
+          active_at: summary.mtime,
+          created_at: summary.mtime
+        }
+      end
+
+    if rows == [], do: :ok, else: ensure_rows(rows, deadline, state)
+  end
+
+  defp ensure_scan(_summaries, _user, _deadline, _state), do: :ok
+
+  defp ensure_rows(rows, deadline, %{store: mod, db: db}) do
+    _ = mod.ensure_records(db, rows, deadline)
+    :ok
+  end
 
   defp unknown({:error, :not_found}), do: {:error, :unknown_project}
   defp unknown(other), do: other
@@ -141,37 +217,26 @@ defmodule Helyx.Hub.Records do
     end
   end
 
-  # The row of a derived record, which its first update writes: its owner
-  # is the default owner, its `cwd` and `model` are the ones of the session
-  # (decision 8). A stored record has its row.
-  defp new_row(%{stored: true}, _session_id, _found, _state), do: nil
-
-  defp new_row(%{stored: false}, session_id, found, state) do
-    now = System.os_time(:second)
-
-    %{
-      session_id: session_id,
-      owner: state.default_owner_id,
-      cwd: found.cwd,
-      model: found.model,
-      prompt: "",
-      active_at: now,
-      created_at: now
-    }
-  end
-
   defp cursor(row), do: "#{row.updated_at}:#{row.session_id}"
 
-  defp view(session_id, user, %{store: mod, db: db} = state) do
+  # The record of the session. A found session whose row the store did not
+  # write, because the write failed or passed its deadline, answers
+  # `failed`: the record no longer has a `stored` field to tell a stored row
+  # from one the store does not hold, so it does not answer a record that it
+  # cannot read back (decision 8).
+  defp row_view(session_id, user, %{store: mod, db: db} = state) do
     case mod.record(db, session_id) do
       {:ok, row} -> with {:ok, [view]} <- views([row], user, state), do: {:ok, view}
-      {:error, :not_found} -> derived_view(session_id, state)
+      {:error, :not_found} -> {:error, :failed}
       error -> error
     end
   end
 
-  # A record as the wire shows it: the project only for its owner.
-  defp views(rows, user, %{store: mod, db: db}) do
+  # A record as the wire shows it: the project only for its owner, and the
+  # status derived from the live set, never stored (decision 8;
+  # live-records.md).
+  @doc false
+  def views(rows, user, %{store: mod, db: db} = state) do
     with {:ok, labels} <- mod.labels(db, Enum.map(rows, & &1.session_id)),
          {:ok, users} <- mod.users(db) do
       names = Map.new(users, &{&1.id, &1.name})
@@ -186,29 +251,53 @@ defmodule Helyx.Hub.Records do
            labels: Map.get(labels, row.session_id, []),
            visibility: row.visibility,
            archived: row.archived,
-           stored: true,
            created_at: row.created_at,
-           updated_at: row.updated_at
+           updated_at: row.updated_at,
+           cwd: row.cwd,
+           model: row.model,
+           prompt: row.prompt,
+           active_at: row.active_at,
+           parent: parent_link(row),
+           status: HubLive.status(state, row.session_id)
          }
        end)}
     end
   end
 
-  defp derived_view(session_id, %{store: mod, db: db} = state) do
-    with {:ok, owner} <- mod.user(db, state.default_owner_id) do
-      {:ok,
-       %{
-         session: session_id,
-         owner: Map.take(owner, [:id, :name]),
-         project: nil,
-         title: "",
-         labels: [],
-         visibility: "private",
-         archived: false,
-         stored: false,
-         created_at: nil,
-         updated_at: nil
-       }}
-    end
+  @doc false
+  # One row as the wire shows it, for a change of the records feed.
+  def view(row, user, state) do
+    with {:ok, [view]} <- views([row], user, state), do: {:ok, view}
   end
+
+  @doc false
+  # A record of `views/3` as the wire shows it. The one shape for
+  # `hub.records.*` and the records feed.
+  def wire(view) do
+    %{
+      "session" => view.session,
+      "owner" => %{"id" => view.owner.id, "name" => view.owner.name},
+      "project" => view.project,
+      "title" => view.title,
+      "labels" => view.labels,
+      "visibility" => view.visibility,
+      "archived" => view.archived,
+      "created_at" => view.created_at,
+      "updated_at" => view.updated_at,
+      "cwd" => view.cwd,
+      "model" => view.model,
+      "prompt" => view.prompt,
+      "active_at" => view.active_at,
+      "parent" => wire_parent(view.parent),
+      "status" => view.status
+    }
+  end
+
+  # The parent link of a record as the wire shows it: the session and the
+  # kind of the link, or null.
+  defp wire_parent(nil), do: nil
+  defp wire_parent({session, kind}), do: %{"session" => session, "kind" => kind}
+
+  defp parent_link(%{parent_id: nil}), do: nil
+  defp parent_link(%{parent_id: id, parent_kind: kind}), do: {id, kind}
 end

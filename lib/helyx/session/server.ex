@@ -4,8 +4,8 @@ defmodule Helyx.Session.Server do
   # `Helyx.Session.Server.TurnLoop`; the client API is in `Helyx.Session`.
 
   alias Helyx.Reason
-  alias Helyx.Session.{ApprovalChains, Lock, Turn}
-  alias Helyx.Session.Server.{Approvals, Asks, Calls, Events, Flow, Open, Records}
+  alias Helyx.Session.{ApprovalChains, Turn}
+  alias Helyx.Session.Server.{Approvals, Asks, Calls, Events, Feed, Flow, IdleStop, Open, Records}
   alias Helyx.Session.Server.Flow.Up
   alias Helyx.Session.Server.{Settle, Sources, State, Steering}
   alias Helyx.Session.Server.{Stop, Summary, ToolRuns, TurnLoop, UIBlocks, Wait}
@@ -26,15 +26,22 @@ defmodule Helyx.Session.Server do
 
   @impl true
   def handle_continue(continue, state),
-    do: Reason.no_args(fn -> Open.handle_continue(continue, state) end)
+    do: Reason.no_args(fn -> Open.handle_continue(continue, state) |> synced() end)
 
   # The calls of the client API, with their deadline (`Calls`).
   @impl true
   def handle_call(request, from, state),
-    do: Reason.no_args(fn -> Calls.handle(request, from, state) end)
+    do: Reason.no_args(fn -> Calls.handle(request, from, state) |> synced() end)
 
   @impl true
-  def handle_info(message, state), do: Reason.no_args(fn -> info(message, state) end)
+  def handle_info(message, state), do: Reason.no_args(fn -> info(message, state) |> synced() end)
+
+  # The status can change with no event, as at the end of a wait, so the feed
+  # compares at the end of each callback too. A stop sends nothing: the
+  # watcher has its `:DOWN` (docs/features/session-feed.md).
+  defp synced({:noreply, state}), do: {:noreply, Feed.sync(state)}
+  defp synced({:reply, reply, state}), do: {:reply, reply, Feed.sync(state)}
+  defp synced(stop) when elem(stop, 0) == :stop, do: stop
 
   @impl true
   def format_status(status), do: Reason.crash_status(status)
@@ -184,6 +191,12 @@ defmodule Helyx.Session.Server do
   defp info({:timeout, _timer, {:deferred, ref}}, state),
     do: {:noreply, Sources.timeout(state, ref)}
 
+  # The idle stop of a session that no one watches and that has no work
+  # (docs/features/idle-unload.md). A timer that a fact change cancelled has
+  # an old ref and is dropped; the facts decide again at the fire.
+  defp info({:timeout, ref, :idle_stop}, %State{idle_stop: ref} = state),
+    do: IdleStop.fired(state)
+
   # A notice of the sync worker of this instance.
   defp info({:memory_notice, pid, text}, %State{sync: pid} = state),
     do: {:noreply, Events.emit(state, nil, :notice, %{text: text})}
@@ -207,28 +220,14 @@ defmodule Helyx.Session.Server do
     end
   end
 
-  # The lock's port closed: perl ended, so the kernel released the lock
-  # (docs/features/session-lock.md). Its status comes first, then the exit.
-  defp info({port, {:exit_status, _status}}, %State{save: {:saving, _file, port}} = state),
-    do: {:noreply, state}
-
-  defp info({port, {:exit_status, _status}}, %State{save: {:stopped, _from, port}} = state),
-    do: {:noreply, state}
-
-  # Another process can append now, so the session stops saving and goes on
-  # in memory (`Records.stop_saving/3`).
-  defp info({:EXIT, port, reason}, %State{save: {:saving, file, port}} = state) do
-    state = %{state | save: {:saving, file, nil}}
-    {:noreply, Records.stop_saving(state, "the session lock is lost", inspect(reason))}
-  end
-
-  # The lock of a session that stopped saving: its loss changes nothing.
-  defp info({:EXIT, port, _reason}, %State{save: {:stopped, from, port}} = state),
-    do: {:noreply, %{state | save: {:stopped, from, nil}}}
-
   # An exit from a linked process is vital. A session that outlived its entry
   # in the sessions Registry would keep working where no client can reach it.
   defp info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
+
+  # `Helyx.Sessions.sync/1`: the full state to one watcher of the feed. The
+  # message comes from `sync/1` only, so it checks nothing; the feed sends only
+  # to a watcher that it finds in its Registry.
+  defp info({:helyx_sync, watcher}, state), do: {:noreply, Feed.reply(state, watcher)}
 
   # The lifecycle inputs (`TurnLoop.handle/2`). If the hands die, their
   # request's `:DOWN` is dropped and their `:EXIT` stops the session. Any
@@ -241,8 +240,8 @@ defmodule Helyx.Session.Server do
   @impl true
   def terminate(_reason, state), do: Reason.no_args(fn -> stop(state) end)
 
-  # A session with no hands ended in its open: it holds the lock at most.
-  defp stop(%State{hands: nil} = state), do: Lock.release(State.lock(state))
+  # A session with no hands ended in its open: it holds nothing.
+  defp stop(%State{hands: nil}), do: :ok
 
   defp stop(state) do
     report = Stop.run(state)

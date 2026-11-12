@@ -19,14 +19,22 @@ defmodule Helyx.Test.SessionCase do
     Helyx.Test.Tool.Hold
   ]
 
-  # The setup: a Core with the test plugins.
-  def start_core(%{} = _context), do: %{core: start_core(@plugins)}
+  # The setup: a Core with the test plugins, which takes the folder lock of
+  # `tmp_dir` when the context has one.
+  def start_core(%{} = context) do
+    case context do
+      %{tmp_dir: dir} -> %{core: start_core(@plugins, sessions_dir: dir)}
+      %{} -> %{core: start_core(@plugins)}
+    end
+  end
 
   # A Core with its own name and child id, so that a test can start more
   # than one.
-  def start_core(plugins) do
+  def start_core(plugins) when is_list(plugins), do: start_core(plugins, [])
+
+  def start_core(plugins, opts) when is_list(plugins) do
     core = :"core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: plugins}, id: core)
+    start_supervised!({Helyx.Core, [name: core, plugins: plugins] ++ opts}, id: core)
     core
   end
 
@@ -48,8 +56,9 @@ defmodule Helyx.Test.SessionCase do
   def gated_model, do: "test/gate." <> Helyx.Test.Gate.open()
 
   # A second sessions folder that holds a hard link of the file of session
-  # `id` in `dir`: a session open from each folder writes the one file, and
-  # each has its own lock (docs/features/session-lock.md). Returns the folder.
+  # `id` in `dir`: a session open from each folder writes the one file. Each
+  # folder has its own Core and its own folder lock
+  # (docs/features/session-lock.md). Returns the folder.
   def link_session(dir, id) do
     [path] = Path.wildcard(Path.join([dir, "*", id <> ".jsonl"]))
     other = Path.join(dir, "linked")
@@ -60,18 +69,14 @@ defmodule Helyx.Test.SessionCase do
   end
 
   # Stops the session, waits until it is down, then until the Registry
-  # drops its entry, which the Registry does after the exit, and until the
-  # lock of its file is free: perl exits after the session (#670).
+  # drops its entry, which the Registry does after the exit.
   def stop_session(session, stop) do
     pid = Session.pid(session)
-    state = :sys.get_state(pid)
-    file = if match?({:saving, _, _}, state.save), do: elem(state.save, 1)
     ref = Process.monitor(pid)
     stop.(pid)
     assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
     registry = Helyx.Core.sessions_registry(session.core)
     await(fn -> Registry.lookup(registry, session.id) == [] end, "the registry entry to free")
-    if file, do: Helyx.Test.SessionFile.await_lock_free(file.path)
   end
 
   # The messages in the mailbox of `pid` now, in order.

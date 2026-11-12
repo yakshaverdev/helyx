@@ -1,4 +1,4 @@
-//! The data shapes of protocol 10 that the fold keeps: messages, blocks, asks,
+//! The data shapes of protocol 13 that the fold keeps: messages, blocks, asks,
 //! the queue, the snapshot. Each `parse` checks a value by the schema.
 
 use crate::check::{

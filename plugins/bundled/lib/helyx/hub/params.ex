@@ -6,6 +6,9 @@ defmodule Helyx.Hub.Params do
   # here, and a module that reads one asks for it.
 
   @max_cwd_bytes 4_096
+  # The bound of the `model` of a stored record: the bound of a model ref
+  # (Bounds).
+  @max_model_bytes 256
   @max_title_bytes 256
   @max_labels 16
   @max_label_bytes 64
@@ -151,6 +154,17 @@ defmodule Helyx.Hub.Params do
   def check(_op, _params), do: :bad_params
 
   def max_cwd_bytes, do: @max_cwd_bytes
+
+  def max_model_bytes, do: @max_model_bytes
+
+  @doc false
+  # The `cwd` and `model` of a record: a `cwd` of 1 to `max_cwd_bytes/0` of
+  # UTF-8, and a model of 1 to `max_model_bytes/0` bytes of text. A session
+  # whose header holds another value gets no row (hub.md, decision 8).
+  def record_fields?(cwd, model) do
+    is_binary(cwd) and byte_size(cwd) in 1..@max_cwd_bytes//1 and String.valid?(cwd) and
+      text?(model, 1, @max_model_bytes)
+  end
 
   def max_text_bytes, do: @max_text_bytes
 

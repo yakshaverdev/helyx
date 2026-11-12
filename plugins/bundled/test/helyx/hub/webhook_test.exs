@@ -75,6 +75,30 @@ defmodule Helyx.Hub.WebhookTest do
   # writes.
   defp connection(%{db: %{db: db}}), do: db
 
+  # Moves the row of a session to another user. The feed writes the row from
+  # the session process and this write comes from the test, so the two have no
+  # order: wait for the row first, then check that one row changed.
+  defp move_row(context, session_id, owner) do
+    Events.wait_until(fn ->
+      in_hub(context.hub, fn state ->
+        state.store.record(state.db, session_id) != {:error, :not_found}
+      end)
+    end)
+
+    assert {:ok, 1} =
+             in_hub(context.hub, fn state ->
+               db = connection(state)
+
+               :ok =
+                 Exqlite.Sqlite3.execute(
+                   db,
+                   "UPDATE records SET owner = '#{owner}' WHERE session_id = '#{session_id}'"
+                 )
+
+               Exqlite.Sqlite3.changes(db)
+             end)
+  end
+
   # The pending deliveries of a subscription, read in the Hub process, its
   # only caller of the store.
   defp pending(context, subscription) do
@@ -275,17 +299,7 @@ defmodule Helyx.Hub.WebhookTest do
     context = serve(context)
     {session, subscription, %{secret: secret, path: path}} = subscribed(context)
     {:ok, %{id: ann}} = Hub.add_user(context.hub, "ann")
-
-    in_hub(context.hub, fn state ->
-      :ok =
-        Exqlite.Sqlite3.execute(
-          connection(state),
-          "INSERT INTO records (session_id, owner, title, cwd, model, prompt, active_at, " <>
-            "visibility, archived, created_at, updated_at) VALUES " <>
-            "('#{session.id}', '#{ann}', '', '#{File.cwd!()}', 'fake/echo', '', 0, " <>
-            "'private', 0, 0, 0)"
-        )
-    end)
+    move_row(context, session.id, ann)
 
     body = "{}"
     assert post(context, path, body, [{"x-hub-signature-256", sign(secret, body)}]).status == 202
@@ -337,10 +351,12 @@ defmodule Helyx.Hub.WebhookTest do
 
   test "a delivery in flight counts toward the 16 pending", context do
     context = serve(context, max_live_sessions: 1)
-    {session, subscription, %{secret: secret, path: path}} = subscribed(context)
-
+    # One live place of the owner is held before the subscribed session
+    # starts, because Hub now counts every session of the Core.
     {:ok, _held} =
       Hub.start_session(context.hub, context.owner, cwd: context.data, model: "fake/echo")
+
+    {session, subscription, %{secret: secret, path: path}} = subscribed(context)
 
     :ok = Helyx.Sessions.stop(%Helyx.Session{id: session.id, core: context.core})
 
@@ -452,10 +468,13 @@ defmodule Helyx.Hub.WebhookTest do
     # deliveries of the stopped subscribed session stay pending: each try
     # gets `too_many_sessions` and waits 30,000 ms (decision 12).
     context = serve(context, max_live_sessions: 1)
-    {session, subscription, %{secret: secret, path: path}} = subscribed(context)
 
+    # The place is taken before the subscribed session starts, because Hub
+    # now counts every session of the Core.
     {:ok, _held} =
       Hub.start_session(context.hub, context.owner, cwd: context.data, model: "fake/echo")
+
+    {session, subscription, %{secret: secret, path: path}} = subscribed(context)
 
     :ok = Helyx.Sessions.stop(%Helyx.Session{id: session.id, core: context.core})
 
@@ -517,16 +536,7 @@ defmodule Helyx.Hub.WebhookTest do
 
     # The owner is the default owner; a record of another user takes the
     # session from it.
-    in_hub(context.hub, fn state ->
-      :ok =
-        Exqlite.Sqlite3.execute(
-          connection(state),
-          "INSERT INTO records (session_id, owner, title, cwd, model, prompt, active_at, " <>
-            "visibility, archived, created_at, updated_at) VALUES " <>
-            "('#{session.id}', '#{ann}', '', '#{File.cwd!()}', 'fake/echo', '', 0, " <>
-            "'private', 0, 0, 0)"
-        )
-    end)
+    move_row(context, session.id, ann)
 
     body = "{}"
 

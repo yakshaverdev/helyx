@@ -10,7 +10,7 @@ defmodule Helyx.Hub.Store.SQLite.Tables do
     tokens: ~w(id user_id name key created_at)a,
     projects: ~w(id owner name created_at)a,
     records: ~w(session_id owner project_id title cwd model prompt active_at visibility archived
-         created_at updated_at)a,
+         created_at updated_at parent_id parent_kind)a,
     labels: ~w(session_id label)a,
     schedules: ~w(id owner session_id prompt at every run delivery_id due_at next_try_at last_at
          last_outcome created_at subscription_id)a,

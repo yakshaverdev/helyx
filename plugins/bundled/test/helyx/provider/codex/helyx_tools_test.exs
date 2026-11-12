@@ -268,12 +268,14 @@ defmodule Helyx.Provider.Codex.HelyxToolsTest do
 
     defp tools_core(ctx) do
       core = :"core_#{System.unique_integer([:positive])}"
+      sessions = Path.join(ctx.sessions, "tools")
 
-      start_supervised!({Helyx.Core, name: core, plugins: [Codex, Fake, Helyx.Tool.Bash]},
+      start_supervised!(
+        {Helyx.Core, name: core, plugins: [Codex, Fake, Helyx.Tool.Bash], sessions_dir: sessions},
         id: :tools_core
       )
 
-      %{ctx | core: core}
+      %{ctx | core: core, sessions: sessions}
     end
 
     defp bash(id, command), do: dyn(id, %{tool: "bash", arguments: %{command: command}})

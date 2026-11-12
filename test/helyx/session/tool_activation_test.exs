@@ -5,7 +5,7 @@ defmodule Helyx.Session.ToolActivationTest do
   use ExUnit.Case, async: true
 
   import Helyx.Test.Events
-  import Helyx.Test.SessionCase, only: [start_core: 1]
+  import Helyx.Test.SessionCase, only: [start_core: 2]
   import Helyx.Test.SourceCase
 
   alias Helyx.Session
@@ -14,8 +14,10 @@ defmodule Helyx.Session.ToolActivationTest do
 
   @plugins [Helyx.Test.Provider, InCall, Source]
 
-  setup do
-    core = start_core(@plugins)
+  @moduletag :tmp_dir
+
+  setup %{tmp_dir: dir} do
+    core = start_core(@plugins, sessions_dir: dir)
     observe(core)
     %{core: core}
   end
@@ -146,7 +148,7 @@ defmodule Helyx.Session.ToolActivationTest do
     id = session.id
     :ok = Helyx.Sessions.stop(session)
 
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir, id: id)
+    {:ok, resumed, _} = Session.resume(core, sessions_dir: dir, id: id)
     src = up(resumed)
     {:ok, snapshot, _ref} = Session.subscribe(resumed)
     assert snapshot.activated == ["r3", "r1", "r5", "r4", "r2"]
@@ -273,7 +275,7 @@ defmodule Helyx.Session.ToolActivationTest do
     assert_receive {:helyx_event, %Helyx.Event{type: :tools_change, turn_id: nil}}
     id = session.id
     :ok = Helyx.Sessions.stop(session)
-    {:ok, resumed} = Session.resume(core, sessions_dir: dir, id: id)
+    {:ok, resumed, _} = Session.resume(core, sessions_dir: dir, id: id)
     _src = up(resumed)
     {:ok, snapshot, _ref} = Session.subscribe(resumed)
     assert snapshot.activated == ["y4", "y3", "y2", "y1"]

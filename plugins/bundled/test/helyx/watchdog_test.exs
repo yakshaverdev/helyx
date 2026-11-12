@@ -357,20 +357,36 @@ defmodule Helyx.WatchdogTest do
       assert Helyx.Test.Hands.held() == []
     end
 
+    # The margin of the read of the marker, the step before the command
+    # hold: the deadline of the test below must not pass in it, or the start
+    # takes the branch of the test above and asks no command hold. The read
+    # took 7 to 11 ms in runs alone; it passed the 300 ms deadline of this
+    # test in a full run under load (2026-11-11). 2,000 ms is the margin for
+    # load.
+    @load_marker_ms 2_000
+
     @tag :tmp_dir
+    @tag :slow
     test "a deadline that passes during the command hold never writes the go-ahead", %{
       tmp_dir: dir
     } do
       test = self()
-      until = deadline(300)
-      hands = spawn_link(fn -> slow_hands(test, until) end)
-      Process.put(:helyx_hands, hands)
+      until = deadline(@load_marker_ms)
+      hands = spawn_link(fn -> hands(test) end)
       ran = Path.join(dir, "ran")
       argv = ["sh", "-c", "touch #{ran}"]
-      assert Helyx.Watchdog.start(argv, dir, nil, deadline: until) == {:error, @late}
-      # Both groups stay held for the hands of the caller.
-      assert_received {:held, {:watchdog, _, _}}
-      assert_received {:held, {:command, group, _}}
+
+      start =
+        Task.async(fn ->
+          Process.put(:helyx_hands, hands)
+          Helyx.Watchdog.start(argv, dir, nil, deadline: until)
+        end)
+
+      group = answer_command_hold(hands, until)
+      assert Task.await(start, Helyx.Test.Events.wait_ms()) == {:error, @late}
+      # The watchdog's group stays held for the hands of the caller, as the
+      # command's does (its hold is answered above).
+      assert_received {:call, {:hold, {:watchdog, _, _}}}
       # The watchdog held the command until the go-ahead, which never came,
       # and the closed port ended it.
       assert group_gone_within?(group)
@@ -383,21 +399,57 @@ defmodule Helyx.WatchdogTest do
       assert {"", 0} = collect(port, "")
     end
 
-    # Hands that hold each handle and answer the hold of the command group
-    # only after `until`.
-    defp slow_hands(test, until) do
+    # Hands that keep the handles of the caller and answer every call, as
+    # the real hands do. The hold of the command group waits for the test's
+    # `:go`, so a start that passes its deadline there sees the deadline
+    # passed when it decides on the go-ahead.
+    defp hands(test) do
       receive do
         {:"$gen_call", from, {:hold, {:command, _, _} = handle}} ->
-          Process.sleep(max(until - System.monotonic_time(:millisecond) + 50, 0))
-          send(test, {:held, handle})
+          send(test, {:call, {:hold, handle}})
+
+          receive do
+            :go -> :ok
+          end
+
           GenServer.reply(from, :ok)
 
         {:"$gen_call", from, {:hold, handle}} ->
-          send(test, {:held, handle})
+          send(test, {:call, {:hold, handle}})
+          GenServer.reply(from, :ok)
+
+        {:"$gen_call", from, {:unhold, handles}} ->
+          send(test, {:call, {:unhold, handles}})
           GenServer.reply(from, :ok)
       end
 
-      slow_hands(test, until)
+      hands(test)
+    end
+
+    # Waits for the hold of the command group, then until `until` has passed,
+    # and only then answers it: the deadline passes while the hold is open,
+    # and the test proves that it had passed. Returns the group's number.
+    defp answer_command_hold(hands, until) do
+      receive do
+        {:call, {:hold, {:command, group, _}}} ->
+          wait_until(until)
+          send(hands, :go)
+          group
+
+        {:call, {:unhold, handles}} ->
+          flunk("the deadline passed before the command hold: #{inspect(handles)}")
+      after
+        Helyx.Test.Events.wait_ms() -> flunk("no hold of the command group")
+      end
+    end
+
+    # Waits until the monotonic time `until` is behind: a lower bound, with
+    # no wait after it.
+    defp wait_until(until) do
+      if System.monotonic_time(:millisecond) < until do
+        Process.sleep(5)
+        wait_until(until)
+      end
     end
   end
 end

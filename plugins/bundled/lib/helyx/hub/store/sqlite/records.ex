@@ -40,8 +40,10 @@ defmodule Helyx.Hub.Store.SQLite.Records do
   def put_record(db, record, max, deadline),
     do: transaction(db, deadline, fn -> put_new(db, record, max) end)
 
-  # A new row, unless its owner holds `max` rows; none for nil.
+  # A new row, unless its owner holds `max` rows; none for nil, and no cap for
+  # `:none` (the rows of the default owner).
   defp put_new(_db, nil, _max), do: :ok
+  defp put_new(db, record, :none), do: insert(db, record)
 
   defp put_new(db, record, max) do
     with {:ok, n} <- count_records(db, record.owner), do: insert(db, record, n < max)
@@ -50,12 +52,92 @@ defmodule Helyx.Hub.Store.SQLite.Records do
   defp insert(_db, _record, false = _room), do: {:error, :too_many_records}
   defp insert(db, record, true), do: insert(db, record)
 
+  # The id is new: Core made it for this start, so the only row it can have is
+  # the feed row of the same start, which can come first (hub.md, decision 8).
+  # A thread link goes in the upsert; a start with no link keeps the parent
+  # that the feed wrote, such as the child link of the header.
   defp insert(db, r) do
     run(
       db,
       "INSERT INTO records (session_id, owner, cwd, model, prompt, active_at, " <>
-        "created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-      [r.session_id, r.owner, r.cwd, r.model, r.prompt, r.active_at, r.created_at]
+        "created_at, updated_at, parent_id, parent_kind) " <>
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9) " <>
+        "ON CONFLICT(session_id) DO UPDATE SET owner = excluded.owner, " <>
+        "cwd = excluded.cwd, model = excluded.model, " <>
+        "parent_id = COALESCE(excluded.parent_id, parent_id), " <>
+        "parent_kind = COALESCE(excluded.parent_kind, parent_kind)",
+      [
+        r.session_id,
+        r.owner,
+        r.cwd,
+        r.model,
+        r.prompt,
+        r.active_at,
+        r.created_at,
+        Map.get(r, :parent_id),
+        Map.get(r, :parent_kind)
+      ]
+    )
+  end
+
+  # The row of a Live of the feed: a new row of the default owner, or the
+  # model and `active_at` of the row that the session has. The owner, title,
+  # labels, project, prompt, `created_at`, and parent of a row stay.
+  def seen_record(db, record, deadline) do
+    transaction(db, deadline, fn ->
+      run(
+        db,
+        "INSERT INTO records (session_id, owner, cwd, model, prompt, active_at, " <>
+          "created_at, updated_at, parent_id, parent_kind) " <>
+          "VALUES (?1, ?2, ?3, ?4, '', ?5, ?5, ?5, ?6, ?7) " <>
+          "ON CONFLICT(session_id) DO UPDATE SET model = excluded.model, " <>
+          "active_at = excluded.active_at",
+        [
+          record.session_id,
+          record.owner,
+          record.cwd,
+          record.model,
+          record.active_at,
+          Map.get(record, :parent_id),
+          Map.get(record, :parent_kind)
+        ]
+      )
+    end)
+  end
+
+  # The rows of the sessions that a scan found, each with its own prompt and
+  # time; a session that has a row keeps it. At most 256 rows, the bound of
+  # the caller.
+  def ensure_records(db, records, deadline),
+    do: transaction(db, deadline, fn -> ensure_all(db, records) end)
+
+  defp ensure_all(db, records) do
+    Enum.reduce_while(records, :ok, fn record, :ok ->
+      case ensure_record(db, record) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp ensure_record(db, r) do
+    run(
+      db,
+      "INSERT INTO records (session_id, owner, cwd, model, prompt, active_at, " <>
+        "created_at, updated_at, parent_id, parent_kind) " <>
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9) " <>
+        "ON CONFLICT(session_id) DO NOTHING",
+      [
+        r.session_id,
+        r.owner,
+        r.cwd,
+        r.model,
+        r.prompt,
+        r.active_at,
+        r.created_at,
+        Map.get(r, :parent_id),
+        Map.get(r, :parent_kind)
+      ]
     )
   end
 
@@ -86,13 +168,11 @@ defmodule Helyx.Hub.Store.SQLite.Records do
     end
   end
 
-  # One step: the row of a derived record when `new` is given (within the
-  # cap of its owner), then the changes, each checked against the row: a
-  # project must be one of the owner of the row.
-  def update_record(db, session_id, new, changes, max, deadline) do
+  # One step: the changes, each checked against the row: a project must be
+  # one of the owner of the row.
+  def update_record(db, session_id, changes, deadline) do
     transaction(db, deadline, fn ->
-      with :ok <- put_new(db, new, max),
-           {:ok, owner} <- owner(db, session_id),
+      with {:ok, owner} <- owner(db, session_id),
            :ok <- project_of(db, Map.get(changes, :project_id), owner),
            :ok <- set(db, session_id, changes),
            do: set_labels(db, session_id, Map.get(changes, :labels))
@@ -254,5 +334,23 @@ defmodule Helyx.Hub.Store.SQLite.Records do
   def hub_records?(db, owner) do
     sql = "SELECT EXISTS (SELECT 1 FROM records WHERE owner = ?1 AND visibility = 'hub')"
     with {:ok, [found]} <- one(db, sql, [owner]), do: {:ok, found == 1}
+  end
+
+  # The rows of `owner`, newest `active_at` first, then by session id, at
+  # most `limit` (`docs/features/live-records.md`).
+  def owned(db, owner, limit) do
+    sql =
+      @select <>
+        " WHERE owner = ?1 ORDER BY active_at DESC, session_id ASC LIMIT ?2"
+
+    with {:ok, rows} <- all(db, sql, [owner, limit]), do: {:ok, Enum.map(rows, &row/1)}
+  end
+
+  # The rows of the ids, at most 256, bound by the caller.
+  def rows(_db, []), do: {:ok, []}
+
+  def rows(db, session_ids) do
+    sql = @select <> " WHERE session_id IN (#{marks(session_ids)})"
+    with {:ok, rows} <- all(db, sql, session_ids), do: {:ok, Enum.map(rows, &row/1)}
   end
 end
