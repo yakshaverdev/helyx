@@ -207,23 +207,26 @@ defmodule Helyx.Hub.LiveTest do
 
       state =
         state
-        |> Live.watch("s1", old)
+        |> Live.watch("s1", old, "idle")
         |> Live.started(self(), "s1", new, "owner")
 
-      assert Map.values(state.live) == [{"s1", new}]
+      assert Map.values(state.live) == [{"s1", new, "idle"}]
+      assert Live.status(state, "s1") == "idle"
+      assert Live.status(state, "other") == "stopped"
       {:monitors, monitors} = Process.info(self(), :monitors)
       assert {:process, new} in monitors
       refute {:process, old} in monitors
 
-      # The Live of the same process keeps the starter.
-      assert Live.starter(state, "s1") == "owner"
-      assert Live.watch(state, "s1", new) == state
+      # The Live of the same process keeps the starter and moves the status.
+      running = Live.watch(state, "s1", new, "running")
+      assert Live.starter(running, "s1") == "owner"
+      assert Map.values(running.live) == [{"s1", new, "running"}]
 
       # A Live of another process of the id drops it.
       other = spawn_link(fn -> Process.sleep(:infinity) end)
-      replaced = Live.watch(state, "s1", other)
+      replaced = Live.watch(state, "s1", other, "idle")
       assert Live.starter(replaced, "s1") == nil
-      assert Map.values(replaced.live) == [{"s1", other}]
+      assert Map.values(replaced.live) == [{"s1", other, "idle"}]
     end
   end
 

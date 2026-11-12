@@ -4,6 +4,7 @@ defmodule Helyx.Tool.CoordinatorTest do
   use ExUnit.Case, async: false
 
   import Helyx.Test.Events, only: [collect_until: 1]
+  import Helyx.Test.HubWake, only: [in_hub: 2]
 
   alias Helyx.{Event, Hub, Message, Session}
   alias Helyx.Message.ToolCall
@@ -284,6 +285,21 @@ defmodule Helyx.Tool.CoordinatorTest do
       assert Enum.at(texts, 0) =~ "worktree.extra is not an argument"
       assert Enum.at(texts, 1) =~ "worktree.branch is required"
       assert Enum.at(texts, 2) =~ "the branch must be 1 to 64 bytes"
+    end
+
+    test "its record names the calling session as a thread", context do
+      session = coordinator(context, context.owner, [create(%{"folder" => context.dir})])
+      [result] = run(session)
+      id = created_id(result)
+
+      row =
+        in_hub(context.hub, fn state ->
+          {:ok, row} = state.store.record(state.db, id)
+          row
+        end)
+
+      assert %{parent_id: parent_id, parent_kind: "thread"} = row
+      assert parent_id == session.id
     end
   end
 

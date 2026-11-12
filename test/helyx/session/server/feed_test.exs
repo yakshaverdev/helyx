@@ -147,6 +147,24 @@ defmodule Helyx.Session.Server.FeedTest do
     assert %Event{type: :model_change, data: %{model: "test/other"}} = next_feed()
   end
 
+  test "the Live of a child names its parent; a resume of the child keeps it", %{core: core} do
+    assert {:ok, _dropped} = Sessions.watch(core, [])
+    {:ok, parent_session} = start_session(core)
+    link = %{session_id: parent_session.id, call_id: "call-1"}
+
+    {:ok, child} =
+      Sessions.start(core, cwd: "/repo", model: "test/ok", parent: link)
+
+    assert_receive {:helyx_feed, pid, %Live{id: id, parent: ^link}}
+    assert id == child.id
+    assert pid == Session.pid(child)
+
+    :ok = Sessions.stop(child)
+    assert {:ok, resumed, :started} = Sessions.resume(core, id: child.id)
+    assert_receive {:helyx_feed, pid, %Live{id: ^id, parent: ^link}}
+    assert pid == Session.pid(resumed)
+  end
+
   test "the Live of the feed equals the entry of list_live/1", %{core: core} do
     assert {:ok, _dropped} = Sessions.watch(core, [])
     {:ok, session} = start_session(core)

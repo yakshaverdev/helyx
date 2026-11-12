@@ -15,7 +15,15 @@ defmodule Helyx.Hub.Api do
 
   def start_session(arg, user_id, opts) do
     auth = %{user: user_id, token: nil}
-    params = %{"cwd" => opts[:cwd], "model" => opts[:model]}
+
+    # `thread_of` is the link of a thread, a coordinator concept that the
+    # wire does not carry: the `result` writes it into the row (hub.md,
+    # decision 8).
+    params = %{
+      "cwd" => opts[:cwd],
+      "model" => opts[:model],
+      "thread_of" => opts[:thread_of]
+    }
 
     with :ok <- cwd(opts[:cwd]),
          :ok <- answer(safe(fn -> Access.check(arg, auth, "start", params) end)),

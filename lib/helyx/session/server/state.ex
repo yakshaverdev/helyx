@@ -29,6 +29,9 @@ defmodule Helyx.Session.Server.State do
     :model,
     :provider,
     :cwd,
+    # The link of a child to the tool call that started it, or nil
+    # (`Helyx.Sessions.Live`, docs/features/agent-tool.md).
+    :parent,
     :hands,
     :background_dir,
     # The session file: `:never` before the session has a file; `{:saving,
@@ -101,6 +104,7 @@ defmodule Helyx.Session.Server.State do
           model: Helyx.ModelRef.t(),
           provider: module(),
           cwd: Path.t(),
+          parent: Helyx.Sessions.Live.parent(),
           hands: pid() | nil,
           background_dir: Path.t() | nil,
           save:

@@ -79,7 +79,7 @@ defmodule Helyx.Hub.FeedTest do
   defp wait_listed(socket, id) do
     Events.wait_until(fn ->
       %{"result" => %{"items" => items}} = req(socket, "hub.records.search", %{"limit" => 256})
-      Enum.any?(items, &(&1["session"] == id and &1["stored"] == true))
+      Enum.any?(items, &(&1["session"] == id))
     end)
   end
 
@@ -93,7 +93,7 @@ defmodule Helyx.Hub.FeedTest do
 
     assert %{
              "result" => %{
-               "record" => %{"stored" => true, "owner" => %{"name" => "owner"}}
+               "record" => %{"owner" => %{"name" => "owner"}, "status" => "idle"}
              }
            } = req(owner, "hub.records.get", %{"session" => session.id})
   end
@@ -134,7 +134,7 @@ defmodule Helyx.Hub.FeedTest do
     assert %{"prompt" => "hi", "cwd" => cwd} = Enum.find(items, &(&1["id"] == id))
     assert cwd == File.cwd!()
 
-    assert %{"title" => "", "stored" => true} =
+    assert %{"title" => ""} =
              records(owner)
              |> Enum.find(&(&1["session"] == id))
   end
@@ -179,7 +179,7 @@ defmodule Helyx.Hub.FeedTest do
     Events.wait_until(fn -> not Live.running?(:sys.get_state(context.hub), id) end)
     wait_listed(owner, id)
 
-    assert %{"result" => %{"record" => %{"stored" => true}}} =
+    assert %{"result" => %{"record" => %{"status" => "stopped"}}} =
              req(owner, "hub.records.get", %{"session" => id})
 
     # The prompt loads the session and binds the starter of the owner; the

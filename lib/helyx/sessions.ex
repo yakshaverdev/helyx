@@ -44,17 +44,21 @@ defmodule Helyx.Sessions do
     a resume, or a change of status or model that
     `Helyx.Sessions.watch/2` sends. `model` is the current model ref.
     `status` is `:idle` when the session has no turn and no wait after a
-    turn, else `:running`.
+    turn, else `:running`. `parent` is the link of a child to the tool call
+    that started it (`docs/features/agent-tool.md`), or nil.
     """
-    @enforce_keys [:id, :instance_id, :cwd, :model, :status]
+    @enforce_keys [:id, :instance_id, :cwd, :model, :status, :parent]
     defstruct @enforce_keys
+
+    @type parent :: %{session_id: String.t(), call_id: String.t()} | nil
 
     @type t :: %__MODULE__{
             id: String.t(),
             instance_id: String.t(),
             cwd: String.t(),
             model: String.t(),
-            status: :idle | :running
+            status: :idle | :running,
+            parent: parent()
           }
   end
 

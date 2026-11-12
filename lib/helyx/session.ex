@@ -82,6 +82,7 @@ defmodule Helyx.Session do
         model: ref,
         provider: provider,
         cwd: cwd,
+        parent: parent,
         deadline_ms: State.deadline_ms(core)
       }
 
