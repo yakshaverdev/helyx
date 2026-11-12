@@ -126,6 +126,7 @@ defmodule Helyx.Hub.Server do
   # start, and the default owner must not see the id of another user's start.
   # The start's `result` knows the owner and tells the feed then.
   defp seen(state, %Helyx.Sessions.Live{} = live, pid) do
+    state = LiveRead.touched(state, live.id)
     existed? = RecordFeed.row?(state, live.id)
     in_flight? = Live.start_in_flight?(state)
     state = Live.watch(state, live.id, pid, Atom.to_string(live.status))
@@ -195,6 +196,7 @@ defmodule Helyx.Hub.Server do
   end
 
   defp serve({:started, auth, start, pid}, caller, deadline, state) do
+    state = LiveRead.touched(state, start.session_id)
     existed? = RecordFeed.row?(state, start.session_id)
     prior_owner = RecordFeed.owner(state, start.session_id)
     reply = Rules.handle({:started, auth, start}, deadline, state)
@@ -264,6 +266,7 @@ defmodule Helyx.Hub.Server do
   end
 
   defp serve({:record_delete, auth, id, found} = request, _caller, deadline, state) do
+    state = LiveRead.touched(state, id)
     owner = RecordFeed.owner(state, id)
     {reply, state} = readers_change(request, auth.user, id, found != nil, deadline, state)
     {reply, if(reply == :ok, do: RecordFeed.removed(state, id, owner), else: state)}
@@ -336,6 +339,7 @@ defmodule Helyx.Hub.Server do
   defp serve({:wake_gone, row}, caller, deadline, state) do
     {reply, state} = Wake.serve({:wake_refused, row}, caller, deadline, state)
     id = row.session_id
+    state = LiveRead.touched(state, id)
     {_, state} = readers_change({:record_gone, id}, row.owner, id, false, deadline, state)
     {reply, RecordFeed.removed(state, id, row.owner)}
   end
@@ -382,8 +386,10 @@ defmodule Helyx.Hub.Server do
   # A start of the default owner keeps every reader; a start of another user
   # moves the row that the feed may have written, so the owner before it gets
   # the removal, and no other user sees the id (`docs/features/live-records.md`).
-  defp started_change(:ok, %{default_owner_id: user} = state, user, id, existed?, _prior),
-    do: RecordFeed.changed(state, id, if(existed? == :absent, do: "new", else: "changed"))
+  defp started_change(:ok, %{default_owner_id: user} = state, user, id, existed?, _prior) do
+    state = RecordFeed.forget(state, id)
+    RecordFeed.changed(state, id, if(existed? == :absent, do: "new", else: "changed"))
+  end
 
   defp started_change(:ok, state, _user, id, _existed?, prior_owner),
     do: RecordFeed.moved(state, id, prior_owner)
@@ -449,11 +455,13 @@ defmodule Helyx.Hub.Server do
   # (`docs/features/live-records.md`).
   def handle_info({:helyx_feed, _pid, %Helyx.Event{type: :ask} = event}, state) do
     %Helyx.Event{session_id: id, data: %{ask_id: ask_id}} = event
+    state = LiveRead.touched(state, id)
     {:noreply, state |> RecordFeed.ask(id, ask_id) |> RecordFeed.changed(id, "changed")}
   end
 
   def handle_info({:helyx_feed, _pid, %Helyx.Event{type: :ask_end} = event}, state) do
     %Helyx.Event{session_id: id, data: %{ask_id: ask_id}} = event
+    state = LiveRead.touched(state, id)
     {:noreply, state |> RecordFeed.ask_end(id, ask_id) |> RecordFeed.changed(id, "changed")}
   end
 
@@ -469,6 +477,7 @@ defmodule Helyx.Hub.Server do
 
         id ->
           state
+          |> LiveRead.touched(id)
           |> RecordFeed.clear_asks(id)
           |> RecordFeed.forget(id)
           |> RecordFeed.changed(id, "changed")

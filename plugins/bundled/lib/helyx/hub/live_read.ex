@@ -6,9 +6,19 @@ defmodule Helyx.Hub.LiveRead do
   # start and the repair: a read that fails, is killed, or has a snapshot that
   # does not answer leaves it set, and the next poll starts a read. The Hub
   # takes the result as a message and applies the sessions that answered.
+  #
+  # A notice of the feed is sent by the session process to the Hub directly,
+  # while the result of a read comes through two Tasks, so a newer notice can
+  # reach the Hub before an older result. While a read is in flight the Hub
+  # marks every session id that it handles a notice for (`touched/2`), and the
+  # result skips those ids: the notice is newer than the read. The set is
+  # dropped with the read.
+  #
+  # `read_gate` is a test hook: a read calls it before it returns, so a test
+  # holds the result while the Hub handles a notice.
 
-  # The bound of the list and of one snapshot, the bound of the whole read, and
-  # the margin before the Hub kills it (live-records.md, "Bounds").
+  # The bound of the list and of all the snapshots, the bound of the whole
+  # read, and the margin before the Hub kills it (live-records.md, "Bounds").
   @seed_ms 5_000
   @read_ms @seed_ms + @seed_ms
   @kill_margin_ms 1_000
@@ -17,7 +27,8 @@ defmodule Helyx.Hub.LiveRead do
   def read_ms, do: @read_ms
   def kill_margin_ms, do: @kill_margin_ms
 
-  def init(state), do: Map.merge(state, %{seed_pending: true, live_read: nil})
+  def init(state),
+    do: Map.merge(state, %{seed_pending: true, live_read: nil, read_gate: nil})
 
   # A pending read, or a drop of the feed that Hub has not read, starts one
   # read when none is in flight. It returns at once.
@@ -32,15 +43,35 @@ defmodule Helyx.Hub.LiveRead do
   def maybe_read(state), do: state
 
   defp start(%{core: core, wake: %{sup: sup}} = state, dropped) do
-    task = Task.Supervisor.async_nolink(sup, fn -> run(core) end)
+    gate = state.read_gate
+    task = Task.Supervisor.async_nolink(sup, fn -> run(core, gate) end)
     timer = Process.send_after(self(), {:live_read_timeout, task.ref}, @read_ms + @kill_margin_ms)
-    %{state | live_read: %{task: task, ref: task.ref, timer: timer, dropped: dropped}}
+
+    %{
+      state
+      | live_read: %{
+          task: task,
+          ref: task.ref,
+          timer: timer,
+          dropped: dropped,
+          touched: MapSet.new()
+        }
+    }
   end
 
+  # The session id whose state the Hub handled while a read is in flight. The
+  # result skips it: the notice is newer than the read.
+  def touched(%{live_read: %{touched: touched} = read} = state, session_id) do
+    %{state | live_read: %{read | touched: MapSet.put(touched, session_id)}}
+  end
+
+  def touched(state, _session_id), do: state
+
   @doc false
-  # The body of the read Task: `{:ok, sessions, seeds, pending?}`. A snapshot
-  # that does not answer is `:error` in `seeds`, and `pending?` is true.
-  def run(core) do
+  # The body of the read Task: `{:ok, sessions, seeds, pending?}`. All the
+  # snapshots wait under one bound; one that does not answer is `:error` in
+  # `seeds`, and `pending?` is true.
+  def run(core, gate \\ nil) do
     pairs =
       for live <- Helyx.Sessions.list_live(core),
           pid = Helyx.Session.pid(%Helyx.Session{id: live.id, core: core}),
@@ -51,14 +82,23 @@ defmodule Helyx.Hub.LiveRead do
       for {live, pid} <- pairs,
           do: {live, pid, Task.async(fn -> open_asks(core, live.id) end)}
 
+    outcomes = Task.yield_many(Enum.map(reads, &elem(&1, 2)), @seed_ms) |> Map.new()
+
     {sessions, seeds, pending?} =
       Enum.reduce(reads, {[], [], false}, fn {live, pid, task}, acc ->
-        outcome = Task.yield(task, @seed_ms) || Task.shutdown(task, :brutal_kill)
+        outcome = snapshot_result(task, Map.get(outcomes, task))
         collect_seed({live, pid, outcome}, acc)
       end)
 
+    if gate, do: gate.()
+
     {:ok, Enum.reverse(sessions), Enum.reverse(seeds), pending?}
   end
+
+  # The result of one snapshot Task; one that did not answer in the shared
+  # bound is shut down now.
+  defp snapshot_result(_task, {:ok, _result} = ok), do: ok
+  defp snapshot_result(task, _exit), do: Task.shutdown(task, :brutal_kill) || :timeout
 
   defp collect_seed({live, pid, {:ok, {:ok, ask_ids}}}, {sessions, seeds, pending?}),
     do: {[{live, pid} | sessions], [{live.id, {:ok, ask_ids}} | seeds], pending?}
@@ -87,10 +127,16 @@ defmodule Helyx.Hub.LiveRead do
 
   def take(_state, _ref), do: nil
 
-  # The result of the read: the successes and the new counts, or the error
-  # that keeps the read pending for the next poll.
+  # The result of the read: the sessions and seeds whose ids the Hub did not
+  # touch while the read ran, and the new counts, or the error that keeps the
+  # read pending for the next poll.
   @doc false
   def outcome(state, read, {:ok, sessions, seeds, pending?}) do
+    sessions = Enum.reject(sessions, fn {live, _pid} -> MapSet.member?(read.touched, live.id) end)
+
+    seeds =
+      Enum.reject(seeds, fn {session_id, _seed} -> MapSet.member?(read.touched, session_id) end)
+
     state = %{
       state
       | seed_pending: pending?,

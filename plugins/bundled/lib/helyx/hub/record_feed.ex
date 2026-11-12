@@ -102,10 +102,16 @@ defmodule Helyx.Hub.RecordFeed do
   end
 
   # Whether a session has a row now, for the kind of its change (`:unknown`
-  # with no subscriber, which needs no kind).
-  def row?(%{records: records}, _session_id) when map_size(records) == 0, do: :unknown
+  # with no subscriber and no start in flight, which needs no kind). A start of
+  # another user in flight can write a row of the default owner, and a later
+  # subscriber must not see it, so the row is read then.
+  def row?(%{records: records} = state, session_id) when map_size(records) == 0 do
+    if Live.start_in_flight?(state), do: row_of(state, session_id), else: :unknown
+  end
 
-  def row?(state, session_id) do
+  def row?(state, session_id), do: row_of(state, session_id)
+
+  defp row_of(state, session_id) do
     case state.store.record(state.db, session_id) do
       {:ok, _row} -> :present
       _missing_or_failed -> :absent
@@ -124,9 +130,9 @@ defmodule Helyx.Hub.RecordFeed do
   end
 
   # A row whose first notice goes to no client: a `Live` of a session with no
-  # row, while a start of another user is in flight.
-  def silent(%{records: records} = state, _session_id) when map_size(records) == 0, do: state
-
+  # row, while a start of another user is in flight. The mark is set with or
+  # without a subscriber, so a subscriber that arrives before the start's
+  # result never gets the row in a list; the start's result clears it.
   def silent(state, session_id), do: %{state | silent: MapSet.put(state.silent, session_id)}
 
   # The session ended: its silent mark and its change wait for no one.
@@ -158,8 +164,8 @@ defmodule Helyx.Hub.RecordFeed do
   # that the feed may have written: the new owner gets the record, and the
   # owner before it gets the removal, unless that row was silent. No other
   # user is told of the id.
-  def moved(%{records: records} = state, _session_id, _prior_owner) when map_size(records) == 0,
-    do: state
+  def moved(%{records: records} = state, session_id, _prior_owner) when map_size(records) == 0,
+    do: forget(state, session_id)
 
   def moved(state, session_id, prior_owner) do
     with {:ok, row} <- state.store.record(state.db, session_id),
@@ -184,8 +190,8 @@ defmodule Helyx.Hub.RecordFeed do
 
   # A record that is gone: the subscribers of the owner that it had drop it.
   # A client that never held it is not told of the id.
-  def removed(%{records: records} = state, _session_id, _owner) when map_size(records) == 0,
-    do: state
+  def removed(%{records: records} = state, session_id, _owner) when map_size(records) == 0,
+    do: forget(state, session_id)
 
   def removed(state, session_id, owner) do
     silent? = MapSet.member?(state.silent, session_id)
@@ -349,13 +355,20 @@ defmodule Helyx.Hub.RecordFeed do
   defp change("removed", session_id), do: %{"kind" => "removed", "session" => session_id}
   defp change(kind, view), do: %{"kind" => kind, "record" => Records.wire(view)}
 
+  # A change goes to the subscribers of the owner, unless its row is silent:
+  # a silent row is in no list and in no change, and the start's result tells
+  # its owner (`moved/3`). `moved/3` clears the mark before it sends.
   defp send_row(state, user, change) do
-    state = forget(state, change_id(change))
+    if MapSet.member?(state.silent, change_id(change)) do
+      state
+    else
+      state = forget(state, change_id(change))
 
-    Enum.reduce(state.records, state, fn
-      {ref, %{user: ^user}}, state -> send_change(state, ref, change_id(change), change)
-      {_ref, _other}, state -> state
-    end)
+      Enum.reduce(state.records, state, fn
+        {ref, %{user: ^user}}, state -> send_change(state, ref, change_id(change), change)
+        {_ref, _other}, state -> state
+      end)
+    end
   end
 
   defp change_id(%{"record" => %{"session" => session_id}}), do: session_id

@@ -42,6 +42,8 @@ defmodule Helyx.Hub.RecordsFeedTest do
 
     hub = start_supervised!(Supervisor.child_spec({Hub, hub_opts}, id: :hub))
     transport = start_supervised!({WebSocket, core: core, port: 0, authority: Hub.authority(hub)})
+    # The start read is done, so the tests start from a settled Hub.
+    Events.wait_until(fn -> :sys.get_state(hub).live_read == nil end)
     Map.merge(context, %{hub: hub, port: WebSocket.port(transport)})
   end
 
@@ -396,6 +398,22 @@ defmodule Helyx.Hub.RecordsFeedTest do
     assert_marker(bob)
   end
 
+  test "a start of another user is silent with no subscriber, and the first reply after it skips it",
+       context do
+    context = serve(context)
+    {ann_id, _token, ann} = user(context, "ann")
+
+    # A start of ann is in flight: its place, and the Live of the session,
+    # while no records subscription exists.
+    :ok = Hub.call(context.hub, {:start, %{user: ann_id, token: nil}, byte_size(File.cwd!())})
+    {:ok, session} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
+    Events.wait_until(fn -> MapSet.member?(:sys.get_state(context.hub).silent, session.id) end)
+
+    {records, _more} = subscribe(open(context.port))
+    refute Enum.any?(records, &(&1["session"] == session.id))
+    :gen_tcp.close(ann)
+  end
+
   test "a record delete names the id only to the feed of its owner", context do
     context = serve(context)
     owner = open(context.port)
@@ -667,6 +685,70 @@ defmodule Helyx.Hub.RecordsFeedTest do
     Events.wait_until(fn -> Live.running?(:sys.get_state(context.hub), id) end)
   end
 
+  defmodule StuckSession do
+    @moduledoc false
+    # A session that answers `:live` and never answers its snapshot, for the
+    # shared bound of the snapshots.
+    use GenServer
+
+    def start_link({core, id}), do: GenServer.start_link(__MODULE__, {core, id})
+
+    @impl true
+    def init({core, id}) do
+      {:ok, _} = Registry.register(Helyx.Core.sessions_registry(core), id, nil)
+      {:ok, id}
+    end
+
+    @impl true
+    def handle_call(:live, _from, id) do
+      live = %Helyx.Sessions.Live{
+        id: id,
+        instance_id: "stuck",
+        cwd: "/tmp",
+        model: "fake/echo",
+        status: :running,
+        parent: nil
+      }
+
+      {:reply, live, id}
+    end
+
+    def handle_call({:until, _deadline, {:subscribe, _pid, _ref, _opts}}, _from, id),
+      do: {:noreply, id}
+
+    def handle_call(_request, _from, id), do: {:reply, :ok, id}
+
+    @impl true
+    def handle_info(_message, id), do: {:noreply, id}
+  end
+
+  @tag :slow
+  test "one snapshot that does not answer keeps only itself pending", context do
+    context = serve(context)
+    {:ok, good} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
+    Events.wait_until(fn -> Live.running?(:sys.get_state(context.hub), good.id) end)
+
+    fakes =
+      for n <- 1..3 do
+        id = "stuck#{n}#{System.unique_integer([:positive])}"
+        {:ok, pid} = StuckSession.start_link({context.core, id})
+        {id, pid}
+      end
+
+    on_exit(fn -> Enum.each(fakes, fn {_id, pid} -> Process.exit(pid, :kill) end) end)
+
+    # The live entries are gone, as a drop of the feed leaves them, and a read
+    # must apply the session that answers while three do not.
+    :sys.replace_state(context.hub, fn state ->
+      %{state | live: %{}, starters: %{}, seed_pending: true}
+    end)
+
+    send(context.hub, :wake_poll)
+    Events.wait_until(fn -> :sys.get_state(context.hub).live_read == nil end, 15_000)
+
+    assert Live.running?(:sys.get_state(context.hub), good.id)
+  end
+
   # A server whose Hub has a registered name, so its authority finds the new
   # Hub after a restart (hub.md, decision 5).
   defp serve_named(%{tmp_dir: dir} = context) do
@@ -703,5 +785,164 @@ defmodule Helyx.Hub.RecordsFeedTest do
       %{"records" => _records} = full -> full
       _change -> next_full(socket)
     end
+  end
+
+  # A read held after it took its data: the gate sends its Task to the test
+  # and waits for `:read_go`. The Hub handles notices meanwhile.
+  defp gated_read(context) do
+    test = self()
+
+    gate = fn ->
+      send(test, {:read_ready, self()})
+
+      receive do
+        :read_go -> :ok
+      end
+    end
+
+    :sys.replace_state(context.hub, fn state ->
+      %{state | read_gate: gate, seed_pending: true}
+    end)
+
+    send(context.hub, :wake_poll)
+    assert_receive {:read_ready, task}
+    task
+  end
+
+  defp release_read(context, task) do
+    :sys.replace_state(context.hub, fn state -> %{state | read_gate: nil} end)
+    send(task, :read_go)
+    Events.wait_until(fn -> :sys.get_state(context.hub).live_read == nil end)
+  end
+
+  defp question_setup(context) do
+    model = "q_#{System.unique_integer([:positive])}"
+    call = %Helyx.Message.ToolCall{id: "q1", name: "question", arguments: question_args()}
+    :ok = Fake.script(context.core, model, [[call], ["Done."]])
+    {:ok, session} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/#{model}")
+    {:ok, _snapshot, _ref} = Session.subscribe(session, answers: true)
+    session
+  end
+
+  defp ask_open?(state, session_id, ask_id),
+    do: MapSet.member?(Map.get(state.asks, session_id, MapSet.new()), ask_id)
+
+  defp live_pid(hub, id) do
+    Enum.find_value(:sys.get_state(hub).live, fn {_ref, {session_id, pid, _status}} ->
+      if session_id == id, do: pid
+    end)
+  end
+
+  test "a read result does not bring back an ask that ended", context do
+    context = serve(context)
+    session = question_setup(context)
+    :ok = Session.prompt(session, "go")
+    [ask] = of_type(collect_until(:ask), :ask)
+
+    task = gated_read(context)
+    :ok = Session.answer(session, ask.data.ask_id, %{"answers" => [%{"selected" => ["a"]}]})
+
+    Events.wait_until(fn ->
+      not ask_open?(:sys.get_state(context.hub), session.id, ask.data.ask_id)
+    end)
+
+    release_read(context, task)
+    state = :sys.get_state(context.hub)
+
+    refute ask_open?(state, session.id, ask.data.ask_id)
+    assert Live.status(state, session.id) != "waiting"
+    _ = collect_until(:turn_end)
+  end
+
+  test "a read result does not drop an ask that opened", context do
+    context = serve(context)
+    session = question_setup(context)
+
+    task = gated_read(context)
+    :ok = Session.prompt(session, "go")
+    [ask] = of_type(collect_until(:ask), :ask)
+
+    Events.wait_until(fn ->
+      ask_open?(:sys.get_state(context.hub), session.id, ask.data.ask_id)
+    end)
+
+    release_read(context, task)
+    state = :sys.get_state(context.hub)
+
+    assert ask_open?(state, session.id, ask.data.ask_id)
+    assert Live.status(state, session.id) == "waiting"
+  end
+
+  test "a read result does not bring back a running status", context do
+    context = serve(context)
+    session = question_setup(context)
+    :ok = Session.prompt(session, "go")
+    [ask] = of_type(collect_until(:ask), :ask)
+
+    task = gated_read(context)
+    :ok = Session.answer(session, ask.data.ask_id, %{"answers" => [%{"selected" => ["a"]}]})
+
+    Events.wait_until(fn -> Live.status(:sys.get_state(context.hub), session.id) == "idle" end)
+    release_read(context, task)
+
+    assert Live.status(:sys.get_state(context.hub), session.id) == "idle"
+    _ = collect_until(:turn_end)
+  end
+
+  test "a read result does not replace a newer session process", context do
+    context = serve(context)
+    owner = open(context.port)
+    %{"result" => %{"session" => id}} = start(owner)
+    old_pid = Helyx.Session.pid(%Helyx.Session{id: id, core: context.core})
+    task = gated_read(context)
+
+    %{"ok" => true} = req(owner, "stop", %{"session" => id})
+    %{"result" => %{"session" => ^id}} = req(owner, "resume", %{"id" => id})
+    new_pid = Helyx.Session.pid(%Helyx.Session{id: id, core: context.core})
+    assert new_pid != old_pid
+
+    Events.wait_until(fn -> live_pid(context.hub, id) == new_pid end)
+    release_read(context, task)
+
+    assert live_pid(context.hub, id) == new_pid
+    assert {:ok, owner_id} = Hub.actor(context.hub, id)
+    assert owner_id == :sys.get_state(context.hub).default_owner_id
+  end
+
+  test "a read result does not bring back a deleted record", context do
+    context = serve(context)
+    owner = open(context.port)
+    %{"result" => %{"session" => id}} = start(owner)
+    task = gated_read(context)
+
+    %{"ok" => true} = req(owner, "stop", %{"session" => id})
+    %{"ok" => true} = req(owner, "hub.records.delete", %{"session" => id})
+    state = :sys.get_state(context.hub)
+    Events.wait_until(fn -> state.store.record(state.db, id) == {:error, :not_found} end)
+
+    release_read(context, task)
+    state = :sys.get_state(context.hub)
+
+    assert state.store.record(state.db, id) == {:error, :not_found}
+  end
+
+  test "a read result does not send a silent row", context do
+    context = serve(context)
+    feed = open(context.port)
+    {[], false} = subscribe(feed)
+    {ann_id, _token, ann} = user(context, "ann")
+
+    # A start of ann is in flight: its place, and the Live of the session.
+    :ok = Hub.call(context.hub, {:start, %{user: ann_id, token: nil}, byte_size(File.cwd!())})
+    {:ok, session} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
+    Events.wait_until(fn -> MapSet.member?(:sys.get_state(context.hub).silent, session.id) end)
+
+    # The read takes the silent session, and its result comes with the start
+    # still in flight, before the start's result.
+    task = gated_read(context)
+    release_read(context, task)
+
+    assert_marker(feed)
+    :gen_tcp.close(ann)
   end
 end

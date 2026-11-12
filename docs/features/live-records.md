@@ -104,26 +104,37 @@ types in its `Helyx.Sessions.watch/2` call. The `Helyx.Sessions.Live` notice
 carries no ask, so the set is seeded from the session snapshot
 (`Helyx.Session.subscribe/2` with `tail: 1`, then the task ends and the
 session drops the subscriber):
-
 - the read of the live sessions runs in one Task outside the Hub process, so
   a session that does not answer blocks the Task, never the Hub. The Hub
   starts it at its start and at a poll that finds a pending read or a new
   drop of the feed, and takes its result as a message. At most one read runs;
 - the Task reads `Helyx.Sessions.list_live/1` under the seed bound, then one
-  snapshot of each live session under the same bound, each session in a Task
-  of its own. A snapshot that does not answer is `:error` for that session:
-  the seed keeps its old set, and the read stays pending, so the next poll
-  reads again;
+  snapshot of each live session, each session in a Task of its own, all under
+  one `@seed_ms` deadline (`Task.yield_many/2`), so the waits of the sessions
+  add up to one bound. A snapshot that does not answer is `:error` for that
+  session: the seed keeps its old set, and the read stays pending, so the next
+  poll reads again. A snapshot that answers is applied even when another does
+  not;
 - a read that fails or passes its bound keeps the live set, the ask sets, and
   the feed count, and stays pending; the next poll reads again. So the start
   path and the repair path are one mechanism;
-- the snapshot is the baseline, and the `:ask` and `:ask_end` notices that
-  wait in the mailbox of the Hub process are applied after the seed: adding or
-  removing an ask id is idempotent, so the set is right without an epoch.
+- a session sends its notices to the Hub directly, while the result of a read
+  comes through two Tasks, so a newer notice can reach the Hub before an older
+  result. While a read is in flight the Hub keeps the ids of the sessions
+  whose `Live`, `:ask`, `:ask_end`, `:DOWN`, record delete, or start it
+  handled, and the result skips those ids: the notice is newer than the read.
+  The set is dropped with the read, and it is bounded by the sessions whose
+  notices the Hub handles in the read's `@read_ms` (at most the 64 live
+  sessions, and the record deletes and starts of that time).
 
 With no records subscription, Hub writes no record view and sends no frame.
 It keeps the open-ask set from the feed: one map update for each `:ask` and
-`:ask_end` that the feed sends it, and no store query.
+`:ask_end` that the feed sends it. It also keeps the silent mark of a start
+of another user in flight, with or without a subscriber, so a subscriber that
+arrives before the start's result never gets that row in a list; the mark is
+one id for each start in flight, bounded by the reserved places. No store
+query is made but the row read of a `Live` of a session with no row while
+such a start is in flight, which tells whether the notice is that start's.
 
 ### The server
 
@@ -151,7 +162,8 @@ It keeps the open-ask set from the feed: one map update for each `:ask` and
   owner holds a reserved place of `Helyx.Hub.Live` (`record?: true`), and the
   place names no session id. A `Live` of a session with no row while such a
   place is in flight cannot be told from that start, so its row is written
-  and its first change is **silent**: no client is told. The `result` of the
+  and its first change is **silent**: no client is told, with or without a
+  subscriber, and the apply of a read never sends a silent row. The `result` of the
   start knows the owner; it sends the record to that owner, and, if the row
   was the default owner's, the removal to the default owner's subscribers
   only. A silent row is in **no** list: the live frames and every full list
@@ -162,11 +174,12 @@ It keeps the open-ask set from the feed: one map update for each `:ask` and
   row had.
 - `Helyx.Hub.LiveRead` (new, internal) reads the live sessions in a Task
   outside the Hub (`maybe_read/1`) and the Hub takes the result as a message,
-  so a session that does not answer blocks the Task, never the Hub. `seed_pending`
-  is the one mechanism of the start and the repair: a read that fails or is
-  killed leaves it set, and the next poll starts a read. A per-session
-  snapshot that does not answer is `:error`, which keeps that session's set
-  and leaves the read pending.
+  so a session that does not answer blocks the Task, never the Hub. It holds
+  the ids that the Hub handled a notice for while the read ran (`touched/2`),
+  and the result skips them. `seed_pending` is the one mechanism of the start
+  and the repair: a read that fails or is killed leaves it set, and the next
+  poll starts a read. A per-session snapshot that does not answer is `:error`,
+  which keeps that session's set and leaves the read pending.
 - `Helyx.Hub.Store` gains `owned/3` (the rows of an owner, newest
   `active_at` first, at most a limit) and `rows/2` (the rows of a list of
   session ids). `Helyx.Hub.Store.SQLite` implements them.
@@ -224,7 +237,9 @@ It keeps the open-ask set from the feed: one map update for each `:ask` and
 | the full list after a drop, and the first list after a `records_end` | one frame of at most `max_reply/0` records, sent at the next poll, `Helyx.Hub.Wake.poll_ms/0` (1,000 ms) after the client drains | the next poll tries again | Hub |
 | records subscriptions of a Hub | `Helyx.Hub.RecordFeed.max_subscribers/0`, read from `record_subscribers` of `bounds.json`: the 64 connections of the transport, one subscription each | `busy` at the subscribe | Hub |
 | open asks of a session | one for each call that waits; Core bounds the calls of a turn (the concurrency of its tools) | n/a | Core |
-| the read of the live sessions | one Task at a time, outside the Hub: `Helyx.Hub.LiveRead`'s `@seed_ms` for `Helyx.Sessions.list_live/1` and `@seed_ms` for its snapshots, `@read_ms` in all, and the Hub kills it at `@read_ms` + `@kill_margin_ms` | the Hub never waits for it; a killed or failed read stays pending, and the next poll reads again | Hub |
+| the read of the live sessions | one Task at a time, outside the Hub: `Helyx.Hub.LiveRead`'s `@seed_ms` for `Helyx.Sessions.list_live/1`, then all the snapshots under one `@seed_ms` (`Task.yield_many/2`), `@read_ms` in all, and the Hub kills it at `@read_ms` + `@kill_margin_ms` | the Hub never waits for it; a killed or failed read stays pending, and the next poll reads again | Hub |
+| the set of ids that a read skips (a notice the Hub handled) | the ids of the `Live`, `:ask`, `:ask_end`, `:DOWN`, record delete, and start notices that the Hub handles while the read runs, dropped with the read: at most the 64 live sessions and the record deletes and starts of `@read_ms` | n/a: the set is dropped with the read, and each id is skipped because its notice is newer | Hub |
+| the snapshot of one session | its own Task, all under one `@seed_ms`; one that does not answer is `:error` in the seed | the set of that session stays, and the read stays pending, so the next poll reads again | Hub |
 | the snapshot of one session | its own Task for `@seed_ms`; one that does not answer is `:error` in the seed | the set of that session stays, and the read stays pending, so the next poll reads again | Hub |
 | the rows in a seed snapshot | `tail: 1`, so one message; the asks are the snapshot's | n/a | Core |
 | the reply of `records.subscribe` | the 6,000 ms of every other operation: one Hub call of 5,000 ms | `timeout` | the transport, Hub |
