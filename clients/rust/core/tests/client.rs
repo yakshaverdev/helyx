@@ -8,13 +8,14 @@ use common::{at, load, matches, observe};
 use helyx_client_core::Broken;
 use helyx_client_core::client::{Client, Follow, Hold, MAX_IN_FLIGHT, Next, Output, Refusal, Wait};
 use helyx_client_core::json::{Json, Limits, WIRE, decode};
+use helyx_client_core::operation::Operation;
 use helyx_client_core::parts::{self, FRAME_BYTES, PART_BYTES, REQUEST_BYTES, TooLarge};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
 const CHALLENGE: &str =
     r#"{"type":"challenge","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}"#;
-const WELCOME: &str = r#"{"type":"welcome","protocol":11}"#;
+const WELCOME: &str = r#"{"type":"welcome","protocol":12}"#;
 
 /// The frames that the client sends among `outputs`, decoded.
 fn sent(outputs: &[Output]) -> Vec<Value> {
@@ -31,7 +32,7 @@ fn sent(outputs: &[Output]) -> Vec<Value> {
 fn welcomed(client: &mut Client) -> Vec<Output> {
     client.connect();
     let hello = client.receive(CHALLENGE).unwrap();
-    assert_eq!(sent(&hello), [json!({"type": "hello", "protocol": 11})]);
+    assert_eq!(sent(&hello), [json!({"type": "hello", "protocol": 12})]);
     let outputs = client.receive(WELCOME).unwrap();
     assert_eq!(outputs[0], Output::Welcome);
     outputs
@@ -227,8 +228,8 @@ fn no_handshake_frame_follows_its_answer() {
     let mut client = Client::new(None);
     client.connect();
     client.receive(CHALLENGE).unwrap();
-    let refused = r#"{"type":"refused","code":"protocol","server_protocol":12}"#;
-    assert_eq!(client.receive(refused).unwrap(), [Output::Refused(12)]);
+    let refused = r#"{"type":"refused","code":"protocol","server_protocol":13}"#;
+    assert_eq!(client.receive(refused).unwrap(), [Output::Refused(13)]);
     assert_eq!(client.receive(WELCOME), Err(Broken("no connection")));
     // A second challenge ends the handshake, and so does a nonce of the
     // wrong size.
@@ -262,8 +263,8 @@ fn after_a_welcome_a_failed_open_reconnects() {
     assert_eq!(client.closed(None).next, Next::Reconnect);
     client.connect();
     client.receive(CHALLENGE).unwrap();
-    let refused = r#"{"type":"refused","code":"protocol","server_protocol":12}"#;
-    assert_eq!(client.receive(refused).unwrap(), [Output::Refused(12)]);
+    let refused = r#"{"type":"refused","code":"protocol","server_protocol":13}"#;
+    assert_eq!(client.receive(refused).unwrap(), [Output::Refused(13)]);
     assert_eq!(client.closed(Some(4426)).next, Next::Stop);
     let mut client = following(4);
     assert!(client.receive(&notice(9)).is_err());
@@ -1211,4 +1212,37 @@ fn a_replay_of_a_replaced_instance_keeps_it_replaced() {
     client.receive(&res(&subscribe[0]["id"], replay)).unwrap();
     let outputs = client.receive(&stopped("1")).unwrap();
     assert_eq!(sent(&outputs)[0]["op"], json!("subscribe"));
+}
+
+/// A `record` frame comes after the `records.subscribe` reply and before the
+/// `records.unsubscribe` reply (`docs/features/live-records.md`, O7).
+#[test]
+fn the_records_feed_takes_its_frames_between_its_reply_and_its_unsubscribe() {
+    let change = r#"{"type":"record","change":{"kind":"removed","session":"s1"}}"#;
+
+    // A record frame before the reply is a break, and the connection ends.
+    let mut before = Client::new(None);
+    welcomed(&mut before);
+    assert_eq!(before.receive(change), Err(Broken("record frame")));
+
+    let mut client = Client::new(None);
+    welcomed(&mut client);
+
+    let (subscribe, _) = client.perform(Operation::records_subscribe()).unwrap();
+    let reply = format!(
+        r#"{{"type":"res","id":"{subscribe}","ok":true,"result":{{"more":true,"records":[]}}}}"#
+    );
+    assert_eq!(client.receive(&reply).unwrap(), [Output::RecordsChanged]);
+    assert!(client.records().rows().is_empty());
+    assert!(client.records().more());
+
+    assert_eq!(client.receive(change).unwrap(), [Output::RecordsChanged]);
+
+    let (unsubscribe, _) = client.perform(Operation::records_unsubscribe()).unwrap();
+    let reply = format!(r#"{{"type":"res","id":"{unsubscribe}","ok":true,"result":{{}}}}"#);
+    assert!(matches!(
+        client.receive(&reply).unwrap().as_slice(),
+        [Output::Reply { .. }]
+    ));
+    assert_eq!(client.receive(change), Err(Broken("record frame")));
 }

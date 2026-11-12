@@ -228,6 +228,17 @@ defmodule Helyx.Hub.Store do
   @doc "Whether `owner` owns a \"hub\" record."
   @callback hub_records?(t(), owner :: String.t()) :: {:ok, boolean()} | {:error, :failed}
 
+  @doc """
+  The rows that `owner` owns, newest `active_at` first, then by session id,
+  at most `limit` (`docs/features/live-records.md`).
+  """
+  @callback owned(t(), owner :: String.t(), limit :: pos_integer()) ::
+              {:ok, [record()]} | {:error, :failed}
+
+  @doc "The rows of `session_ids`, at most 256 ids (the feed of a user)."
+  @callback rows(t(), session_ids :: [String.t()]) ::
+              {:ok, [record()]} | {:error, :failed}
+
   @typedoc """
   A schedule row (`docs/features/hub.md`, decisions 11 and 12, "Store
   schema"). `delivery_id`, `due_at`, and `next_try_at` are nil when the row

@@ -6,7 +6,17 @@ defmodule Helyx.Hub.Server do
 
   use GenServer
 
-  alias Helyx.Hub.{Connections, Live, Records, Rules, Schedules, Subscriptions, Wake, Webhook}
+  alias Helyx.Hub.{
+    Connections,
+    Live,
+    RecordFeed,
+    Records,
+    Rules,
+    Schedules,
+    Subscriptions,
+    Wake,
+    Webhook
+  }
 
   # The read of the live sessions of the Core at the start and at each repair
   # (decision 14).
@@ -30,8 +40,9 @@ defmodule Helyx.Hub.Server do
       case default_owner(config.store, store, config.default_owner) do
         {:ok, owner_id} ->
           # Before the seed: a session that starts during the list sends its
-          # Live after this register.
-          {:ok, dropped} = Helyx.Sessions.watch(config.core, [])
+          # Live after this register. The ask notices give the open-ask sets
+          # of the records feed (live-records.md).
+          {:ok, dropped} = Helyx.Sessions.watch(config.core, [:ask, :ask_end])
 
           state =
             Map.merge(config, %{
@@ -41,7 +52,8 @@ defmodule Helyx.Hub.Server do
               feed_dropped: 0
             })
 
-          {:ok, state |> Live.init() |> Connections.init() |> Wake.init(), {:continue, :live}}
+          {:ok, state |> Live.init() |> Connections.init() |> Wake.init() |> RecordFeed.init(),
+           {:continue, :live}}
 
         {:error, _} = error ->
           config.store.close(store)
@@ -70,50 +82,77 @@ defmodule Helyx.Hub.Server do
   end
 
   # Every live session of the Core enters the live set once, and its row; past
-  # the deadline, or on a failed read, the set starts empty (decision 14).
+  # the deadline, or on a failed read, the set starts empty (decision 14). The
+  # seed also reads the open asks of each live session, for the records feed
+  # (`docs/features/live-records.md`).
   @impl true
   def handle_continue(:live, state) do
+    {sessions, epochs, seeds} = read_live(state)
+    state = state |> RecordFeed.seed(epochs, seeds) |> seen_all(sessions) |> RecordFeed.prune()
+
     # The first poll of the wake-ups comes at the start (decision 12).
-    {:noreply, state |> seen_all(read_live(state)) |> poll()}
+    {:noreply, state |> poll()}
   end
 
   # The live sessions of the Core, in a Task under the wake supervisor with
   # the bound of the seed: a Core bounds neither the number of its sessions
   # nor the time that one takes to answer.
-  defp read_live(%{core: core, wake: %{sup: sup}}) do
+  defp read_live(%{core: core, wake: %{sup: sup}} = state) do
+    epochs = RecordFeed.epochs(state)
     task = Task.Supervisor.async_nolink(sup, fn -> live_sessions(core) end)
 
     case Task.yield(task, @seed_ms) || Task.shutdown(task, :brutal_kill) do
-      {:ok, sessions} -> sessions
-      _exit_or_nil -> []
+      {:ok, {sessions, seeds}} -> {sessions, epochs, seeds}
+      _exit_or_nil -> {[], epochs, []}
     end
   end
 
   defp seen_all(state, sessions),
     do: Enum.reduce(sessions, state, fn {live, pid}, state -> seen(state, live, pid) end)
 
+  # Each live session and its open ask ids, from its snapshot. The session
+  # drops the subscriber when the Task ends.
   defp live_sessions(core) do
-    for live <- Helyx.Sessions.list_live(core),
-        pid = Helyx.Session.pid(%Helyx.Session{id: live.id, core: core}),
-        is_pid(pid),
-        do: {live, pid}
+    pairs =
+      for live <- Helyx.Sessions.list_live(core),
+          pid = Helyx.Session.pid(%Helyx.Session{id: live.id, core: core}),
+          is_pid(pid),
+          do: {live, pid}
+
+    seeds = Enum.map(pairs, fn {live, _pid} -> {live.id, open_asks(core, live.id)} end)
+    {pairs, seeds}
   end
 
-  # The periodic step of Hub: the repair of a dropped notice of the feed, then
-  # the poll of the wake-ups. It needs no timer of its own, because the poll
-  # already runs each 1,000 ms (decision 12).
-  defp poll(state), do: state |> repaired() |> Wake.poll()
+  defp open_asks(core, id) do
+    case Helyx.Session.subscribe(%Helyx.Session{id: id, core: core}, tail: 1) do
+      {:ok, %Helyx.Session.Snapshot{asks: asks}, _ref} -> Enum.map(asks, & &1.ask_id)
+      _error -> []
+    end
+  catch
+    :exit, _reason -> []
+  end
+
+  # The periodic step of Hub: the repair of a dropped notice of the feed, the
+  # repair of a records subscriber, then the poll of the wake-ups. It needs no
+  # timer of its own, because the poll already runs each 1,000 ms
+  # (decision 12).
+  defp poll(state), do: state |> repaired() |> RecordFeed.repaired() |> Wake.poll()
 
   # A notice that the feed dropped left its session out of the live set, and
-  # with no row. A count above the one that Hub last read reads the live
-  # sessions again, as the start does (decision 14). The count is read before
-  # the sessions, so a drop during the read keeps the count low and the next
-  # poll reads them again.
+  # with no row, and may have left an open-ask set behind. A count above the
+  # one that Hub last read reads the live sessions again, as the start does
+  # (decision 14; live-records.md). The count is read before the sessions, so
+  # a drop during the read keeps the count low and the next poll reads them
+  # again.
   defp repaired(state) do
     dropped = Helyx.Sessions.dropped(state.feed)
 
     if dropped > state.feed_dropped do
-      state = seen_all(state, read_live(state))
+      {sessions, epochs, seeds} = read_live(state)
+
+      state =
+        state |> RecordFeed.seed(epochs, seeds) |> seen_all(sessions) |> RecordFeed.prune()
+
       %{state | feed_dropped: dropped}
     else
       state
@@ -122,11 +161,20 @@ defmodule Helyx.Hub.Server do
 
   # The Live of the feed, and the row that it writes: the write waits for
   # nobody (decision 8). The live entry takes the status, which the record
-  # derives and never stores.
+  # derives and never stores. A write that took sends the change to the
+  # records feed.
   defp seen(state, %Helyx.Sessions.Live{} = live, pid) do
+    existed? = RecordFeed.row?(state, live.id)
     state = Live.watch(state, live.id, pid, Atom.to_string(live.status))
-    _ = Records.seen(live, System.monotonic_time(:millisecond) + @seen_ms, state)
-    state
+    deadline = System.monotonic_time(:millisecond) + @seen_ms
+
+    case Records.seen(live, deadline, state) do
+      :ok ->
+        RecordFeed.changed(state, live.id, if(existed? == :absent, do: "new", else: "changed"))
+
+      _error ->
+        state
+    end
   end
 
   @impl true
@@ -157,7 +205,10 @@ defmodule Helyx.Hub.Server do
   defp serve({:resume, auth, id, exists?, running?}, caller, deadline, state) do
     with :ok <- Rules.handle({:session, auth, :resume, id, exists?, nil}, deadline, state),
          {:ok, state} <- place(state, auth.user, caller, id, running?) do
-      touched(Rules.touch(id, {:touch, nil}, deadline, state), :ok, caller, state)
+      {reply, state} =
+        touched(Rules.touch(id, {:touch, nil}, deadline, state), :ok, caller, state)
+
+      {reply, if(reply == :ok, do: RecordFeed.changed(state, id, "changed"), else: state)}
     else
       error -> {error, state}
     end
@@ -169,16 +220,21 @@ defmodule Helyx.Hub.Server do
     with {:ok, id} <- Records.handle(request, deadline, state),
          running? = Helyx.Session.pid(%Helyx.Session{id: id, core: state.core}) != nil,
          {:ok, state} <- place(state, auth.user, caller, id, running?) do
-      touched(Rules.touch(id, {:touch, nil}, deadline, state), {:ok, id}, caller, state)
+      {reply, state} =
+        touched(Rules.touch(id, {:touch, nil}, deadline, state), {:ok, id}, caller, state)
+
+      {reply, if(reply == {:ok, id}, do: RecordFeed.changed(state, id, "changed"), else: state)}
     else
       error -> {error, state}
     end
   end
 
-  defp serve({:started, auth, start, pid}, caller, deadline, state),
-    do:
-      {Rules.handle({:started, auth, start}, deadline, state),
-       Live.started(state, caller, start.session_id, pid, auth.user)}
+  defp serve({:started, auth, start, pid}, caller, deadline, state) do
+    existed? = RecordFeed.row?(state, start.session_id)
+    reply = Rules.handle({:started, auth, start}, deadline, state)
+    state = Live.started(state, caller, start.session_id, pid, auth.user)
+    {reply, started_change(reply, state, auth.user, start.session_id, existed?)}
+  end
 
   defp serve({:resumed, auth, id, pid}, caller, deadline, state),
     do:
@@ -227,11 +283,47 @@ defmodule Helyx.Hub.Server do
     end
   end
 
-  defp serve({:record_delete, auth, id, found} = request, _caller, deadline, state),
-    do: readers_change(request, auth.user, id, found != nil, deadline, state)
+  defp serve({:record_delete, auth, id, found} = request, _caller, deadline, state) do
+    {reply, state} = readers_change(request, auth.user, id, found != nil, deadline, state)
+    {reply, if(reply == :ok, do: RecordFeed.removed(state, id), else: state)}
+  end
 
-  defp serve({:record_update, auth, id, found, _changes} = request, _caller, deadline, state),
-    do: readers_change(request, auth.user, id, found != nil, deadline, state)
+  defp serve({:record_update, auth, id, found, _changes} = request, _caller, deadline, state) do
+    {reply, state} = readers_change(request, auth.user, id, found != nil, deadline, state)
+
+    {reply,
+     if(match?({:ok, _}, reply), do: RecordFeed.changed(state, id, "changed"), else: state)}
+  end
+
+  # A text that Hub authorized moved the record: its `active_at`, and its
+  # `prompt` the first time (`docs/features/hub.md`, decision 8).
+  defp serve(
+         {:session, _auth, _kind, id, _exists?, {:touch, _prompt}} = request,
+         _caller,
+         deadline,
+         state
+       ) do
+    reply = handle(request, deadline, state)
+    {reply, if(reply == :ok, do: RecordFeed.changed(state, id, "changed"), else: state)}
+  end
+
+  # The scan of `sessions.saved` writes the rows of the files that have none,
+  # up to 256: one full list tells the subscribers of the default owner.
+  defp serve({:saved, auth, _cwd, _cursor, _limit, _scanned} = request, _caller, deadline, state) do
+    reply = Records.handle(request, deadline, state)
+    {reply, if(match?({:ok, _}, reply), do: RecordFeed.refresh(state, auth.user), else: state)}
+  end
+
+  # The records subscription of a connection (`docs/features/live-records.md`).
+  defp serve({:records_subscribe, auth, pid}, _caller, deadline, state) do
+    with :ok <- Rules.handle({:credential, auth}, deadline, state),
+         {:ok, views, more} <- RecordFeed.list(state, auth.user),
+         {:ok, state} <- RecordFeed.subscribe(state, auth.user, pid) do
+      {{:ok, %{"records" => views, "more" => more}}, state}
+    else
+      error -> {error, state}
+    end
+  end
 
   defp serve(request, _caller, deadline, state)
        when elem(request, 0) in [:schedule_list, :schedule_create],
@@ -257,7 +349,7 @@ defmodule Helyx.Hub.Server do
     {reply, state} = Wake.serve({:wake_refused, row}, caller, deadline, state)
     id = row.session_id
     {_, state} = readers_change({:record_gone, id}, row.owner, id, false, deadline, state)
-    {reply, state}
+    {reply, RecordFeed.removed(state, id)}
   end
 
   # The Hub calls of a delivery Task (`Helyx.Hub.Delivery`).
@@ -272,6 +364,15 @@ defmodule Helyx.Hub.Server do
     do: {Webhook.accept(id, signature, body, deadline, state), state}
 
   defp serve(request, _caller, deadline, state), do: {handle(request, deadline, state), state}
+
+  # A start of the default owner keeps every reader; a start of another user
+  # moves the row that the feed may have written, so its previous owner gets
+  # the removal (`docs/features/live-records.md`).
+  defp started_change(:ok, %{default_owner_id: user} = state, user, id, existed?),
+    do: RecordFeed.changed(state, id, if(existed? == :absent, do: "new", else: "changed"))
+
+  defp started_change(:ok, state, _user, id, _existed?), do: RecordFeed.moved(state, id)
+  defp started_change(_error, state, _user, _id, _existed?), do: state
 
   defp killed(state, user_id), do: Wake.kill(state, &(&1.owner == user_id))
 
@@ -328,8 +429,30 @@ defmodule Helyx.Hub.Server do
   def handle_info({:helyx_feed, pid, %Helyx.Sessions.Live{} = live}, state),
     do: {:noreply, seen(state, live, pid)}
 
-  def handle_info({:DOWN, ref, :process, pid, _reason}, state),
-    do: {:noreply, state |> Live.down(ref, pid) |> Connections.down(ref) |> Wake.ended(ref)}
+  # An ask opens or ends: the record of the session waits, or stops waiting
+  # (`docs/features/live-records.md`).
+  def handle_info({:helyx_feed, _pid, %Helyx.Event{type: :ask} = event}, state) do
+    %Helyx.Event{session_id: id, data: %{ask_id: ask_id}} = event
+    {:noreply, state |> RecordFeed.ask(id, ask_id) |> RecordFeed.changed(id, "changed")}
+  end
+
+  def handle_info({:helyx_feed, _pid, %Helyx.Event{type: :ask_end} = event}, state) do
+    %Helyx.Event{session_id: id, data: %{ask_id: ask_id}} = event
+    {:noreply, state |> RecordFeed.ask_end(id, ask_id) |> RecordFeed.changed(id, "changed")}
+  end
+
+  def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
+    id = Live.watched(state, ref)
+    state = state |> Live.down(ref, pid) |> Connections.down(ref) |> Wake.ended(ref)
+
+    state =
+      case id do
+        nil -> state
+        id -> state |> RecordFeed.clear_asks(id) |> RecordFeed.changed(id, "changed")
+      end
+
+    {:noreply, RecordFeed.down(state, ref)}
+  end
 
   def handle_info({:place_expired, caller, monitor}, state),
     do: {:noreply, Live.expired(state, caller, monitor)}

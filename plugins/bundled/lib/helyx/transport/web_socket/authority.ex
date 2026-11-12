@@ -84,5 +84,17 @@ defmodule Helyx.Transport.WebSocket.Authority do
             }) ::
               {:ok, status :: 200..599, body :: String.t()}
 
-  @optional_callbacks webhook: 3
+  @doc """
+  A records subscription of the connection (`docs/features/live-records.md`):
+  it registers `pid`, the process of the transport that writes the frames,
+  and answers the first list or the error of the wire. The transport holds at
+  most one such subscription for a connection. A transport whose authority
+  does not export it answers `unknown_op`.
+  """
+  @callback records(arg(), auth(), pid()) ::
+              {:ok, map()}
+              | {:error, code(), text :: String.t()}
+              | {:close, 4403}
+
+  @optional_callbacks webhook: 3, records: 3
 end

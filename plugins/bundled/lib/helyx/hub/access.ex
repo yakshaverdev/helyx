@@ -258,8 +258,11 @@ defmodule Helyx.Hub.Access do
 
   defp hub_op(arg, auth, "hub.records.search", filters) do
     case Hub.call(arg.hub, {:record_search, auth, filters}, arg.until) do
-      {:ok, views, next} -> {:ok, %{"items" => Enum.map(views, &view/1), "next" => next}}
-      other -> error(other)
+      {:ok, views, next} ->
+        {:ok, %{"items" => Enum.map(views, &record_wire/1), "next" => next}}
+
+      other ->
+        error(other)
     end
   end
 
@@ -294,7 +297,7 @@ defmodule Helyx.Hub.Access do
   defp token(token),
     do: %{"id" => token.id, "name" => token.name, "created_at" => token.created_at}
 
-  defp record({:ok, view}), do: {:ok, %{"record" => view(view)}}
+  defp record({:ok, view}), do: {:ok, %{"record" => record_wire(view)}}
   defp record(other), do: error(other)
 
   defp empty(:ok), do: {:ok, %{}}
@@ -310,30 +313,8 @@ defmodule Helyx.Hub.Access do
 
   defp project(p), do: %{"id" => p.id, "name" => p.name, "created_at" => p.created_at}
 
-  defp view(v) do
-    %{
-      "session" => v.session,
-      "owner" => %{"id" => v.owner.id, "name" => v.owner.name},
-      "project" => v.project,
-      "title" => v.title,
-      "labels" => v.labels,
-      "visibility" => v.visibility,
-      "archived" => v.archived,
-      "created_at" => v.created_at,
-      "updated_at" => v.updated_at,
-      "cwd" => v.cwd,
-      "model" => v.model,
-      "prompt" => v.prompt,
-      "active_at" => v.active_at,
-      "parent" => wire_parent(v.parent),
-      "status" => v.status
-    }
-  end
-
-  # The parent link of a record as the wire shows it: the session and the
-  # kind of the link, or null.
-  defp wire_parent(nil), do: nil
-  defp wire_parent({session, kind}), do: %{"session" => session, "kind" => kind}
+  # The one shape of a record on the wire, shared with the records feed.
+  defp record_wire(view), do: Helyx.Hub.Records.wire(view)
 
   # The codes of the Hub operations and of `sessions.saved`, with the text
   # of the code; a name that another project of the user has is
@@ -358,6 +339,16 @@ defmodule Helyx.Hub.Access do
 
   @impl true
   def webhook(arg, id, request), do: Helyx.Hub.Access.Subscriptions.webhook(arg, id, request)
+
+  # The records subscription of the connection (`docs/features/live-records.md`):
+  # one Hub call registers the process and gives the first list.
+  @impl true
+  def records(arg, auth, pid) do
+    case Hub.call(arg.hub, {:records_subscribe, auth, pid}) do
+      {:ok, result} -> {:ok, result}
+      other -> error(other)
+    end
+  end
 
   @impl true
   def result(arg, auth, "sessions.live", _params, %{"sessions" => lines} = result) do

@@ -104,12 +104,36 @@ defmodule Helyx.Hub.Live do
   def running?(%{live: live}, session_id),
     do: Enum.any?(live, fn {_ref, {id, _pid, _status}} -> id == session_id end)
 
-  # The derived status of a session's record: the status of its live entry,
-  # else `"stopped"`. Never stored (decision 8).
-  def status(%{live: live}, session_id) do
-    Enum.find_value(live, "stopped", fn {_ref, {id, _pid, status}} ->
-      if id == session_id, do: status
-    end)
+  # Every live session id, at most the 64 of the Core cap.
+  def ids(%{live: live}), do: Enum.map(live, fn {_ref, {id, _pid, _status}} -> id end)
+
+  # The session id of an entry of the live set, or nil.
+  def watched(%{live: live}, ref) do
+    case Map.fetch(live, ref) do
+      {:ok, {id, _pid, _status}} -> id
+      :error -> nil
+    end
+  end
+
+  # The derived status of a session's record: `"waiting"` while it has an
+  # open ask, else the status of its live entry, else `"stopped"`. Never
+  # stored (hub.md, decision 8; live-records.md).
+  def status(state, session_id) do
+    if waiting?(state, session_id), do: "waiting", else: live_status(state, session_id)
+  end
+
+  defp live_status(%{live: live}, session_id) do
+    Enum.find_value(live, "stopped", &entry_status(&1, session_id))
+  end
+
+  defp entry_status({_ref, {id, _pid, status}}, id), do: status
+  defp entry_status(_entry, _id), do: nil
+
+  defp waiting?(state, session_id) do
+    case Map.get(state, :asks, %{}) do
+      %{^session_id => set} -> MapSet.size(set) > 0
+      _none -> false
+    end
   end
 
   # A `:DOWN` of a session of the live set or of the caller of a place.

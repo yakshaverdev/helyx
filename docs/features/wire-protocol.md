@@ -24,7 +24,7 @@ User stories:
    - **Parts.** A `hello` comes in one frame: a part before `welcome` closes the connection with `4400`. So a client that did not give its proof gets no buffer of parts.
    - **Proxy.** A proxy that gives remote access to a server bound to loopback connects from loopback. Such a server has a token configured, or the proxy authenticates the remote client itself.
    - **Protocol.** A protocol number that is not the server's gets `refused` and the close `4426`. The server checks the protocol number before the proof, so a client of another protocol learns that it must update. `refused` holds only the protocol number of the server.
-   - **Authority.** A server under a Hub has an authority in place of the one token (`docs/features/hub.md`, decisions 3 and 5): the `hello` names the `token` id of a user with the proof of that token, or no `token` with the proof of the server token, and the authority checks each later request but `unsubscribe`, and each subscription. A `token` that is not an id of 1 to 64 bytes, unknown, or revoked, closes with `4401`. A server with no authority does not read `token`, and answers a `hub.*` op with `unknown_op`.
+   - **Authority.** A server under a Hub has an authority in place of the one token (`docs/features/hub.md`, decisions 3 and 5): the `hello` names the `token` id of a user with the proof of that token, or no `token` with the proof of the server token, and the authority checks each later request but `unsubscribe`, and each subscription. A `token` that is not an id of 1 to 64 bytes, unknown, or revoked, closes with `4401`. A server with no authority does not read `token`, and answers a `hub.*` op, `records.subscribe`, and `records.unsubscribe` with `unknown_op`.
 3. The server sends `welcome`. From then on, the client sends `req` and `ack` frames, and the server sends `res`, `event`, and `session_end` frames.
 
 Over stdio, the same frames go one JSON object per line. The encoder escapes every LF inside a string, so a raw LF ends a frame, and stdout carries protocol frames only. Stdio has no `Origin` and no token: the process that starts the server owns it.
@@ -76,12 +76,15 @@ Every `req` gets one `res`: `ok: true` with the result, or `ok: false` with an e
 | `compact` | `{session, text?}`: the instructions, default `""` | `{}`; a provider that keeps no history gives a `notice` event | `session_not_found`, `text_too_large`, `invalid_utf8`, `turn_running`, and under a Hub `forbidden` |
 | `answer` | `{session, ask_id, answer}`: `ask_id` is the id of an `ask` event; `answer` is a JSON object of at most 16,384 bytes; a frame over the decode bounds ("Bounds") closes with `4400` before the op is known | `{}`; the first answer to an open ask goes to its call, and every client gets `ask_end`; an id that is not open gets `not_waiting` | `session_not_found`, `invalid_answer`, `not_waiting`, and under a Hub `forbidden` |
 | `stop` | `{session}` | `{}` after the session ended: a running turn aborts first, as at `abort`, then the session stops and every subscription of it gets `session_end` with `stopped`. A stopped session frees its place in the live-session cap and can be resumed from its file. The answer is `{}` also when a handle of the session was not released: the wire does not carry the stop report of `Helyx.Sessions.stop/1` (#752) | `session_not_found`, and under a Hub `forbidden` |
+| `records.subscribe` | `{}` | `{records: [record], more}`, ordered: the sessions that wait for the user first, then by `active_at`, newest first, then by session id; at most 256, and `more` says that the user owns more | `unknown_op` on a server with no Hub, `too_many_subscriptions` for a second subscription on the connection |
+| `records.unsubscribe` | `{}` | `{}` | `unknown_sub` |
 
 Every operation can also answer `unknown_op`, `bad_params`, `busy`, `timeout`, and `failed`.
 
-Under a Hub, the `hub.*` operations and their errors are in `docs/features/hub.md`, "Wire schema additions", and their bounds in its "Bounds". The session operations reach only the sessions that the user may read: a session of another user that the user may not read answers as one that does not exist, a write to a shared session that the user does not own answers `forbidden`, and a `start` over the records of the user answers `too_many_records` (`docs/features/hub.md`, decisions 6 and 7).
+Under a Hub, the `hub.*` operations and their errors are in `docs/features/hub.md`, "Wire schema additions", and their bounds in its "Bounds". The session operations reach only the sessions that the user may read: a session of another user that the user may not read answers as one that does not exist, a write to a shared session that the user does not own answers `forbidden`, and a `start` over the records of the user answers `too_many_records` (`docs/features/hub.md`, decisions 6 and 7). The records feed is in `docs/features/live-records.md`.
 
 - `live_session` is `{id, instance_id, cwd, model, status}`. `status` is `"idle"` when the session has no turn and no wait, else `"running"`.
+- `record.status` is `"waiting"` while the session has an open ask, else the status of its live session (`"idle"` or `"running"`), or `"stopped"` when no process runs it (`docs/features/live-records.md`).
 - `saved_session` is `{id, cwd, model, mtime, prompt}`: `mtime` in POSIX seconds, 0 for a file time before 1970, `model` from the header, `prompt` the first user text in the head of the file (`docs/features/session-list.md`). The texts come from the file: a client cleans them before it shows them.
 - An `ask` event is a tool call that waits for a user: a client that subscribed with `answers: true` shows `request` and sends `answer` with its `ask_id`. The session makes the id, a new random id for each ask; one call can ask more than once, and each ask has its own id. The `request` and the `answer` of the bundled `question` tool are in `docs/features/question-tool.md`. A `request` with the key `kind` is an input UI block (`docs/features/ui-blocks.md`): it has the envelope of a UI block (`kind`, `text`, and `cut` when present), and one with `kind` and another envelope is a contract break. A client picks the renderer of an ask by its `kind`, and by the tool name for a request with no `kind`. A client that does not know the kind, or cannot read its fields, shows its `text` and gives no answer; the ask stays open for another client. `ask_end` ends the ask for every client: `answered` when an answer went to the call, `ended` when the call or the turn ended first. The snapshot `asks` holds the asks that wait, oldest first.
 - A UI block (ADR 0011, `docs/features/ui-blocks.md`) is a JSON object that a client shows: its `kind`, its fallback `text`, `cut` when it was cut, and the fields of its kind, each at most 65,536 bytes of JSON with integers of at most 100 digits. It comes in two carriers. A tool result `message` has `ui_blocks`, at most 8 blocks, left out when it has none; a client that joins later gets them with the message. A `ui_block` event shows a block during a running call (`call_id`) or a turn (`call_id` null): a later one with the same `call_id` and `key` replaces it in place, and the others show side by side. A client drops the blocks of a call at its `tool_execution_end` and every block at `turn_end`; they are not in the transcript. The snapshot `ui_blocks` holds the newest block of each `call_id` and `key` of the running turn, in the order of the first event of each pair, as the data of its event.
@@ -132,7 +135,7 @@ The schema below is the contract. The test of #660 computes the SHA-256 of the l
 
 <!-- wire-schema:start -->
 ```text
-protocol 11
+protocol 12
 
 notation: {k: T} an object; k? may be absent (absent = null or false);
   T | U either; [T] a list; "x" that string; int a JSON integer >= 0;
@@ -154,6 +157,8 @@ res         = {type: "res", id: id, ok: true, result: object}
             | {type: "res", id: id, ok: false, error: error}
 event_frame = {type: "event", sub: string, event: event}
 session_end = {type: "session_end", sub: string, reason: "stopped" | "crashed"}
+record_frame  = {type: "record", change: record_change}
+records_frame = {type: "records", records: [record], more: bool}
 part        (as above)
 
 error      = {code: error_code, text: string}
@@ -178,6 +183,7 @@ op = "sessions.live" | "sessions.saved" | "start" | "resume" | "subscribe"
    | "hub.tokens.revoke"
    | "hub.schedules.list" | "hub.schedules.create" | "hub.schedules.delete"
    | "hub.subscriptions.list" | "hub.subscriptions.create" | "hub.subscriptions.delete"
+   | "records.subscribe" | "records.unsubscribe"
 
 params.sessions.live   = {}
 params.sessions.saved  = {cwd?: string, after?: string, limit?: int}
@@ -217,6 +223,8 @@ params.hub.schedules.delete = {schedule: string}
 params.hub.subscriptions.list   = {session?: string}
 params.hub.subscriptions.create = {session: string, prompt: string, label?: string}
 params.hub.subscriptions.delete = {subscription: string}
+params.records.subscribe    = {}
+params.records.unsubscribe  = {}
 
 result.sessions.live  = {sessions: [live_session]}
 result.sessions.saved = {items: [saved_session], next: string | null}
@@ -239,6 +247,8 @@ result.hub.schedules.delete = {}
 result.hub.subscriptions.list   = {subscriptions: [subscription]}
 result.hub.subscriptions.create = {subscription: subscription, secret: string, path: string}
 result.hub.subscriptions.delete = {}
+result.records.subscribe   = {records: [record], more: bool}
+result.records.unsubscribe = {}
 
 live_session  = {id: string, instance_id: string, cwd: string, model: string,
                  status: "idle" | "running"}
@@ -250,9 +260,11 @@ record   = {session: string, owner: user, project: string | null, title: string,
             labels: [string], visibility: "private" | "hub", archived: bool,
             created_at: int, updated_at: int, cwd: string, model: string,
             prompt: string, active_at: int, parent: parent | null,
-            status: "idle" | "running" | "stopped"}
+            status: "idle" | "running" | "waiting" | "stopped"}
 # the link of a child to the call that started it, or of a thread to its session
 parent   = {session: string, kind: "child" | "thread"}
+record_change = {kind: "new" | "changed", record: record}
+              | {kind: "removed", session: string}
 project  = {id: string, name: string, created_at: int}
 token    = {id: string, name: string, created_at: int}
 schedule = {id: string, session: string, at: int, every: int | null, prompt: string,
@@ -332,6 +344,8 @@ O4 per subscription: the subscribe res, which carries the replayed events,
 O5 session_end comes after every event of the session.
 O6 frames of two subscriptions, and a res and an event, have no order
    between them.
+O7 the records.subscribe res comes before every record and records frame of
+   the connection; no such frame comes after the records.unsubscribe res.
 ```
 <!-- wire-schema:end -->
 
@@ -346,7 +360,7 @@ Notes on the codec:
 
 ## Conformance fixtures
 
-`test/fixtures/wire/` holds fixtures of protocol 11 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, and the TUI tests run the server frames and the folds against the client and its view model, so the fixtures and the Elixir code cannot drift.
+`test/fixtures/wire/` holds fixtures of protocol 12 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, the TUI tests run the server frames and the folds against the client and its view model, and the Rust client core runs `records.json`, so the fixtures and the code cannot drift.
 
 What this doc does not pin down for an implementation that does not run on the BEAM. Each is open, not decided here:
 
@@ -375,6 +389,7 @@ What this doc does not pin down for an implementation that does not run on the B
 15. **Protocol 8** (#921, `docs/features/hub.md`, decision 17). Protocol 9 adds the event subscriptions of a Hub: the operations `hub.subscriptions.list`, `hub.subscriptions.create`, and `hub.subscriptions.delete`, their params and results, the shape `subscription`, and the error codes `too_many_event_subscriptions` and `unknown_subscription`; the webhook endpoint itself is HTTP beside the WebSocket upgrade and carries no frame. A client of protocol 8 gets `refused` and the close `4426`, and the fixtures name protocol 9.
 16. **Protocol 9** (review of 2026-11-11). Protocol 10 puts `older`, the count of the messages before the first of the list, in place of `more` in the snapshot and in the result of `history`: a client derives "more" from `older > 0`. It removes the origin kind `"unknown"`, since no session file from before #649 is read. A client of protocol 9 gets `refused` and the close `4426`, and the fixtures name protocol 10. `test/fixtures/wire/bounds.json` holds the numbers of "Bounds" and the error codes once; the server reads it (`Helyx.Transport.WebSocket.Bounds`).
 17. **Protocol 10** (E.2, `docs/features/hub.md`, decision 8). Protocol 11 gives `record` what a sidebar needs in one call: `cwd`, `model`, `prompt`, `active_at`, `parent`, and the derived `status`; it removes `stored`, which was always true, so `created_at` and `updated_at` are always integers. A client of protocol 10 gets `refused` and the close `4426`, and the fixtures name protocol 11.
+18. **Protocol 11** (#957, `docs/features/live-records.md`). Protocol 12 adds the records feed of a user: the operations `records.subscribe` and `records.unsubscribe`, their params and results, the `record_frame` and `records_frame` frames, `record_change`, and the status `"waiting"` of a record. A client of protocol 11 gets `refused` and the close `4426`, and the fixtures name protocol 12.
 
 ## Bounds
 
@@ -419,6 +434,7 @@ What this doc does not pin down for an implementation that does not run on the B
 | webhook `id` in the path | 1 to 64 bytes; a stored id has 12 | HTTP 404 | transport (the shape), the authority (the lookup) |
 | webhook body read | 30,000 ms | HTTP 400 when the read fails | transport |
 | webhook call to the Hub | 5,000 ms (the Hub call of decision 5) | HTTP 503, and the sender tries again later | the authority |
+| records feed of a connection | one subscription; the first list and each full list of `Helyx.Hub.RecordFeed.page/0`; the changes that wait for one subscriber `Helyx.Hub.RecordFeed.max_pending/0` | `too_many_subscriptions` for a second subscription; a subscriber over the bound gets a full list at the next poll | Hub, the transport (`docs/features/live-records.md`, "Bounds") |
 
 The decode bounds, measured (#787; OTP 28, Elixir 1.19.5, the dev machine; a second run of the spec review gave times up to 25% higher):
 

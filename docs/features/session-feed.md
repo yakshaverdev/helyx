@@ -67,6 +67,12 @@ The order rules:
 `Helyx.Event.types/0` gives every event type, the source of the check in
 `watch/2`.
 
+`Helyx.Hub` names `:ask` and `:ask_end` in its watch beside the `Live` of
+every session, so its records feed derives the `"waiting"` status of a
+session (`docs/features/live-records.md`). The feed sends those notices as
+any other event of a named type; a session with no subscriber that answers
+makes no ask, so an open ask has a client already.
+
 `Helyx.Sessions.Live` also carries `parent`: nil, or the session id and call
 id of the tool call that started a child session
 (`docs/features/agent-tool.md`). A start takes it from its `:parent` option,

@@ -1,0 +1,664 @@
+{
+  "protocol": 12,
+  "reply": [
+    {
+      "name": "a reply orders the waiting record first, then the newest activity",
+      "frame": {
+        "type": "res",
+        "id": "1",
+        "ok": true,
+        "result": {
+          "more": false,
+          "records": [
+            {
+              "session": "s2",
+              "owner": {
+                "id": "u1",
+                "name": "ada"
+              },
+              "project": null,
+              "title": "",
+              "labels": [],
+              "visibility": "private",
+              "archived": false,
+              "created_at": 1,
+              "updated_at": 1,
+              "cwd": "/tmp",
+              "model": "fake/echo",
+              "prompt": "",
+              "active_at": 200,
+              "parent": null,
+              "status": "idle"
+            },
+            {
+              "session": "s1",
+              "owner": {
+                "id": "u1",
+                "name": "ada"
+              },
+              "project": "p1",
+              "title": "work",
+              "labels": [
+                "release"
+              ],
+              "visibility": "hub",
+              "archived": false,
+              "created_at": 1,
+              "updated_at": 2,
+              "cwd": "/src",
+              "model": "fake/echo",
+              "prompt": "fix the build",
+              "active_at": 100,
+              "parent": {
+                "session": "s0",
+                "kind": "child"
+              },
+              "status": "waiting"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "rows": [
+          "s1",
+          "s2"
+        ],
+        "statuses": [
+          "waiting",
+          "idle"
+        ],
+        "more": false
+      }
+    },
+    {
+      "name": "a reply with more records on the server",
+      "frame": {
+        "type": "res",
+        "id": "1",
+        "ok": true,
+        "result": {
+          "more": true,
+          "records": [
+            {
+              "session": "s3",
+              "owner": {
+                "id": "u1",
+                "name": "ada"
+              },
+              "project": null,
+              "title": "",
+              "labels": [],
+              "visibility": "private",
+              "archived": true,
+              "created_at": 1,
+              "updated_at": 1,
+              "cwd": "/tmp",
+              "model": "fake/echo",
+              "prompt": "old",
+              "active_at": 300,
+              "parent": null,
+              "status": "stopped"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "rows": [
+          "s3"
+        ],
+        "statuses": [
+          "stopped"
+        ],
+        "more": true
+      }
+    },
+    {
+      "name": "a reply of a record with no prompt is a break",
+      "frame": {
+        "type": "res",
+        "id": "1",
+        "ok": true,
+        "result": {
+          "more": false,
+          "records": [
+            {
+              "session": "s1",
+              "owner": {
+                "id": "u1",
+                "name": "ada"
+              },
+              "project": null,
+              "title": "",
+              "labels": [],
+              "visibility": "private",
+              "archived": false,
+              "created_at": 1,
+              "updated_at": 1,
+              "cwd": "/tmp",
+              "model": "fake/echo",
+              "active_at": 100,
+              "parent": null,
+              "status": "waiting"
+            }
+          ]
+        }
+      },
+      "expect": "broken"
+    }
+  ],
+  "frames": [
+    {
+      "name": "a changed record replaces its row",
+      "start": [
+        {
+          "session": "s1",
+          "owner": {
+            "id": "u1",
+            "name": "ada"
+          },
+          "project": null,
+          "title": "",
+          "labels": [],
+          "visibility": "private",
+          "archived": false,
+          "created_at": 1,
+          "updated_at": 1,
+          "cwd": "/tmp",
+          "model": "fake/echo",
+          "prompt": "",
+          "active_at": 100,
+          "parent": null,
+          "status": "waiting"
+        },
+        {
+          "session": "s2",
+          "owner": {
+            "id": "u1",
+            "name": "ada"
+          },
+          "project": null,
+          "title": "",
+          "labels": [],
+          "visibility": "private",
+          "archived": false,
+          "created_at": 1,
+          "updated_at": 1,
+          "cwd": "/tmp",
+          "model": "fake/echo",
+          "prompt": "",
+          "active_at": 200,
+          "parent": null,
+          "status": "idle"
+        }
+      ],
+      "frame": {
+        "type": "record",
+        "change": {
+          "kind": "changed",
+          "record": {
+            "session": "s1",
+            "owner": {
+              "id": "u1",
+              "name": "ada"
+            },
+            "project": null,
+            "title": "",
+            "labels": [],
+            "visibility": "private",
+            "archived": false,
+            "created_at": 1,
+            "updated_at": 2,
+            "cwd": "/tmp",
+            "model": "fake/echo",
+            "prompt": "go",
+            "active_at": 400,
+            "parent": null,
+            "status": "running"
+          }
+        }
+      },
+      "expect": {
+        "rows": [
+          "s1",
+          "s2"
+        ],
+        "statuses": [
+          "running",
+          "idle"
+        ],
+        "more": false
+      }
+    },
+    {
+      "name": "a new record is added",
+      "start": [
+        {
+          "session": "s2",
+          "owner": {
+            "id": "u1",
+            "name": "ada"
+          },
+          "project": null,
+          "title": "",
+          "labels": [],
+          "visibility": "private",
+          "archived": false,
+          "created_at": 1,
+          "updated_at": 1,
+          "cwd": "/tmp",
+          "model": "fake/echo",
+          "prompt": "",
+          "active_at": 200,
+          "parent": null,
+          "status": "idle"
+        }
+      ],
+      "frame": {
+        "type": "record",
+        "change": {
+          "kind": "new",
+          "record": {
+            "session": "s1",
+            "owner": {
+              "id": "u1",
+              "name": "ada"
+            },
+            "project": null,
+            "title": "",
+            "labels": [],
+            "visibility": "private",
+            "archived": false,
+            "created_at": 2,
+            "updated_at": 2,
+            "cwd": "/tmp",
+            "model": "fake/echo",
+            "prompt": "",
+            "active_at": 100,
+            "parent": null,
+            "status": "idle"
+          }
+        }
+      },
+      "expect": {
+        "rows": [
+          "s2",
+          "s1"
+        ],
+        "statuses": [
+          "idle",
+          "idle"
+        ],
+        "more": false
+      }
+    },
+    {
+      "name": "a removed record leaves the list",
+      "start": [
+        {
+          "session": "s1",
+          "owner": {
+            "id": "u1",
+            "name": "ada"
+          },
+          "project": "p1",
+          "title": "work",
+          "labels": [
+            "release"
+          ],
+          "visibility": "hub",
+          "archived": false,
+          "created_at": 1,
+          "updated_at": 2,
+          "cwd": "/src",
+          "model": "fake/echo",
+          "prompt": "fix the build",
+          "active_at": 100,
+          "parent": {
+            "session": "s0",
+            "kind": "child"
+          },
+          "status": "waiting"
+        },
+        {
+          "session": "s2",
+          "owner": {
+            "id": "u1",
+            "name": "ada"
+          },
+          "project": null,
+          "title": "",
+          "labels": [],
+          "visibility": "private",
+          "archived": false,
+          "created_at": 1,
+          "updated_at": 1,
+          "cwd": "/tmp",
+          "model": "fake/echo",
+          "prompt": "",
+          "active_at": 200,
+          "parent": null,
+          "status": "idle"
+        }
+      ],
+      "frame": {
+        "type": "record",
+        "change": {
+          "kind": "removed",
+          "session": "s1"
+        }
+      },
+      "expect": {
+        "rows": [
+          "s2"
+        ],
+        "statuses": [
+          "idle"
+        ],
+        "more": false
+      }
+    },
+    {
+      "name": "a full list replaces the state",
+      "start": [
+        {
+          "session": "s1",
+          "owner": {
+            "id": "u1",
+            "name": "ada"
+          },
+          "project": null,
+          "title": "",
+          "labels": [],
+          "visibility": "private",
+          "archived": false,
+          "created_at": 1,
+          "updated_at": 1,
+          "cwd": "/tmp",
+          "model": "fake/echo",
+          "prompt": "",
+          "active_at": 100,
+          "parent": null,
+          "status": "idle"
+        }
+      ],
+      "frame": {
+        "type": "records",
+        "more": true,
+        "records": [
+          {
+            "session": "s2",
+            "owner": {
+              "id": "u1",
+              "name": "ada"
+            },
+            "project": null,
+            "title": "",
+            "labels": [],
+            "visibility": "private",
+            "archived": false,
+            "created_at": 1,
+            "updated_at": 1,
+            "cwd": "/tmp",
+            "model": "fake/echo",
+            "prompt": "",
+            "active_at": 200,
+            "parent": null,
+            "status": "waiting"
+          }
+        ]
+      },
+      "expect": {
+        "rows": [
+          "s2"
+        ],
+        "statuses": [
+          "waiting"
+        ],
+        "more": true
+      }
+    },
+    {
+      "name": "a record with a status that the schema does not name is a break",
+      "frame": {
+        "type": "record",
+        "change": {
+          "kind": "changed",
+          "record": {
+            "session": "s1",
+            "owner": {
+              "id": "u1",
+              "name": "ada"
+            },
+            "project": null,
+            "title": "",
+            "labels": [],
+            "visibility": "private",
+            "archived": false,
+            "created_at": 1,
+            "updated_at": 1,
+            "cwd": "/tmp",
+            "model": "fake/echo",
+            "prompt": "",
+            "active_at": 100,
+            "parent": null,
+            "status": "gone"
+          }
+        }
+      },
+      "expect": "broken"
+    },
+    {
+      "name": "a change of an unknown kind is a break",
+      "frame": {
+        "type": "record",
+        "change": {
+          "kind": "gone",
+          "session": "s1"
+        }
+      },
+      "expect": "broken"
+    },
+    {
+      "name": "a full list whose more is a string is a break",
+      "frame": {
+        "type": "records",
+        "more": "yes",
+        "records": []
+      },
+      "expect": "broken"
+    },
+    {
+      "name": "a frame type that is not a record frame is a break",
+      "frame": {
+        "type": "records_frame",
+        "records": [],
+        "more": false
+      },
+      "expect": "broken"
+    }
+  ],
+  "folds": [
+    {
+      "name": "the reply, a change, a removal, and a full list",
+      "steps": [
+        {
+          "client": {
+            "id": "1",
+            "op": "records.subscribe",
+            "params": {}
+          }
+        },
+        {
+          "server": {
+            "type": "res",
+            "id": "1",
+            "ok": true,
+            "result": {
+              "more": false,
+              "records": [
+                {
+                  "session": "s2",
+                  "owner": {
+                    "id": "u1",
+                    "name": "ada"
+                  },
+                  "project": null,
+                  "title": "",
+                  "labels": [],
+                  "visibility": "private",
+                  "archived": false,
+                  "created_at": 1,
+                  "updated_at": 1,
+                  "cwd": "/tmp",
+                  "model": "fake/echo",
+                  "prompt": "",
+                  "active_at": 200,
+                  "parent": null,
+                  "status": "idle"
+                },
+                {
+                  "session": "s1",
+                  "owner": {
+                    "id": "u1",
+                    "name": "ada"
+                  },
+                  "project": "p1",
+                  "title": "work",
+                  "labels": [
+                    "release"
+                  ],
+                  "visibility": "hub",
+                  "archived": false,
+                  "created_at": 1,
+                  "updated_at": 2,
+                  "cwd": "/src",
+                  "model": "fake/echo",
+                  "prompt": "fix the build",
+                  "active_at": 100,
+                  "parent": {
+                    "session": "s0",
+                    "kind": "child"
+                  },
+                  "status": "waiting"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "expect": {
+            "rows": [
+              "s1",
+              "s2"
+            ],
+            "statuses": [
+              "waiting",
+              "idle"
+            ],
+            "more": false
+          }
+        },
+        {
+          "server": {
+            "type": "record",
+            "change": {
+              "kind": "changed",
+              "record": {
+                "session": "s2",
+                "owner": {
+                  "id": "u1",
+                  "name": "ada"
+                },
+                "project": null,
+                "title": "",
+                "labels": [],
+                "visibility": "private",
+                "archived": false,
+                "created_at": 1,
+                "updated_at": 2,
+                "cwd": "/tmp",
+                "model": "fake/echo",
+                "prompt": "go",
+                "active_at": 400,
+                "parent": null,
+                "status": "waiting"
+              }
+            }
+          }
+        },
+        {
+          "expect": {
+            "rows": [
+              "s2",
+              "s1"
+            ],
+            "statuses": [
+              "waiting",
+              "waiting"
+            ],
+            "more": false
+          }
+        },
+        {
+          "server": {
+            "type": "record",
+            "change": {
+              "kind": "removed",
+              "session": "s1"
+            }
+          }
+        },
+        {
+          "expect": {
+            "rows": [
+              "s2"
+            ],
+            "statuses": [
+              "waiting"
+            ],
+            "more": false
+          }
+        },
+        {
+          "server": {
+            "type": "records",
+            "more": true,
+            "records": [
+              {
+                "session": "s3",
+                "owner": {
+                  "id": "u1",
+                  "name": "ada"
+                },
+                "project": null,
+                "title": "",
+                "labels": [],
+                "visibility": "private",
+                "archived": false,
+                "created_at": 1,
+                "updated_at": 1,
+                "cwd": "/tmp",
+                "model": "fake/echo",
+                "prompt": "",
+                "active_at": 300,
+                "parent": null,
+                "status": "idle"
+              }
+            ]
+          }
+        },
+        {
+          "expect": {
+            "rows": [
+              "s3"
+            ],
+            "statuses": [
+              "idle"
+            ],
+            "more": true
+          }
+        }
+      ]
+    }
+  ]
+}

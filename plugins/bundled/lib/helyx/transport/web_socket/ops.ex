@@ -290,9 +290,29 @@ defmodule Helyx.Transport.WebSocket.Ops do
 
   defp cast(_core, _type, _value), do: :bad_params
 
+  # The wire key of a param as its option name. The keys are those of the
+  # table above, a closed set that `typed/3` checked, so no key of a frame
+  # makes an atom.
+  @keys %{
+    "session" => :session,
+    "text" => :text,
+    "origin" => :origin,
+    "tail" => :tail,
+    "answers" => :answers,
+    "cwd" => :cwd,
+    "model" => :model,
+    "after" => :after,
+    "id" => :id,
+    "instance_id" => :instance_id,
+    "before" => :before,
+    "limit" => :limit,
+    "ask_id" => :ask_id,
+    "answer" => :answer
+  }
+
   # The checked values as a keyword list for an option list.
   defp keyword(values),
-    do: Enum.map(values, fn {key, value} -> {String.to_existing_atom(key), value} end)
+    do: Enum.map(values, fn {key, value} -> {Map.fetch!(@keys, key), value} end)
 
   defp origin(%{"origin" => origin}) when origin != nil, do: [origin: origin]
   defp origin(_values), do: []
