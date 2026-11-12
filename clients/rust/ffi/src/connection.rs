@@ -134,6 +134,23 @@ impl Connection {
         self.perform(Ok(Operation::abort(&session)))
     }
 
+    /// Stops `session`: a running turn aborts first, and the session ends.
+    pub fn stop(&self, session: String) -> Result<(), NetError> {
+        self.perform(Ok(Operation::stop(&session)))
+    }
+
+    /// Switches `session` to `model` for its next turn. The core checks the
+    /// ref before it goes.
+    pub fn set_model(&self, session: String, model: String) -> Result<(), NetError> {
+        self.perform(Operation::set_model(&session, &model))
+    }
+
+    /// Compacts `session` with `text` as the instructions, or with none when
+    /// the text is empty.
+    pub fn compact(&self, session: String, text: String) -> Result<(), NetError> {
+        self.perform(Operation::compact(&session, &text))
+    }
+
     /// Answers the ask `ask_id` of `session`. `answer` is the answer as a JSON
     /// text, which the core checks before it goes. Gives the number of the
     /// send, whose outcome comes in the snapshot.
