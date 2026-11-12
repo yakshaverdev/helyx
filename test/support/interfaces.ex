@@ -44,6 +44,24 @@ defmodule Helyx.Test.ModelContext do
   def build(context, opts), do: %{context | system: "built for #{opts[:cwd]}"}
 end
 
+defmodule Helyx.Test.UserText do
+  @moduledoc false
+  # The optional `user_text/2` of `Helyx.ModelContext` for the session
+  # tests: "expand me" gives "expanded", "too large" gives one byte over the
+  # text bound, "cwd" gives the cwd that the plugin got, and every other
+  # text comes back as it is.
+  @behaviour Helyx.ModelContext
+
+  @impl true
+  def build(context, _opts), do: context
+
+  @impl true
+  def user_text("expand me", _opts), do: "expanded"
+  def user_text("too large", _opts), do: String.duplicate("x", 4 * 1_048_576 + 1)
+  def user_text("cwd", opts), do: "cwd:" <> Keyword.fetch!(opts, :cwd)
+  def user_text(text, _opts), do: text
+end
+
 defmodule Helyx.Test.Compaction do
   @moduledoc false
   # Appends to the system prompt so tests see it ran after model context.

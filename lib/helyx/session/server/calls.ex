@@ -18,7 +18,7 @@ defmodule Helyx.Session.Server.Calls do
       handle(request, from, state)
     else
       # The op name only, never the text of the call.
-      Logger.info("late session call dropped: #{elem(request, 0)}")
+      Logger.info("late session call dropped: #{op(request)}")
       {:noreply, state}
     end
   end
@@ -97,6 +97,11 @@ defmodule Helyx.Session.Server.Calls do
   def handle(:transcript, _from, %State{} = state),
     do: {:reply, Helyx.Summary.kept(state.transcript, state.summary), state}
 
+  # The ModelContext plugin and the cwd for `Helyx.ModelContext.user_text/2`,
+  # which `Helyx.Session` calls in the caller of a user text.
+  def handle(:user_text_context, _from, %State{} = state),
+    do: {:reply, {:ok, state.plugins.model_context, state.cwd}, state}
+
   # A start with other provider options gets no session, because the session
   # runs with its own.
   def handle({:attach, opts}, _from, %State{init: %{provider_opts: opts}} = state),
@@ -131,4 +136,8 @@ defmodule Helyx.Session.Server.Calls do
        do: id
 
   defp call_turn(_state, _pid), do: nil
+
+  # The op name of a request for the log of a late call.
+  defp op(request) when is_atom(request), do: request
+  defp op(request), do: elem(request, 0)
 end

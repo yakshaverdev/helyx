@@ -27,7 +27,9 @@ defmodule Helyx.Test.Idle do
   # `{:unsubscribe, pid}` is a fact change that arms it, and no test depends
   # on the 100 ms (AGENTS.md, #193).
   def set_idle(session, ms \\ idle_ms()) do
-    :sys.replace_state(Session.pid(session), fn state -> %{state | idle_stop_ms: ms} end)
+    :sys.replace_state(Session.pid(session), fn state ->
+      put_in(state.deadline_ms.idle_stop, ms)
+    end)
   end
 
   def quiet(session, ms \\ idle_ms()) do

@@ -94,6 +94,22 @@ defmodule Helyx.Tool.AgentTest do
     use Marked
   end
 
+  defmodule Commands do
+    @moduledoc false
+    # A ModelContext plugin that sends the session id of each user text that
+    # it gets to the process registered as `<core>_builds`.
+    @behaviour Helyx.ModelContext
+
+    @impl true
+    def build(context, _opts), do: context
+
+    @impl true
+    def user_text(text, opts) do
+      send(Process.whereis(:"#{opts[:core]}_builds"), {:user_text, opts[:session_id]})
+      text
+    end
+  end
+
   setup %{tmp_dir: dir} do
     core = :"core_#{System.unique_integer([:positive])}"
 
@@ -248,6 +264,25 @@ defmodule Helyx.Tool.AgentTest do
     assert_receive {:built, ^parent_id, Second}
     assert_receive {:built, ^child, Second}
     refute_received {:built, _id, First}
+  end
+
+  test "the task of a child is not a text of a user, so no user command is expanded", %{
+    tmp_dir: dir
+  } do
+    core = :"core_#{System.unique_integer([:positive])}"
+    # A folder of its own: the Core of the setup holds the lock of `dir`.
+    d = Path.join(dir, "command")
+    plugins = [Fake, Helyx.Tool.Agent, Commands]
+    start_supervised!({Helyx.Core, name: core, plugins: plugins, sessions_dir: d}, id: core)
+    Process.register(self(), :"#{core}_builds")
+
+    session = parent(core, dir, [[agent("c1", "/skill do it")], ["child"], ["Done."]])
+
+    [result] = results(collect_until(:turn_end))
+    assert Message.text(result) == "child"
+    parent_id = session.id
+    assert_receive {:user_text, ^parent_id}
+    refute_received {:user_text, _child}
   end
 
   test "a child gets no tool that the parent lacks", %{core: core, tmp_dir: dir} do

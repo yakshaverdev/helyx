@@ -149,7 +149,8 @@ defmodule Helyx.TUI.SwitchTest do
   test "the commands take no argument" do
     assert Command.parse("/new") == {:new, ""}
     assert Command.parse(" /resume ") == {:resume, ""}
-    assert Command.parse("/newer") == {:usage, :new}
+    # A command name with no separator after it is a message as typed.
+    assert Command.parse("/newer") == {:message, "/newer"}
     # A usage notice needs no request, so the link has no connection.
     session = %Helyx.TUI.Link{conn: nil, id: "s"}
     assert Command.parse("/new x") == {:usage, :new}

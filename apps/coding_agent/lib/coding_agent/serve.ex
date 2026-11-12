@@ -126,10 +126,27 @@ defmodule CodingAgent.Serve do
           {:error, "could not remove the stale server file: " <> text}
 
         :ok ->
+          telemetry(dir)
           start(lock, dir, opts)
       end
     end
   end
+
+  # Only the process that holds the lock of the data folder opens the file,
+  # so two servers never write one. Telemetry never stops a server: a line
+  # says that it is off, and the server goes on.
+  defp telemetry(dir) do
+    case Helyx.Telemetry.Recorder.open(
+           Path.join(dir, "telemetry.jsonl"),
+           CodingAgent.LogFile.max_bytes()
+         ) do
+      :ok -> :ok
+      {:error, reason} -> _ = print("helyx: telemetry is off: " <> telemetry_error(reason))
+    end
+  end
+
+  defp telemetry_error(:not_regular), do: "is not a regular file"
+  defp telemetry_error(reason), do: to_string(:file.format_error(reason))
 
   defp register do
     Process.register(self(), __MODULE__)
@@ -379,14 +396,22 @@ defmodule CodingAgent.Serve do
   # The parts stop in order, the transport, then the Hub, then Core, so no
   # client is served while the Hub or Core stops, and no Hub call waits
   # while the Hub stops; a part that ended already is skipped. Then the
-  # holder of the lock removes the file, which a lock that ended does not
-  # do, since the file can be the file of the next server, and the lock
-  # goes last.
+  # telemetry file closes, then the holder of the lock removes the file,
+  # which a lock that ended does not do, since the file can be the file of
+  # the next server, and the lock goes last.
   defp stop(parts, lock, dir, result) do
     Enum.each(parts, &stop_supervisor/1)
+    close_telemetry()
     _ = Lock.remove_file(lock, server_file(dir))
     Lock.release(lock)
     result
+  end
+
+  # A recorder that ended already has nothing to close.
+  defp close_telemetry do
+    Helyx.Telemetry.Recorder.close()
+  catch
+    :exit, _ -> :ok
   end
 
   # Each part stops with the bound of its own stop, with no kill: Core
