@@ -207,9 +207,13 @@ defmodule Helyx.Session.OpenTest do
     {caller, pid, _path} =
       start_held(core, dir, deadline_ms: %{open: 5_000_000_000, prepare: 1_000})
 
-    # The caller watches the session too (`await_open/3`).
-    {:monitored_by, watchers} = Process.info(pid, :monitored_by)
-    assert Enum.any?(watchers, &(is_pid(&1) and &1 != caller and Process.alive?(&1)))
+    # The caller watches the session too (`await_open/3`). The process that
+    # kills sets its monitor after its start, so the test waits for it.
+    wait_until(fn ->
+      {:monitored_by, watchers} = Process.info(pid, :monitored_by)
+      Enum.any?(watchers, &(is_pid(&1) and &1 != caller and Process.alive?(&1)))
+    end)
+
     send(pid, :go)
     assert_receive {:started, {:ok, %Session{}, _}}
   end
