@@ -25,3 +25,5 @@ precommit.log
 
 # Cargo (clients/rust)
 target/
+# The generated Swift bindings (clients/rust/ffi/bindgen.sh)
+clients/rust/ffi/generated/

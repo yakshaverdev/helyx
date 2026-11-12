@@ -1,6 +1,7 @@
-//! The network thread of the app: one WebSocket to the server at a time,
-//! driven by `helyx_client_core::client::Client`. The window reads `Shared`
-//! and sends `Command`s; the thread calls `notify` after each change.
+//! The network thread: one WebSocket to the server at a time, driven by
+//! `helyx_client_core::client::Client`. A host reads `Shared` and sends
+//! `Command`s; the thread calls `notify` after each change (`docs/features/
+//! client-kit.md`, "The network layer").
 //!
 //! Every wait of a connection after its TCP connect is a deadline of its
 //! socket, which a watchdog thread holds (`socket::Watchdog`). An operation
@@ -8,51 +9,77 @@
 //! its state: pending, ok, the error of the server, or unknown when the
 //! connection ended before its reply (ADR 0006 §4). A numbered send (of the
 //! composer, or the answer of an ask) also gets one outcome in `outcomes`:
-//! `Pending`, `Ok`, or `Failed` with a reason, so the window empties its
+//! `Pending`, `Ok`, or `Failed` with a reason, so the host empties its
 //! composer on `ok` and shows an ask again when its answer failed.
 
-use crate::composer::{SendId, SendOutcome};
-use crate::input::BUSY;
-use crate::settings::Server;
+use crate::send::{SendId, SendOutcome};
 use crate::socket::{Tap, WAITS, Waits, Watchdog};
-use helyx_client_core::client::{Client, Follow, Hold, Next, Output, Refusal, Wait};
+use helyx_client_core::client::{Client, Follow, Hold, Next, Output, Refusal, UNAUTHORIZED, Wait};
 use helyx_client_core::frame::{LiveSession, Reply, SavedSession};
 use helyx_client_core::json::object;
 use helyx_client_core::operation::{MAX_LIMIT, Operation, Saved};
 use helyx_client_core::parts::FRAME_BYTES;
 use helyx_client_core::vocabulary::head;
 use std::io::ErrorKind;
-use std::net::{SocketAddr, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::sync::Mutex;
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use tungstenite::error::ProtocolError;
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Error, Message, WebSocket};
 
-/// The request lines that the window keeps: the pending ones stay, so a
+/// The server that a connection reaches: the address, the port, and the
+/// token of its handshake. `Debug` leaves out the token.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Server {
+    pub address: IpAddr,
+    pub port: u16,
+    pub token: String,
+}
+
+impl std::fmt::Debug for Server {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Server({})", self.url())
+    }
+}
+
+impl Server {
+    /// The URL of the WebSocket, as `CodingAgent.Serve.url/2` writes it.
+    pub fn url(&self) -> String {
+        match self.address {
+            IpAddr::V4(ip) => format!("ws://{ip}:{}", self.port),
+            IpAddr::V6(ip) => format!("ws://[{ip}]:{}", self.port),
+        }
+    }
+}
+
+/// The request lines that the host keeps: the pending ones stay, so a
 /// request in flight is never dropped from the list.
 pub const MAX_LINES: usize = 12;
-/// The bytes of a saved prompt that the window keeps for its list: the rest
+/// The line of a refusal that says that the 16 request places of the
+/// connection are taken.
+pub const BUSY: &str = "16 requests are in flight";
+/// The bytes of a saved prompt that the host keeps for its list: the rest
 /// of a prompt of up to 65,536 bytes is not drawn.
 pub const MAX_PROMPT_BYTES: usize = 200;
 /// The bytes of the text of a message that its request line names.
 const MAX_LABEL_BYTES: usize = 40;
 /// The line of a request that the client refused before it went.
 const NOT_SENT: &str = "not sent";
-/// The outcomes that the window has not read yet: at most two for each send
+/// The outcomes that the host has not read yet: at most two for each send
 /// that the input holds (one composer send and the hidden answers), and the
-/// window reads them all at each redraw. A host that never reads stops the
+/// host reads them all at each change. A host that never reads stops the
 /// queue at this bound.
 const MAX_OUTCOMES: usize = 64;
 
-/// What the window asks.
+/// What the host asks.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     /// Follow this session, and stop following the one before.
     Follow(String),
-    /// Send an operation of the window: a prompt, a steer, a follow-up, an
+    /// Send an operation of the host: a prompt, a steer, a follow-up, an
     /// abort, the answer of an ask, a start, or a resume. `send` is the
-    /// number of the send that the window waits for the outcome of, when it
+    /// number of the send that the host waits for the outcome of, when it
     /// is one: a send of the composer or the answer of an ask.
     Operation {
         send: Option<SendId>,
@@ -61,9 +88,26 @@ pub enum Command {
     /// A page of the saved sessions; `after` is the `next` of the page
     /// before, or none for the first page.
     Saved { after: Option<String> },
+    /// Ask the live sessions of the server now, as the welcome of a
+    /// connection does.
+    Live,
+    /// The host is active again: a socket that a suspend left dead is
+    /// dropped, and the next connection starts on the path of a lost
+    /// connection (`became_active`).
+    BecameActive,
 }
 
-/// The state of one request in the window.
+/// Tells the network thread that the host is active again, as the iOS rule of
+/// `docs/features/client-kit.md`, "The rule of the active app", has it: a
+/// suspended app can lose its sockets with no close, so the layer drops the
+/// one that it holds and connects again on the path of a lost connection. The
+/// socket drops at the next step of the thread, within the poll of its socket,
+/// and the next connection waits the pause of the reconnect.
+pub fn became_active(commands: &Sender<Command>) {
+    let _ = commands.send(Command::BecameActive);
+}
+
+/// The state of one request in the host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequestState {
     /// Sent, and the server has not answered.
@@ -91,7 +135,7 @@ impl RequestState {
     }
 }
 
-/// One request of the window, as its status line shows it.
+/// One request of the host, as its status line shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RequestLine {
     pub id: String,
@@ -99,25 +143,25 @@ pub struct RequestLine {
     /// The op and a short text, for a person.
     pub label: String,
     pub state: RequestState,
-    /// The number of the send that this request is, when the window waits
+    /// The number of the send that this request is, when the host waits
     /// for its outcome.
     pub send: Option<SendId>,
 }
 
 impl RequestLine {
-    /// The line that the window draws.
+    /// The line that the host draws.
     pub fn text(&self) -> String {
         format!("{} · {}", self.label, self.state.text())
     }
 }
 
-/// What the window shows.
+/// What the host shows.
 #[derive(Debug)]
 pub struct Shared {
     pub client: Client,
     /// The live sessions of the server, from `sessions.live` at each welcome.
     pub live: Vec<LiveSession>,
-    /// The session that the window follows.
+    /// The session that the host follows.
     pub followed: Option<String>,
     /// One line of the state of the connection.
     pub line: String,
@@ -125,12 +169,12 @@ pub struct Shared {
     pub saved: Vec<SavedSession>,
     /// The `next` of the last page of saved sessions, when more exist.
     pub saved_next: Option<String>,
-    /// The requests of the window, oldest first.
+    /// The requests of the host, oldest first.
     pub requests: Vec<RequestLine>,
     /// The outcome of each numbered send that the client took, answered, or
-    /// lost: the window drains it and settles its composer or its ask.
+    /// lost: the host drains it and settles its composer or its ask.
     pub outcomes: Vec<(SendId, SendOutcome)>,
-    /// The window asked for the saved sessions on this run.
+    /// The host asked for the saved sessions on this run.
     saved_asked: bool,
     /// The page of saved sessions on its way: the id of its request, and
     /// whether it appends. One at a time, so two pages cannot replace and
@@ -154,7 +198,7 @@ impl Shared {
         }
     }
 
-    /// Gives the outcome of a numbered send to the window, within the bound.
+    /// Gives the outcome of a numbered send to the host, within the bound.
     fn outcome(&mut self, send: SendId, outcome: SendOutcome) {
         self.outcomes.push((send, outcome));
         if self.outcomes.len() > MAX_OUTCOMES {
@@ -275,7 +319,7 @@ fn refusal_text(refusal: &Refusal) -> String {
     }
 }
 
-/// Runs connections until one ends with `Next::Stop`, or the window is gone
+/// Runs connections until one ends with `Next::Stop`, or the host is gone
 /// at the end of one, and gives its line.
 pub fn run(
     server: &Server,
@@ -298,13 +342,25 @@ pub fn run_with(
         let (next, line) = connection(server, shared, commands, notify, waits);
         shared.lock().unwrap().line = line.clone();
         notify();
-        let gone = window_gone(shared, commands);
-        // A command that the window sent between connections shows its line.
+        let gone = host_gone(shared, commands);
+        // A command that the host sent between connections shows its line.
         notify();
         if next == Next::Stop || gone {
             return line;
         }
-        std::thread::sleep(waits.pause);
+        // The pause before the next connection is a wait on the commands, so a
+        // host that goes during it ends the loop with no new connection. A
+        // command that comes is kept for the next connection, as one that
+        // comes between connections is.
+        match commands.recv_timeout(waits.pause) {
+            Ok(Command::BecameActive) => {}
+            Ok(command) => {
+                drop(apply(&mut shared.lock().unwrap(), command));
+                notify();
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return line,
+        }
     }
 }
 
@@ -350,6 +406,15 @@ fn connection(
             let Ok(command) = commands.try_recv() else {
                 break;
             };
+            // A socket that a suspend of the host left dead ends as a lost
+            // connection does, once the server answered the handshake: a
+            // wake-up before it names no dead socket, so it is dropped.
+            if command == Command::BecameActive {
+                if welcomed {
+                    return ended(&mut ws, welcomed);
+                }
+                continue;
+            }
             let frames = apply(&mut shared.lock().unwrap(), command);
             if send(&mut ws, &watchdog, waits, frames).is_err() {
                 return ended(&mut ws, welcomed);
@@ -364,11 +429,12 @@ fn connection(
             // After a binary frame, a close ends the connection as a break.
             Ok(Message::Close(_)) if ws.get_ref().binary() => return broken(shared, &mut ws),
             Ok(Message::Close(frame)) => {
-                let next = close(shared, frame.map(|f| f.code.into()));
-                let line = if next == Next::Reconnect {
-                    "reconnecting"
-                } else {
-                    "the connection ended"
+                let code = frame.map(|f| u16::from(f.code));
+                let next = close(shared, code);
+                let line = match (code, next) {
+                    (Some(UNAUTHORIZED), _) => "the server refused the token",
+                    (_, Next::Reconnect) => "reconnecting",
+                    (_, Next::Stop) => "the connection ended",
                 };
                 return (next, line.into());
             }
@@ -408,14 +474,7 @@ fn connection(
                     welcomed = true;
                     heard(&watchdog, welcomed, waits);
                     guard.line = "connected".into();
-                    let live = guard.client.request("sessions.live", object([]));
-                    frames.extend(record(
-                        &mut guard,
-                        "sessions.live",
-                        "sessions.live".into(),
-                        None,
-                        live,
-                    ));
+                    frames.extend(live(&mut guard));
                     if !guard.saved_asked {
                         guard.saved_asked = true;
                         frames.extend(saved(&mut guard, None));
@@ -460,7 +519,7 @@ fn connection(
                             }
                             guard.saved_next = next;
                         }
-                        // A start or a resume: the window follows the session
+                        // A start or a resume: the host follows the session
                         // that the server made or attached.
                         Ok(Reply::Session(session)) => {
                             frames.extend(follow(&mut guard, &session));
@@ -492,6 +551,15 @@ fn heard(watchdog: &Watchdog, welcomed: bool, waits: Waits) {
 fn open(server: &Server, waits: Waits) -> Result<(Socket, Watchdog), String> {
     let address = SocketAddr::new(server.address, server.port);
     let stream = TcpStream::connect_timeout(&address, waits.connect).map_err(|e| e.to_string())?;
+    // The OS can buffer a batch of several MiB whole, and then no write waits
+    // on the peer; a test that its batch outlasts its deadline caps the
+    // buffer here.
+    #[cfg(feature = "stub")]
+    if let Some(size) = waits.send_buffer {
+        socket2::SockRef::from(&stream)
+            .set_send_buffer_size(size)
+            .map_err(|e| e.to_string())?;
+    }
     stream
         .set_read_timeout(Some(waits.poll))
         .map_err(|e| e.to_string())?;
@@ -533,7 +601,7 @@ pub fn follow_line(session: &str, follow: &Follow) -> Option<String> {
             Some(format!("{session} {places}"))
         }
         Follow::Waiting(Wait::Places { unwanted }) => Some(format!(
-            "{session} {places}, held by {} that the window does not follow",
+            "{session} {places}, held by {} that the host does not follow",
             unwanted.join(", ")
         )),
         Follow::Waiting(Wait::Requests) => Some(format!(
@@ -544,12 +612,15 @@ pub fn follow_line(session: &str, follow: &Follow) -> Option<String> {
     }
 }
 
-/// Between connections: takes the commands of the window, whose frames go
-/// at the next welcome, and gives whether the window is gone, its sender of
+/// Between connections: takes the commands of the host, whose frames go
+/// at the next welcome, and gives whether the host is gone, its sender of
 /// commands dropped.
-fn window_gone(shared: &Mutex<Shared>, commands: &Receiver<Command>) -> bool {
+fn host_gone(shared: &Mutex<Shared>, commands: &Receiver<Command>) -> bool {
     loop {
         match commands.try_recv() {
+            // Between connections there is no socket to drop: the wake-up
+            // costs nothing, and the thread connects at the pause.
+            Ok(Command::BecameActive) => {}
             // No connection takes a frame: the intent goes at the welcome,
             // and an operation is refused with `NotReady` on its line, so
             // nothing that the user asked for is sent without an answer to
@@ -561,16 +632,33 @@ fn window_gone(shared: &Mutex<Shared>, commands: &Receiver<Command>) -> bool {
     }
 }
 
-/// One command of the window: its frames.
+/// One command of the host: its frames.
 fn apply(shared: &mut Shared, command: Command) -> Vec<String> {
     match command {
         Command::Follow(session) => follow(shared, &session),
         Command::Operation { send, operation } => perform(shared, send, operation),
         Command::Saved { after } => saved(shared, after),
+        Command::Live => live(shared),
+        // Both callers handle it: a connection ends, and a thread between
+        // connections has no socket to drop.
+        Command::BecameActive => vec![],
     }
 }
 
-/// Sends an operation of the window and records its line, and the outcome of
+/// The live sessions of the server, asked for now: its frames and the line of
+/// its request.
+fn live(shared: &mut Shared) -> Vec<String> {
+    let requested = shared.client.request("sessions.live", object([]));
+    record(
+        shared,
+        "sessions.live",
+        "sessions.live".into(),
+        None,
+        requested,
+    )
+}
+
+/// Sends an operation of the host and records its line, and the outcome of
 /// the send of the composer that it is.
 fn perform(shared: &mut Shared, send: Option<SendId>, operation: Operation) -> Vec<String> {
     let op = operation.name();
@@ -719,7 +807,7 @@ mod tests {
         MAX_LABEL_BYTES, MAX_PROMPT_BYTES, RequestState, Shared, first_line, label, perform,
         refusal_text,
     };
-    use crate::composer::SendOutcome;
+    use crate::send::SendOutcome;
     use helyx_client_core::client::Refusal;
     use helyx_client_core::operation::Operation;
 
