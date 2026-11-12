@@ -9,6 +9,8 @@ defmodule CodingAgent.CLI do
   helyx --list [--all] [directory]
   helyx serve [--host ip] [--port n] [--public host:port] [--model provider/model]
   helyx pair --runner name
+  helyx hands --pair <link> [--folder dir]
+  helyx hands --name <name> [--folder dir]
   helyx --version | --help
   """
 
@@ -29,12 +31,14 @@ defmodule CodingAgent.CLI do
   the `helyx` of the release starts `helyx serve` in the background and
   attaches to it; `mix helyx` runs the server in its own VM. `-p`
   (`--print`) runs one prompt over the wire with no TUI, and `serve` runs the
-  headless server. The design is in `docs/features/local-release.md`, and
+  headless server. `hands` pairs a runner with a link, or reconnects it with
+  its saved key. The design is in `docs/features/local-release.md`, and
   the rest in `docs/features/session-list.md`, `docs/features/print-mode.md`,
-  `docs/features/serve.md`, and `docs/features/tui-attach.md`.
+  `docs/features/serve.md`, `docs/features/remote-hands.md`, and
+  `docs/features/tui-attach.md`.
   """
 
-  alias CodingAgent.CLI.Pair
+  alias CodingAgent.CLI.{Hands, Pair}
   alias CodingAgent.Lease
   alias CodingAgent.Print
   alias Helyx.Tool.Bash
@@ -60,6 +64,10 @@ defmodule CodingAgent.CLI do
     runner:
       {:string, "--runner name",
        "with pair, the name of the runner, 1 to 64 bytes of a-z, 0-9, and _"},
+    pair: {:string, "--pair link", "with hands, the helyx-pair link of the runner"},
+    name: {:string, "--name name", "with hands, the paired runner to connect with its saved key"},
+    folder:
+      {:string, "--folder dir", "with hands, the folder of the runner, default the current one"},
     version: {:boolean, "--version", "print the version"},
     help: {:boolean, "--help", "print this help (-h)"}
   ]
@@ -77,6 +85,8 @@ defmodule CodingAgent.CLI do
   serve runs until SIGTERM (or, through the launcher, any signal that ends a process but a
   fault signal) and then exits 0; 1 when it does not start, when a server holds the data
   folder or runs in the VM, or when the server stops by a failure or a closed output.
+  hands runs until SIGTERM and then exits 0; 1 for a bad link, a refused key, a wrong pin,
+  a missing or unreadable runner state, or a folder that is not a directory.
   """
 
   # The options that do not combine, with the reason. `:directory` is the
@@ -97,8 +107,17 @@ defmodule CodingAgent.CLI do
   ]
 
   # A switch that needs another switch, or a command, which this path never
-  # has (`serve` and `pair` run before the check).
-  @needs [all: :list, host: :serve, port: :serve, public: :serve, runner: :pair]
+  # has (`serve`, `pair`, and `hands` run before the check).
+  @needs [
+    all: :list,
+    host: :serve,
+    port: :serve,
+    public: :serve,
+    runner: :pair,
+    pair: :hands,
+    name: :hands,
+    folder: :hands
+  ]
 
   @doc """
   Runs the agent with the command line `argv` until the user quits, and
@@ -138,7 +157,9 @@ defmodule CodingAgent.CLI do
   defp result(status) when is_integer(status), do: status
 
   defp result({:error, text}) do
-    IO.puts(:stderr, "helyx: " <> text)
+    # An argument can be a pairing link in the wrong place; its token never
+    # reaches a printed line.
+    IO.puts(:stderr, "helyx: " <> Helyx.Transport.WebSocket.Runner.Link.hide(text))
     1
   end
 
@@ -168,12 +189,12 @@ defmodule CodingAgent.CLI do
 
   defp command_path(env), do: env["PATH"]
 
-  # `serve` and `pair` are the first argument only, as in the launcher of the
-  # release.
+  # `serve`, `pair`, and `hands` are the first argument only, as in the
+  # launcher of the release.
   defp start(argv, release_version, launcher, halt) do
     {command, argv} =
       case argv do
-        [command | rest] when command in ["serve", "pair"] -> {command, rest}
+        [command | rest] when command in ["serve", "pair", "hands"] -> {command, rest}
         argv -> {nil, argv}
       end
 
@@ -183,6 +204,7 @@ defmodule CodingAgent.CLI do
         opts[:version] -> IO.puts("helyx " <> version(release_version))
         command == "serve" -> serve(opts, args)
         command == "pair" -> Pair.run(opts, args, sessions_dir())
+        command == "hands" -> hands(opts, args)
         true -> start_agent(opts, args, launcher, halt)
       end
     end
@@ -244,6 +266,13 @@ defmodule CodingAgent.CLI do
   defp serve(_opts, args),
     do: {:error, "serve takes no directory argument, got: #{inspect(args)}"}
 
+  # The runner state lives under the root of the default data folder:
+  # `sessions_dir/1` is `<home>/sessions` unless a test sets its own.
+  defp hands(opts, args) do
+    result = Hands.run(opts, args, Path.dirname(sessions_dir()))
+    with {:error, text} <- result, do: {:error, CodingAgent.clean_line(text)}
+  end
+
   defp serve_switches(opts) do
     case Enum.find(Keyword.keys(opts), &(&1 not in [:host, :port, :model, :public])) do
       nil -> :ok
@@ -262,6 +291,7 @@ defmodule CodingAgent.CLI do
   defp switch(:directory), do: "a directory argument"
   defp switch(:serve), do: "serve"
   defp switch(:pair), do: "pair"
+  defp switch(:hands), do: "hands"
   defp switch(name), do: "--#{name}"
 
   # `--session` runs in the folder of the session header, which the resume

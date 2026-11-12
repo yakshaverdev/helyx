@@ -6,7 +6,7 @@ Ticket #927, part of #925. ADR 0012 decides remote hands (#856, #886). This doc 
 
 A Helyx server runs on a Linux VPS. On a Mac, the owner runs `helyx hands --pair <link>` in the project folder and the Mac becomes the runner `mac`. A session that names the runner runs its tool calls and its provider process on the Mac (ADR 0012, user story). The capability report of the runner gives the session its tools, so a Mac runner can later report a build tool (#929) that a Linux runner does not.
 
-The session speaks one protocol to local and to remote hands (ADR 0012 §1). So the build first moves the local hands, `Helyx.Session.Hands`, onto the terms of this doc, with no wire, and only then adds the stand-in of a remote hands and the wire. The local hands keep their tests; each slice keeps the suite green.
+The session speaks one protocol to local and to remote hands (ADR 0012 §1). The build stands a paired runner beside the local hands first, so the owner has a runner to pair. Then it moves the local hands, `Helyx.Session.Hands`, onto the terms of this doc, with no new wire, and adds the stand-in of a remote hands and the terms on the wire. The local hands keep their tests; each slice keeps the suite green.
 
 ## The terms
 
@@ -118,7 +118,7 @@ The `challenge` gives a nonce, as today. A `hello` of a pairing has `role` `hand
 
 A `hello` with `role` `hands`, `runner`, and `signature` (the Ed25519 signature of the signature text). The server reads the public key of `("hands", name)` and verifies. No row, or a wrong signature: `4401`.
 
-**The signature text.** Both handshakes sign the same bytes, and part 2's runner builds them the same way: the context text `helyx-handshake-v1`, the 32 bytes of the nonce, the pin of the server, the kind, and the name, in that order, each part preceded by its length as a 32-bit big-endian integer (`Helyx.Transport.WebSocket.Pairing.signature_text/4`). A signature made for one server, one kind, or one name is of no use at another.
+**The signature text.** Both handshakes sign the same bytes, and the runner builds them the same way: the context text `helyx-handshake-v1`, the 32 bytes of the nonce, the pin of the server, the kind, and the name, in that order, each part preceded by its length as a 32-bit big-endian integer (`Helyx.Transport.WebSocket.Pairing.signature_text/4`). A signature made for one server, one kind, or one name is of no use at another.
 
 **A Hub that does not answer.** A Hub that is busy or gives no answer to a pairing closes the connection with `4503`, as the authority of the loopback listener does; the peer connects again later. A missing or wrong row is permanent and closes with `4401`. The caller waits `Helyx.Transport.WebSocket.Pairing.call_ms/0` for this process, which is `Helyx.Hub.call_ms/0` plus a margin, so the `4503` answer arrives before the caller's own wait ends.
 
@@ -134,7 +134,25 @@ Pairing does not exist without a Hub in the Core: `--public` fails the start wit
 
 ### The runner state
 
-This state is built in part 2; the design is here. `~/.helyx/hands/<name>.json`, mode 0600, holds the address, the pin, the name, the folder, and the private key. `helyx hands --pair <link>` writes it and connects. `helyx hands --name <name>` connects with a saved state. The reconnect waits 1,000 ms, then doubles to at most 60,000 ms, with no end: a runner is a service. A `4401` ends the runner with one line, because a retry cannot pass.
+This slice builds it. `Helyx.Transport.WebSocket.Runner` is the client side of the role `hands`: a bundled module beside the transport, not a Core plugin, with no registration entry and no module of the TUI. It holds the socket and the state in one process; the caller prepares it with `prepare/1` and starts it with `start_link/1`, which takes only the prepared form, so the start arguments of a supervisor hold no link and no key. `await/1` or a monitor gives its end.
+
+The link is `helyx-pair:1:<base64url JSON>`. `Runner.Link.parse/1` gives its address (host and port), bootstrap token, pin, kind, and name, and refuses another prefix or version, base64 or JSON that does not parse, a missing or non-string field, another kind, a name that breaks `Pairing.name?/1`, a port outside 1 to 65,535, and a link over `Runner.Link.max_bytes/0` (the longest link that `Pairing.create/3` makes through `--public`, with a margin).
+
+At a pairing the runner makes an Ed25519 key pair with `:crypto`. The private key is held in a closure, as the link hash of `Pairing` is: no log, error text, process state, or crash report holds it as a binary. The public key and the signature over `Pairing.signature_text/4` prove the peer.
+
+The state file is `~/.helyx/hands/<name>.json`, under the root that the data folder of the coding agent uses (the CLI passes the parent of its data folder; a test passes its own). The folder `hands/` has mode 0700 and the file mode 0600 before its first byte, written as `TLS.ensure/1` writes `key.pem`. It holds the address, the pin, the name, the folder, and the private key (base64), and it is written through a temporary file and a rename. A read checks a regular file, not a symlink, at most `Runner.State.max_bytes/0`, a mode with no group or other bits, valid JSON with every field of the right type, a key of 32 bytes, and the name asked. A loose mode is refused with one line that names the file, not repaired, because the key may already be read. Every error carries the path and never the content. The type check is `lstat` and the open follows it: a swap between the two is an accepted hole, because only the user writes the folder.
+
+A pairing never replaces a key that may still be valid. `--pair` refuses a name that already has a state file, before any connection, with one line that names the file and says to use `--name`; the link is not used. The write itself fails when the file exists (a hard link of the temporary file, not a rename), so two pairings of one name at the same time cannot replace a key either: the second write fails. A write that fails after the `welcome` (a full disk, a folder that cannot be written, the file of another pairing) loses the pairing: the server has the key and the link is used, so the command ends with one line that says so and that a new link is needed. The runner writes a state file only after the `welcome`, and it never removes one: a `4401` of an earlier pairing leaves the saved key, and a connection that drops between the `welcome` and the registration answer uses that key on its next connection.
+
+The connection is TLS 1.3 only to the address of the link. The certificate is checked against the pin by `TLS.verify/2` before the upgrade, so there is no CA check and no hostname check, and a wrong pin refuses the connection before any frame. The host of a link may be an IPv4 address, an IPv6 literal, or a name; the runner gives Mint the hostname that its Host header needs, and the pin stays the only identity check. Then the WebSocket upgrade, the `challenge`, and the hello of a pairing (`role: "hands"`, `runner`, `pair: {proof, public_key, signature}`) or of a paired peer (`role: "hands"`, `runner`, `signature`), then `welcome`. The frame codec is `Mint.WebSocket`, the library of the TUI, over `:ssl`.
+
+After `welcome` the runner sends `hands.register {runner, folder}` and takes `{lease_ms}`. The folder is the absolute path of the folder the runner started in, valid UTF-8 and at most `Pairing.max_folder_bytes/0` bytes; another one is refused before any connection. The lease is 1 to `Runner.Connection.max_lease_ms/0`, the top of the server's lease setting; a value over it is a bad frame. The runner answers each `hands.live` with a `res` of its id, at once. A runner that gets no `hands.live` within the lease closes the connection and reconnects: the server may be gone with no close frame.
+
+A pairing writes the state file after the `welcome`; from that moment every later connection uses the saved key, and the same connection goes on to register. A `4401` ends the runner with `{:error, :unauthorized}` without touching a state file of an earlier pairing. A wrong pin ends it with `{:error, :bad_pin}`. A refusal of the protocol ends it with the server's number. Any other lost connection or failed connect waits `Runner.reconnect_ms/0`, then doubles to `Runner.max_reconnect_ms/0`, with no end; a connection that reached its registration resets the wait to `Runner.reconnect_ms/0`. A test gives smaller values through the options `:reconnect_ms`, `:max_reconnect_ms`, and `:lease_ms`.
+
+`helyx hands --pair <link> [--folder <dir>]` pairs and stays in the foreground. `helyx hands --name <name> [--folder <dir>]` connects with the saved key; with no `--folder` it uses the folder of the state file. The command prints one line when it is connected and one line for each reconnect state change, and ends with 0 at SIGTERM and 1 for a fault that a retry cannot pass: a bad link, a refused key, a wrong pin, a missing or unreadable state file, an existing state file at a pairing, and a folder that is not a directory. A pair link that is a positional argument is refused with a line that sends it after `--pair`; no line of the command prints a link.
+
+`pair.list` shows the runner with `connected: true` after the pairing. No session runs on the runner in this slice: the term slices add the capability report, the request queue, the lease kill of hands, and the start and resume of sessions.
 
 ### Registration and lease
 
@@ -178,11 +196,12 @@ A transport option `:hands_lease_ms` of `Helyx.Transport.WebSocket`, an integer 
 - `Helyx.Transport.WebSocket`: the role `hands`, `hands.*`, the option `:hands_lease_ms`, the option `:public` for the second listener, and the pairing operations of "Pairing and the public listener". Protocol 14.
 - `Helyx.Transport.WebSocket.TLS` (new): `ensure/1` and `pin/1` and `verify/2` of the certificate.
 - `Helyx.Transport.WebSocket.Pairing` (new): the links, the peer connections, the two handshakes, and the hands registrations.
+- `Helyx.Transport.WebSocket.Runner` (new): the client side of the role `hands`, with `Runner.Link` (the link), `Runner.State` (the state file), and `Runner.Connection` (TLS, the upgrade, and the handshake). Not a Core plugin, with no registration entry.
 - `Helyx.Hub`: `put_peer/4`, `peer/3`, `peers/1`, `max_peers/0`, and the internal `revoke_peer/3` that deletes a row. `Helyx.Transport.WebSocket.Pairing.revoke/3` is the one revoke path, and it closes the connection.
 - `Helyx.Hub.Store`: `put_peer/4`, `peer/3`, `delete_peer/4`, and `peers/1`, with the schema version of "Store schema".
 - `Helyx.Session.read_files/2` for the readers of the folder.
 - `CodingAgent.CLI`: `helyx serve --public <host>:<port>` and `helyx pair --runner <name>`.
-- `CodingAgent.CLI`: `helyx hands --pair <link>` and `helyx hands --name <name>` in part 2.
+- `CodingAgent.CLI`: `helyx hands --pair <link> [--folder <dir>]` and `helyx hands --name <name> [--folder <dir>]` (the runner connection, P6).
 
 ## Replaced mechanism
 
@@ -219,6 +238,15 @@ Each slice lists the tests of the old mechanism that it touches, with the proper
 | the HTTP request of an upgrade | `Helyx.Transport.WebSocket.TLS.handshake_ms/0`, from two waits of `Helyx.Transport.WebSocket.TLS.request_ms/0` | the server answers 408 and closes | `Helyx.Transport.WebSocket.TLS.Transport` |
 | the wait for a pairing answer | `Helyx.Transport.WebSocket.Pairing.call_ms/0`, the Hub wait plus a margin | the caller times out; the answer is `4503` when the Hub waited to its own bound | `Helyx.Transport.WebSocket.Pairing` |
 | the lease setting | `Helyx.Transport.WebSocket.hands_lease_ms/0`; a request each third | the server closes the connection; every hands of it is dead | server |
+| a pair link | `Helyx.Transport.WebSocket.Runner.Link.max_bytes/0` | `{:error, :link_too_long}` before any base64 decode | `Runner.Link` |
+| the TCP connect, the TLS handshake, and the upgrade of the runner | `Helyx.Transport.WebSocket.Runner.connect_ms/0`, one deadline in all | the attempt fails and the runner reconnects | `Runner.Connection` |
+| the challenge and the welcome of the runner, and its registration answer | `Helyx.Transport.WebSocket.Runner.frame_ms/0` for the pair, and one for the answer | the attempt fails and the runner reconnects | `Runner.Connection` |
+| a frame that the runner reads | `Helyx.Transport.WebSocket.Frame.max_frame/0`; the term slice raises it to the server-to-runner term limit of decision 3 | the runner closes the connection and reconnects; the decoder buffers one frame before the check | `Runner` |
+| the runner state file | `Helyx.Transport.WebSocket.Runner.State.max_bytes/0`; a regular file, not a symlink; a mode with no group or other bits | the read fails with the path, and the error holds no content | `Runner.State` |
+| a pairing over an existing state file | no file at `Helyx.Transport.WebSocket.Runner.State.path/2` | `{:state_file, path, :exists}` before any connection, and the link stays unused | `Runner` |
+| the lease of a runner's registration | `Helyx.Transport.WebSocket.Runner.Connection.max_lease_ms/0`, the top of the server's lease setting | a value over it is a bad frame and the runner reconnects | `Runner.Connection` |
+| the wait for `hands.live` on the runner | the `lease_ms` of the registration | the runner closes the connection and reconnects | `Runner` |
+| the reconnect wait of the runner | `Helyx.Transport.WebSocket.Runner.reconnect_ms/0`, doubling to `Runner.max_reconnect_ms/0`, with no end | n/a | `Runner` |
 | runner's lease | as ADR 0012 §3 | the runner kills its hands and tool processes with `:kill` | runner |
 | stop of the hands of a session | remote: one deadline of 22,000 ms for the provider ends and the stop answer; local: unchanged | `:unknown` | server |
 | `Stop.shutdown_ms/0` | 31,000 ms, unchanged | the supervisor kills the session | server |
@@ -226,7 +254,7 @@ Each slice lists the tests of the old mechanism that it touches, with the proper
 | a provider event | `Helyx.Session.Stream.check/1`, the mailbox bound of `send_checked/3` | the provider process stops, the turn fails | server |
 | a capability report | the checks of `Helyx.Tool.specs/2` | the start fails | server |
 | a read of the folder | 256 paths, each path at most 4,096 bytes, each file at most the reader's own limit; the list of a folder: unbounded until the read slice states it | the read fails with an error | Core |
-| a folder of a runner | `Helyx.Transport.WebSocket.Pairing.max_folder_bytes/0` | the registration closes with `4401` | pairing |
+| a folder of a runner | `Helyx.Transport.WebSocket.Pairing.max_folder_bytes/0`, valid UTF-8 | the registration closes with `4401`; another folder is refused before a connection | pairing and runner |
 | connections of a server | two gates, one for each listener, of `Helyx.Transport.WebSocket.max_connections/0` each; each listener admits `Helyx.Transport.WebSocket.tcp_connections/0` TCP connections before the upgrade | HTTP 503 at the upgrade; a TCP connection over `tcp_connections/0` waits for a place | transport |
 
 Each numeric limit gets tests at it, one under, one over, and a multibyte case where it counts bytes, in the slice that builds it.
@@ -239,7 +267,7 @@ Each numeric limit gets tests at it, one under, one over, and a multibyte case w
 | the hands on the runner | the runner, at `hands.open` | the runner's request queue process | `hands.stop` | the runner kills at the close or at its lease (ADR 0012 §3) | `hands.stop` from the connection at any end of the stand-in |
 | tool Tasks and their OS resources on the runner | the hands on the runner | the hands | ADR 0004, unchanged | ADR 0004, unchanged, and the kill at the runner's lease | ADR 0004 |
 | the provider process on the runner | the hands on the runner | the hands | `hands.provider_stop` or `close` | the kill at the runner's lease | `hands.provider_stop` |
-| the hands connection (socket) | the runner | the runner and the server's connection process | the stop of the runner | the close; on the server, its sessions stop | n/a |
+| the hands connection (socket) | the runner, at the TLS connect | the runner process | the process ends at a permanent fault, and the socket closes with it; a lost connection closes and the runner reconnects | the socket closes with the process | n/a |
 | the public listener socket | `helyx serve --public` | the transport supervisor | the stop of the transport | the transport supervisor stops at the crash of the listener and starts it again | n/a |
 | the TLS key and certificate | `Helyx.Transport.WebSocket.TLS.ensure/1`, at the first start with `--public` | the data folder, `<data folder>/tls/` | they stay; a later start reads them | they stay | n/a |
 | a peer row | the pairing handshake, in the Hub store | the Hub store | `Helyx.Transport.WebSocket.Pairing.revoke/3` deletes it | it stays | n/a |
@@ -258,6 +286,7 @@ In order, each through `/ship` with its own commit. The pairing slices come firs
 - **P3. Links and `pair.create`, `pair.revoke`, `pair.list`.** Tests: one use; the lifetime; the cap of pending links; the kind `client` is `bad_params`; a kind or name that is not a string is `bad_params`; a Hub user token is `forbidden`; `unknown_op` on the public listener; `no_public_listener`; a revoke closes the connection of the peer, also after the row is gone; the state and a crash report hold no link secret.
 - **P4. The two handshakes on the public listener.** A pairing `hello` and a paired `hello`, for the kind `hands`. After `welcome`, `hands.register {runner, folder}` gives `{lease_ms}`, and the lease closes a silent runner. A second registration of a name closes the first connection, and a second registration on one connection is `bad_params`. A client operation on a hands connection is `unknown_op`. A bad field of a public `hello` closes that connection only, and a Hub that does not answer closes with `4503`. No session uses the runner yet. Tests with a peer in the test process that speaks the frames over TLS: a pairing, then a second connection with the key alone; a wrong signature; a signature over the nonce alone; a signature for another name; a used link; an expired link; a bad field that leaves the loopback listener serving; each listener's gate; a registration with another name than the `hello`; an answer to no open `hands.live`; a Hub that does not answer through a real connection; a link of a caller that died.
 - **P5. `helyx pair --runner <name>`** on the server machine. Tests as the CLI tests of `serve` do.
+- **P6. The runner connection.** `Helyx.Transport.WebSocket.Runner`, its link parser, its state file, the two handshakes, the registration, `hands.live`, and the reconnect; `helyx hands --pair <link> [--folder <dir>]` and `helyx hands --name <name> [--folder <dir>]`. Tests: a pairing writes a 0600 state file in a 0700 folder, and `pair.list` shows `connected: true`; a second runner connects with the key alone; a used link ends with `unauthorized` and writes no state file; a second pairing over an existing state file refuses before any connection and keeps the file byte for byte; a wrong pin refuses the connection before any frame; each link fault gives its atom and no error holds the token; a pairing over an IPv6 literal host connects; the runner answers `hands.live` past three lease durations; a server restart connects the runner again alone; a revoke ends it with `unauthorized`; a server that goes silent after a live closes at the lease and the runner reconnects; the state file checks each give their error with the path; the private key and the link are out of the state, the child spec, and a crash report; a folder over the bound or not UTF-8 is refused before a connection; a lease over the maximum is a bad frame; the reconnect wait doubles to its cap and resets after a registration; the CLI prints its lines, its positional link and its other faults exit 1. No session runs on the runner.
 
 ### Term slices
 
@@ -272,7 +301,7 @@ In order, each through `/ship` with its own commit. The pairing slices come firs
 9. **The entry point for a remote hands** and the stand-in, tested with a peer in the test process that speaks the terms.
 10. **The wire: the `hands` role and the term limits,** with the tests that ADR 0012 lists (build ticket 3) and the fixtures.
 11. **The wire: `hands.*` and the lease.**
-12. **The runner:** its request queue, its lease, and its kill, and `helyx hands --pair` and `helyx hands --name` at start and resume.
+12. **The runner's request queue, the lease kill of hands, and start and resume of sessions** on a runner. The connection is P6: this slice takes the terms that the queue passes to the hands, and the runner starts and resumes the sessions of its folder.
 
 ## Decisions
 
@@ -297,4 +326,3 @@ Owner decisions of 2026-11-11. No question of ADR 0012 stays open.
 - The choice of a runner by the Hub: executor assignment (#928, #857).
 - The build tools: #929.
 - A result with blocks other than text: #858.
-- `helyx hands`, the runner program: part 2.
