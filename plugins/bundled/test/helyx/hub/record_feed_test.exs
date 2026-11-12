@@ -165,30 +165,16 @@ defmodule Helyx.Hub.RecordFeedTest do
     send(slow, :stop)
   end
 
-  test "a seed drops the sets of sessions that no longer run", context do
-    context = serve(context)
-    state = :sys.get_state(context.hub)
-    {:ok, session} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
-    wait_row(state, session.id)
-    Events.wait_until(fn -> Helyx.Hub.Live.running?(:sys.get_state(context.hub), session.id) end)
-
-    state = :sys.get_state(context.hub)
-    state = RecordFeed.ask(state, session.id, "a1")
-    state = RecordFeed.ask(state, "gone", "a2")
-    state = RecordFeed.prune(state)
-
-    assert Map.has_key?(state.asks, session.id)
-    refute Map.has_key?(state.asks, "gone")
-  end
-
-  test "a seed whose snapshot read failed keeps the set of the session", context do
+  test "a Sync replaces the ask set of a session, and an empty set drops it", context do
     context = serve(context)
     state = :sys.get_state(context.hub)
     state = RecordFeed.ask(state, "s1", "a1")
-    state = RecordFeed.seed(state, [{"s1", :error}, {"s2", {:ok, ["b1"]}}])
+    state = RecordFeed.set_asks(state, "s1", ["a2"])
 
-    assert Map.get(state.asks, "s1") == MapSet.new(["a1"])
-    assert Map.get(state.asks, "s2") == MapSet.new(["b1"])
+    assert Map.get(state.asks, "s1") == MapSet.new(["a2"])
+
+    state = RecordFeed.set_asks(state, "s1", [])
+    refute Map.has_key?(state.asks, "s1")
   end
 
   test "a failed store read marks every subscriber for the full list", context do

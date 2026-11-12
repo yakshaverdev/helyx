@@ -6,7 +6,7 @@ defmodule Helyx.Session.Server.FeedTest do
   import Helyx.Test.SessionCase
 
   alias Helyx.{Event, Session, Sessions}
-  alias Helyx.Sessions.Live
+  alias Helyx.Sessions.{Live, Sync}
   alias Helyx.Test.Events
 
   @moduletag :tmp_dir
@@ -243,5 +243,130 @@ defmodule Helyx.Session.Server.FeedTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, reason}
     assert Session.end_reason(reason) == :stopped
     refute_received {:helyx_feed, _pid, _notice}
+  end
+
+  test "sync/1 refuses a caller that does not watch the feed", %{core: core} do
+    assert Sessions.sync(core) == {:error, :not_watching}
+
+    assert {:ok, _dropped} = Sessions.watch(core, [])
+    assert Sessions.sync(core) == :ok
+  end
+
+  test "a Sync of an open session holds its Live and its open ask ids" do
+    core = start_core([Helyx.Test.Provider, Helyx.Test.Tool.Ask])
+    assert {:ok, _dropped} = Sessions.watch(core, [:ask, :ask_end])
+    {:ok, session} = Sessions.start(core, cwd: "/repo", model: "test/ask")
+    {:ok, _snapshot, _ref} = Session.subscribe(session, answers: true)
+    :ok = Session.prompt(session, "go")
+    assert [%{ask_id: ask_id}] = Events.of_type(collect_until(:ask), :ask)
+
+    assert :ok = Sessions.sync(core)
+
+    assert_receive {:helyx_feed, pid,
+                    %Sync{live: %Live{id: id, status: :running}, asks: [^ask_id]}}
+
+    assert pid == Session.pid(session)
+    assert id == session.id
+
+    :ok = Session.answer(session, ask_id, %{"pick" => ["x"]})
+    _events = collect_until(:turn_end)
+
+    assert :ok = Sessions.sync(core)
+    assert_receive {:helyx_feed, _pid, %Sync{live: %Live{id: ^id}, asks: []}}
+  end
+
+  test "a Sync comes before the ask of the same session" do
+    core = start_core([Helyx.Test.Provider, Helyx.Test.Tool.Ask])
+    assert {:ok, _dropped} = Sessions.watch(core, [:ask, :ask_end])
+    {:ok, session} = Sessions.start(core, cwd: "/repo", model: "test/ask")
+    {:ok, _snapshot, _ref} = Session.subscribe(session, answers: true)
+    assert %Live{status: :idle} = next_feed()
+
+    # Both messages go from the test process to the session, so the session
+    # handles the sync before it takes the prompt.
+    assert :ok = Sessions.sync(core)
+    :ok = Session.prompt(session, "go")
+
+    assert %Sync{asks: []} = next_feed()
+    assert %Live{status: :running} = next_feed()
+    assert %Event{type: :ask} = next_feed()
+  end
+
+  test "a suspended session does not block sync/1, and its Sync comes after the resume" do
+    core = start_core([Helyx.Test.Provider])
+    assert {:ok, _dropped} = Sessions.watch(core, [])
+    {:ok, one} = Sessions.start(core, cwd: "/repo", model: "test/ok")
+    {:ok, two} = Sessions.start(core, cwd: "/repo", model: "test/ok")
+    one_pid = Session.pid(one)
+    two_pid = Session.pid(two)
+    assert_receive {:helyx_feed, ^one_pid, %Live{}}
+    assert_receive {:helyx_feed, ^two_pid, %Live{}}
+
+    :ok = :sys.suspend(one_pid)
+    assert :ok = Sessions.sync(core)
+
+    # The session that runs answers; the one that does not cannot.
+    assert_receive {:helyx_feed, ^two_pid, %Sync{live: %Live{id: two_id}}}
+    assert two_id == two.id
+    refute_received {:helyx_feed, ^one_pid, %Sync{}}
+
+    :ok = :sys.resume(one_pid)
+    assert_receive {:helyx_feed, ^one_pid, %Sync{live: %Live{id: one_id}}}
+    assert one_id == one.id
+  end
+
+  test "a watcher past its bound gets no Sync, and the counter grows for each session" do
+    core = start_core([Helyx.Test.Provider])
+    parent = self()
+
+    watcher =
+      spawn(fn ->
+        {:ok, dropped} = Sessions.watch(core, [])
+        send(parent, {:watching, dropped})
+        full_loop(core, parent)
+      end)
+
+    assert_receive {:watching, dropped}
+    {:ok, _one} = Sessions.start(core, cwd: "/repo", model: "test/ok")
+    {:ok, _two} = Sessions.start(core, cwd: "/repo", model: "test/ok")
+
+    max = Sessions.max_feed_queue()
+    for _ <- 1..max, do: send(watcher, :filler)
+    wait_until(fn -> elem(Process.info(watcher, :message_queue_len), 1) >= max end)
+
+    before = Sessions.dropped(dropped)
+    send(watcher, :sync)
+    assert_receive {:synced, :ok}
+
+    # One dropped Sync for each of the two sessions.
+    assert Sessions.dropped(dropped) - before == 2
+    send(watcher, :stop)
+  end
+
+  defp full_loop(core, parent) do
+    receive do
+      :sync ->
+        send(parent, {:synced, Sessions.sync(core)})
+        full_loop(core, parent)
+
+      :stop ->
+        :ok
+    end
+  end
+
+  test "a session before its open sends no Sync", %{core: core} do
+    assert {:ok, _dropped} = Sessions.watch(core, [])
+
+    state = %Helyx.Session.Server.State{
+      id: "before_open",
+      instance_id: nil,
+      core: core,
+      model: %Helyx.ModelRef{provider: "test", model: "ok"},
+      provider: Helyx.Test.Provider,
+      cwd: "/repo"
+    }
+
+    assert Helyx.Session.Server.Feed.reply(state, self()) == state
+    refute_received {:helyx_feed, _pid, %Sync{}}
   end
 end

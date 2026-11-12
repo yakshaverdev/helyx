@@ -4,16 +4,17 @@ defmodule Helyx.Hub.Live do
   # decision 14), in the state of the Hub process.
   #
   # `live`: monitor ref => `{session id, pid, status}`, where `status` is the
-  # `"idle"` or `"running"` of the last `Live` that the feed sent for that
-  # process, or `"stopped"` for a session with no entry (`status/2`). It holds
-  # every session of the Core: the feed sends one at the open of the process,
-  # and the seed reads the sessions that ran before Hub started. `reserved`:
-  # caller pid => place, with a monitor of the caller and a timer; a place
-  # ends at `result`, at `release`, at the `:DOWN` of its caller, or
-  # @place_ms after its `check`. `starters`: session id => the user whose
-  # start or resume through Hub made or attached to the entry, for whom the
-  # coordinator tools act (`docs/features/coordinator.md`, decision 3); a
-  # seeded entry has none.
+  # `"idle"` or `"running"` of the last `Live` or `Sync` that the feed sent for
+  # that process, or `"stopped"` for a session with no entry (`status/2`). It
+  # holds every session of the Core: the feed sends one at the open of the
+  # process, and the `Sync` answers of `Helyx.Sessions.sync/1` add the sessions
+  # that ran before Hub started. `reserved`: caller pid => place, with a
+  # monitor of the caller and a timer; a place ends at `result`, at `release`,
+  # at the `:DOWN` of its caller, or @place_ms after its `check`. `starters`:
+  # session id => the user whose start or resume through Hub made or attached
+  # to the entry, for whom the coordinator tools act
+  # (`docs/features/coordinator.md`, decision 3); an entry that a `Sync` added
+  # has none.
 
   alias Helyx.Hub.Rules
 
@@ -159,6 +160,18 @@ defmodule Helyx.Hub.Live do
     case state.reserved do
       %{^caller => %{monitor: ^monitor}} -> release(state, caller)
       _ -> state
+    end
+  end
+
+  # A notice of a session from a process that is not the session's current
+  # process in the sessions Registry is stale: a new process of the session
+  # sends the newer state, and its notices replace the old entry. The Hub
+  # never lets a stale notice replace or delete the entry and starter of the
+  # current process (`live-records.md`).
+  def stale?(%{core: core}, session_id, pid) do
+    case Helyx.Session.pid(%Helyx.Session{id: session_id, core: core}) do
+      nil -> false
+      current -> current != pid
     end
   end
 

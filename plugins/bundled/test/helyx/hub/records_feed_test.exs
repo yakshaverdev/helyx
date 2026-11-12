@@ -42,8 +42,6 @@ defmodule Helyx.Hub.RecordsFeedTest do
 
     hub = start_supervised!(Supervisor.child_spec({Hub, hub_opts}, id: :hub))
     transport = start_supervised!({WebSocket, core: core, port: 0, authority: Hub.authority(hub)})
-    # The start read is done, so the tests start from a settled Hub.
-    Events.wait_until(fn -> :sys.get_state(hub).live_read == nil end)
     Map.merge(context, %{hub: hub, port: WebSocket.port(transport)})
   end
 
@@ -319,7 +317,7 @@ defmodule Helyx.Hub.RecordsFeedTest do
     assert {:close, 4403} = Client.until_close(socket)
   end
 
-  test "a restart of Hub seeds the open asks from the session", context do
+  test "a restart of Hub syncs the open asks from the session", context do
     context = serve(context)
     owner = open(context.port)
     assert {[], false} = subscribe(owner)
@@ -341,6 +339,11 @@ defmodule Helyx.Hub.RecordsFeedTest do
     stop_supervised!(WebSocket)
 
     hub = start_supervised!(Supervisor.child_spec({Hub, hub_opts(context)}, id: :hub))
+
+    # The start `sync/1` asks the session, whose Sync holds the open ask.
+    Events.wait_until(fn ->
+      Live.status(:sys.get_state(hub), session.id) == "waiting"
+    end)
 
     transport =
       start_supervised!({WebSocket, core: context.core, port: 0, authority: Hub.authority(hub)})
@@ -555,8 +558,11 @@ defmodule Helyx.Hub.RecordsFeedTest do
     assert {[], false} = subscribe(owner)
   end
 
-  test "a failed read keeps the asks and the count, and the next poll reads again",
-       context do
+  # A Hub whose mailbox passed the bound lost notices: a session that it did
+  # not know, and the states of the sessions that it knows. The counter of the
+  # feed is above the count that the Hub read, so the next poll calls `sync/1`
+  # once, and every open session answers with its full state.
+  test "a drop of the feed is repaired at the next poll", context do
     context = serve(context)
     owner = open(context.port)
     {[], false} = subscribe(owner)
@@ -573,38 +579,98 @@ defmodule Helyx.Hub.RecordsFeedTest do
     _ = changes_until(owner, session.id, fn record -> record["status"] == "waiting" end)
 
     hub = context.hub
-
-    # A notice of the feed is dropped, so the next poll reads the live sessions.
     counter = :sys.get_state(hub).feed
+
+    # The Hub is suspended, and its mailbox fills: the notices of the next
+    # session, which it does not know, are dropped and counted.
     :ok = :sys.suspend(hub)
     for _ <- 1..Helyx.Sessions.max_feed_queue(), do: send(hub, :filler)
-    {:ok, _other} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
-
-    # The feed drops the notice while the Hub is suspended; the counter is
-    # evidence of the drop, and the Hub process is not needed to read it.
+    {:ok, unknown} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
     Events.wait_until(fn -> Helyx.Sessions.dropped(counter) > 0 end)
+    refute Live.running?(:sys.get_state(hub), unknown.id)
     :ok = :sys.resume(hub)
 
-    # The session of the ask does not answer the read; the Hub kills the read
-    # at its bound (here, at once), keeps the count, and the next poll reads.
-    session_pid = Session.pid(session)
-    :ok = :sys.suspend(session_pid)
-    send(hub, :wake_poll)
-    read = :sys.get_state(hub).live_read
-    assert read != nil
-    send(hub, {:live_read_timeout, read.ref})
-
-    state = :sys.get_state(hub)
-    assert state.feed_dropped == 0
-    assert Map.has_key?(state.asks, session.id)
-
-    :ok = :sys.resume(session_pid)
     send(hub, :wake_poll)
 
-    Events.wait_until(fn -> :sys.get_state(hub).feed_dropped > 0 end)
+    Events.wait_until(fn ->
+      state = :sys.get_state(hub)
+      Live.running?(state, unknown.id) and Live.status(state, session.id) == "waiting"
+    end)
 
     {records, _more} = subscribe(open(context.port))
     assert %{"status" => "waiting"} = Enum.find(records, &(&1["session"] == session.id))
+    assert Enum.any?(records, &(&1["session"] == unknown.id))
+  end
+
+  test "a Sync replaces an ask set whose :ask_end was dropped", context do
+    context = serve(context)
+
+    model = "q_#{System.unique_integer([:positive])}"
+    call = %Helyx.Message.ToolCall{id: "q1", name: "question", arguments: question_args()}
+    :ok = Fake.script(context.core, model, [[call], ["Done."]])
+
+    {:ok, session} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/#{model}")
+    {:ok, _snapshot, _ref} = Session.subscribe(session, answers: true)
+    :ok = Session.prompt(session, "go")
+    [ask] = of_type(collect_until(:ask), :ask)
+
+    Events.wait_until(fn ->
+      ask_open?(:sys.get_state(context.hub), session.id, ask.data.ask_id)
+    end)
+
+    hub = context.hub
+    :ok = :sys.suspend(hub)
+    for _ <- 1..Helyx.Sessions.max_feed_queue(), do: send(hub, :filler)
+
+    # The answer ends the ask, and the Hub loses its `:ask_end`.
+    :ok = Session.answer(session, ask.data.ask_id, %{"answers" => [%{"selected" => ["a"]}]})
+    _ = collect_until(:turn_end)
+    :ok = :sys.resume(hub)
+
+    # The stale set is still there, and the Sync at the next poll replaces it.
+    assert Live.status(:sys.get_state(hub), session.id) == "waiting"
+
+    send(hub, :wake_poll)
+
+    Events.wait_until(fn -> Live.status(:sys.get_state(hub), session.id) != "waiting" end)
+    state = :sys.get_state(hub)
+    refute ask_open?(state, session.id, ask.data.ask_id)
+    assert Live.running?(state, session.id)
+  end
+
+  test "a session that the Hub did not know ends with the ask set of its Sync", context do
+    context = serve(context)
+
+    model = "q_#{System.unique_integer([:positive])}"
+    call = %Helyx.Message.ToolCall{id: "q1", name: "question", arguments: question_args()}
+    :ok = Fake.script(context.core, model, [[call], ["Done."]])
+
+    # The Hub is suspended and full, so the whole life of the ask passes
+    # without a notice that it keeps.
+    hub = context.hub
+    :ok = :sys.suspend(hub)
+    for _ <- 1..Helyx.Sessions.max_feed_queue(), do: send(hub, :filler)
+
+    {:ok, session} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/#{model}")
+    {:ok, _snapshot, _ref} = Session.subscribe(session, answers: true)
+    :ok = Session.prompt(session, "go")
+    [ask] = of_type(collect_until(:ask), :ask)
+    :ok = Session.answer(session, ask.data.ask_id, %{"answers" => [%{"selected" => ["a"]}]})
+    _ = collect_until(:turn_end)
+    :ok = :sys.resume(hub)
+
+    refute Live.running?(:sys.get_state(hub), session.id)
+
+    send(hub, :wake_poll)
+
+    Events.wait_until(fn -> Live.running?(:sys.get_state(hub), session.id) end)
+    state = :sys.get_state(hub)
+    assert Live.status(state, session.id) != "waiting"
+    refute ask_open?(state, session.id, ask.data.ask_id)
+
+    {records, _more} = subscribe(open(context.port))
+    assert %{"status" => status} = Enum.find(records, &(&1["session"] == session.id))
+    assert status != "waiting"
   end
 
   test "a records_end that races an unsubscribe answers the unsubscribe", context do
@@ -640,113 +706,6 @@ defmodule Helyx.Hub.RecordsFeedTest do
 
     assert %{"type" => "res", "id" => "u", "ok" => true} = Client.res(owner, "u")
     assert %{"type" => "res", "id" => "m"} = Client.res(owner, "m")
-  end
-
-  test "the start read does not block the Hub", context do
-    context =
-      serve(context, [], fn context ->
-        {:ok, session} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
-        session_pid = Session.pid(session)
-        :erlang.suspend_process(session_pid)
-        send(self(), {:session, session.id, session_pid})
-      end)
-
-    assert_received {:session, _id, session_pid}
-
-    on_exit(fn ->
-      try do
-        :erlang.resume_process(session_pid)
-      catch
-        _, _ -> :ok
-      end
-    end)
-
-    # The Hub took the start read, which waits for the suspended session; a
-    # Hub call answers from the Hub process meanwhile.
-    assert {:ok, _users} = Hub.users(context.hub)
-  end
-
-  test "a pending read at the start is read at the next poll", context do
-    context =
-      serve(context, [], fn context ->
-        {:ok, session} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
-        send(self(), {:session, session.id})
-      end)
-
-    assert_received {:session, id}
-    Events.wait_until(fn -> Live.running?(:sys.get_state(context.hub), id) end)
-
-    # A failed read at the start leaves the session out and the read pending.
-    :sys.replace_state(context.hub, fn state ->
-      %{state | live: %{}, starters: %{}, seed_pending: true}
-    end)
-
-    poll(context.hub)
-    Events.wait_until(fn -> Live.running?(:sys.get_state(context.hub), id) end)
-  end
-
-  defmodule StuckSession do
-    @moduledoc false
-    # A session that answers `:live` and never answers its snapshot, for the
-    # shared bound of the snapshots.
-    use GenServer
-
-    def start_link({core, id}), do: GenServer.start_link(__MODULE__, {core, id})
-
-    @impl true
-    def init({core, id}) do
-      {:ok, _} = Registry.register(Helyx.Core.sessions_registry(core), id, nil)
-      {:ok, id}
-    end
-
-    @impl true
-    def handle_call(:live, _from, id) do
-      live = %Helyx.Sessions.Live{
-        id: id,
-        instance_id: "stuck",
-        cwd: "/tmp",
-        model: "fake/echo",
-        status: :running,
-        parent: nil
-      }
-
-      {:reply, live, id}
-    end
-
-    def handle_call({:until, _deadline, {:subscribe, _pid, _ref, _opts}}, _from, id),
-      do: {:noreply, id}
-
-    def handle_call(_request, _from, id), do: {:reply, :ok, id}
-
-    @impl true
-    def handle_info(_message, id), do: {:noreply, id}
-  end
-
-  @tag :slow
-  test "one snapshot that does not answer keeps only itself pending", context do
-    context = serve(context)
-    {:ok, good} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
-    Events.wait_until(fn -> Live.running?(:sys.get_state(context.hub), good.id) end)
-
-    fakes =
-      for n <- 1..3 do
-        id = "stuck#{n}#{System.unique_integer([:positive])}"
-        {:ok, pid} = StuckSession.start_link({context.core, id})
-        {id, pid}
-      end
-
-    on_exit(fn -> Enum.each(fakes, fn {_id, pid} -> Process.exit(pid, :kill) end) end)
-
-    # The live entries are gone, as a drop of the feed leaves them, and a read
-    # must apply the session that answers while three do not.
-    :sys.replace_state(context.hub, fn state ->
-      %{state | live: %{}, starters: %{}, seed_pending: true}
-    end)
-
-    send(context.hub, :wake_poll)
-    Events.wait_until(fn -> :sys.get_state(context.hub).live_read == nil end, 15_000)
-
-    assert Live.running?(:sys.get_state(context.hub), good.id)
   end
 
   # A server whose Hub has a registered name, so its authority finds the new
@@ -787,34 +746,6 @@ defmodule Helyx.Hub.RecordsFeedTest do
     end
   end
 
-  # A read held after it took its data: the gate sends its Task to the test
-  # and waits for `:read_go`. The Hub handles notices meanwhile.
-  defp gated_read(context) do
-    test = self()
-
-    gate = fn ->
-      send(test, {:read_ready, self()})
-
-      receive do
-        :read_go -> :ok
-      end
-    end
-
-    :sys.replace_state(context.hub, fn state ->
-      %{state | read_gate: gate, seed_pending: true}
-    end)
-
-    send(context.hub, :wake_poll)
-    assert_receive {:read_ready, task}
-    task
-  end
-
-  defp release_read(context, task) do
-    :sys.replace_state(context.hub, fn state -> %{state | read_gate: nil} end)
-    send(task, :read_go)
-    Events.wait_until(fn -> :sys.get_state(context.hub).live_read == nil end)
-  end
-
   defp question_setup(context) do
     model = "q_#{System.unique_integer([:positive])}"
     call = %Helyx.Message.ToolCall{id: "q1", name: "question", arguments: question_args()}
@@ -833,116 +764,181 @@ defmodule Helyx.Hub.RecordsFeedTest do
     end)
   end
 
-  test "a read result does not bring back an ask that ended", context do
-    context = serve(context)
-    session = question_setup(context)
-    :ok = Session.prompt(session, "go")
-    [ask] = of_type(collect_until(:ask), :ask)
+  # A child that the agent tool starts sends no `started` call, so the Hub
+  # cannot tell it from a start of another user in flight: its row is silent.
+  defp silent_child(context) do
+    {:ok, child} =
+      Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
 
-    task = gated_read(context)
-    :ok = Session.answer(session, ask.data.ask_id, %{"answers" => [%{"selected" => ["a"]}]})
+    Events.wait_until(fn -> MapSet.member?(:sys.get_state(context.hub).silent, child.id) end)
+    child
+  end
 
-    Events.wait_until(fn ->
-      not ask_open?(:sys.get_state(context.hub), session.id, ask.data.ask_id)
+  defp place(context, ann_id),
+    do: Hub.call(context.hub, {:start, %{user: ann_id, token: nil}, byte_size(File.cwd!())})
+
+  test "a Hub that starts while a session waits on an ask shows it waiting", context do
+    context =
+      serve(context, [], fn context ->
+        question = question_setup(context)
+        :ok = Session.prompt(question, "go")
+        [ask] = of_type(collect_until(:ask), :ask)
+        {:ok, stuck} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
+        stuck_pid = Session.pid(stuck)
+        :erlang.suspend_process(stuck_pid)
+        send(self(), {:asks, question.id, ask.data.ask_id, stuck.id, stuck_pid})
+      end)
+
+    assert_received {:asks, question_id, ask_id, stuck_id, stuck_pid}
+
+    on_exit(fn ->
+      try do
+        :erlang.resume_process(stuck_pid)
+      catch
+        _, _ -> :ok
+      end
     end)
 
-    release_read(context, task)
-    state = :sys.get_state(context.hub)
-
-    refute ask_open?(state, session.id, ask.data.ask_id)
-    assert Live.status(state, session.id) != "waiting"
-    _ = collect_until(:turn_end)
-  end
-
-  test "a read result does not drop an ask that opened", context do
-    context = serve(context)
-    session = question_setup(context)
-
-    task = gated_read(context)
-    :ok = Session.prompt(session, "go")
-    [ask] = of_type(collect_until(:ask), :ask)
-
+    # The start of the Hub returned even though one session did not handle
+    # messages, and its `sync/1` brought the open ask of the other one.
     Events.wait_until(fn ->
-      ask_open?(:sys.get_state(context.hub), session.id, ask.data.ask_id)
+      state = :sys.get_state(context.hub)
+
+      Live.status(state, question_id) == "waiting" and
+        ask_open?(state, question_id, ask_id)
     end)
 
-    release_read(context, task)
-    state = :sys.get_state(context.hub)
+    assert {:ok, _users} = Hub.users(context.hub)
 
-    assert ask_open?(state, session.id, ask.data.ask_id)
-    assert Live.status(state, session.id) == "waiting"
+    # The sync message waited in the suspended session, which answers at the
+    # resume.
+    true = :erlang.resume_process(stuck_pid)
+    Events.wait_until(fn -> Live.running?(:sys.get_state(context.hub), stuck_id) end)
   end
 
-  test "a read result does not bring back a running status", context do
-    context = serve(context)
-    session = question_setup(context)
-    :ok = Session.prompt(session, "go")
-    [ask] = of_type(collect_until(:ask), :ask)
-
-    task = gated_read(context)
-    :ok = Session.answer(session, ask.data.ask_id, %{"answers" => [%{"selected" => ["a"]}]})
-
-    Events.wait_until(fn -> Live.status(:sys.get_state(context.hub), session.id) == "idle" end)
-    release_read(context, task)
-
-    assert Live.status(:sys.get_state(context.hub), session.id) == "idle"
-    _ = collect_until(:turn_end)
-  end
-
-  test "a read result does not replace a newer session process", context do
+  test "a Sync of a dead old process does not replace the new one", context do
     context = serve(context)
     owner = open(context.port)
     %{"result" => %{"session" => id}} = start(owner)
     old_pid = Helyx.Session.pid(%Helyx.Session{id: id, core: context.core})
-    task = gated_read(context)
 
     %{"ok" => true} = req(owner, "stop", %{"session" => id})
     %{"result" => %{"session" => ^id}} = req(owner, "resume", %{"id" => id})
     new_pid = Helyx.Session.pid(%Helyx.Session{id: id, core: context.core})
     assert new_pid != old_pid
-
     Events.wait_until(fn -> live_pid(context.hub, id) == new_pid end)
-    release_read(context, task)
+
+    # The Sync of the old process arrives after the resume. Its pid is not the
+    # pid of the sessions Registry, so the Hub skips it.
+    old = %Helyx.Sessions.Sync{
+      live: %Helyx.Sessions.Live{
+        id: id,
+        instance_id: "old",
+        cwd: File.cwd!(),
+        model: "fake/echo",
+        status: :running,
+        parent: nil
+      },
+      asks: []
+    }
+
+    send(context.hub, {:helyx_feed, old_pid, old})
 
     assert live_pid(context.hub, id) == new_pid
     assert {:ok, owner_id} = Hub.actor(context.hub, id)
     assert owner_id == :sys.get_state(context.hub).default_owner_id
+    assert Live.status(:sys.get_state(context.hub), id) != "stopped"
   end
 
-  test "a read result does not bring back a deleted record", context do
+  test "a child of a start in flight reaches the default owner's feed when it ends", context do
     context = serve(context)
-    owner = open(context.port)
-    %{"result" => %{"session" => id}} = start(owner)
-    task = gated_read(context)
-
-    %{"ok" => true} = req(owner, "stop", %{"session" => id})
-    %{"ok" => true} = req(owner, "hub.records.delete", %{"session" => id})
-    state = :sys.get_state(context.hub)
-    Events.wait_until(fn -> state.store.record(state.db, id) == {:error, :not_found} end)
-
-    release_read(context, task)
-    state = :sys.get_state(context.hub)
-
-    assert state.store.record(state.db, id) == {:error, :not_found}
-  end
-
-  test "a read result does not send a silent row", context do
-    context = serve(context)
+    {ann_id, _token, ann} = user(context, "ann")
     feed = open(context.port)
     {[], false} = subscribe(feed)
+
+    assert :ok = place(context, ann_id)
+    child = silent_child(context)
+
+    {records, _more} = subscribe(open(context.port))
+    refute Enum.any?(records, &(&1["session"] == child.id))
+
+    # The release ends the last start that could own the row: the mark goes,
+    # and the row reaches the feed of its owner, the default owner.
+    assert :ok = Hub.call(context.hub, :release)
+
+    assert %{"record" => %{"session" => child_id}} = wait_record(feed, child.id)
+    assert child_id == child.id
+    assert :sys.get_state(context.hub).silent == MapSet.new()
+    :gen_tcp.close(ann)
+  end
+
+  test "the started call of a place clears the marks", context do
+    context = serve(context)
     {ann_id, _token, ann} = user(context, "ann")
+    feed = open(context.port)
+    {[], false} = subscribe(feed)
 
-    # A start of ann is in flight: its place, and the Live of the session.
-    :ok = Hub.call(context.hub, {:start, %{user: ann_id, token: nil}, byte_size(File.cwd!())})
-    {:ok, session} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
-    Events.wait_until(fn -> MapSet.member?(:sys.get_state(context.hub).silent, session.id) end)
+    assert :ok = place(context, ann_id)
+    child = silent_child(context)
 
-    # The read takes the silent session, and its result comes with the start
-    # still in flight, before the start's result.
-    task = gated_read(context)
-    release_read(context, task)
+    start = %{
+      session_id: "s_started",
+      cwd: File.cwd!(),
+      model: "fake/echo",
+      thread_of: nil
+    }
 
-    assert_marker(feed)
+    assert :ok = Hub.call(context.hub, {:started, %{user: ann_id, token: nil}, start, nil})
+
+    assert %{"record" => %{"session" => child_id}} = wait_record(feed, child.id)
+    assert child_id == child.id
+    assert :sys.get_state(context.hub).silent == MapSet.new()
+    :gen_tcp.close(ann)
+  end
+
+  test "the :DOWN of the starter of a place clears the marks", context do
+    context = serve(context)
+    {ann_id, _token, ann} = user(context, "ann")
+    feed = open(context.port)
+    {[], false} = subscribe(feed)
+    parent = self()
+
+    starter =
+      spawn_link(fn ->
+        :ok = place(context, ann_id)
+        send(parent, :placed)
+
+        receive do
+          :die -> :ok
+        end
+      end)
+
+    assert_receive :placed
+    child = silent_child(context)
+
+    send(starter, :die)
+
+    assert %{"record" => %{"session" => child_id}} = wait_record(feed, child.id)
+    assert child_id == child.id
+    assert :sys.get_state(context.hub).silent == MapSet.new()
+    :gen_tcp.close(ann)
+  end
+
+  test "the expiry of a place clears the marks", context do
+    context = serve(context)
+    {ann_id, _token, ann} = user(context, "ann")
+    feed = open(context.port)
+    {[], false} = subscribe(feed)
+
+    assert :ok = place(context, ann_id)
+    child = silent_child(context)
+    monitor = :sys.get_state(context.hub).reserved |> Map.fetch!(self()) |> Map.fetch!(:monitor)
+
+    send(context.hub, {:place_expired, self(), monitor})
+
+    assert %{"record" => %{"session" => child_id}} = wait_record(feed, child.id)
+    assert child_id == child.id
+    assert :sys.get_state(context.hub).silent == MapSet.new()
     :gen_tcp.close(ann)
   end
 end

@@ -31,8 +31,6 @@ defmodule Helyx.Hub.LiveTest do
 
     hub = start_supervised!(Supervisor.child_spec({Hub, opts}, id: :hub))
     transport = start_supervised!({WebSocket, core: core, port: 0, authority: Hub.authority(hub)})
-    # The Hub handled its start read, so no message of it comes later.
-    Events.wait_until(fn -> :sys.get_state(hub).live_read == nil end)
     %{hub: hub, port: WebSocket.port(transport), core: core, tmp_dir: dir}
   end
 

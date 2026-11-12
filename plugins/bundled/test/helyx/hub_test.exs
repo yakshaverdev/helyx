@@ -24,8 +24,6 @@ defmodule Helyx.HubTest do
       )
 
     hub = start_supervised!(Supervisor.child_spec({Hub, opts}, id: :hub))
-    # The Hub handled its start read, so no message of it comes later.
-    Helyx.Test.Events.wait_until(fn -> :sys.get_state(hub).live_read == nil end)
     hub
   end
 

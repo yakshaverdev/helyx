@@ -15,7 +15,7 @@ defmodule Helyx.Hub.RecordFeed do
   # live-records.md`, "A start of another user").
   #
   # `asks`: session id => the ids of its open asks, from the `:ask` and
-  # `:ask_end` notices of the feed, and the seed of the session snapshots.
+  # `:ask_end` notices of the feed, and from the full state of a `Sync`.
 
   alias Helyx.Hub.{Live, Records}
   alias Helyx.Transport.WebSocket.Bounds
@@ -129,14 +129,40 @@ defmodule Helyx.Hub.RecordFeed do
     end
   end
 
-  # A row whose first notice goes to no client: a `Live` of a session with no
-  # row, while a start of another user is in flight. The mark is set with or
-  # without a subscriber, so a subscriber that arrives before the start's
-  # result never gets the row in a list; the start's result clears it.
+  # A row whose first notice goes to no client: a `Live` or a `Sync` of a
+  # session with no row, while a start of another user is in flight. The mark
+  # is set with or without a subscriber, so a subscriber that arrives before
+  # the start's end never gets the row in a list. `flush_silent/1` clears it
+  # when the last start of another user in flight ends.
   def silent(state, session_id), do: %{state | silent: MapSet.put(state.silent, session_id)}
 
   # The session ended: its silent mark and its change wait for no one.
   def forget(state, session_id), do: %{state | silent: MapSet.delete(state.silent, session_id)}
+
+  # No start of another user is in flight: a mark lives while a start that
+  # could own the row is in flight, so every id that is still marked is
+  # unmarked, and its record goes to the feed of the owner that its row names
+  # (the default owner). A session of the default owner that started during
+  # another user's start shows when that start ends (live-records.md).
+  def flush_silent(%{reserved: reserved} = state) do
+    if Enum.any?(reserved, fn {_caller, place} -> place.record? end) do
+      state
+    else
+      Enum.reduce(MapSet.to_list(state.silent), state, fn session_id, state ->
+        state = forget(state, session_id)
+        state |> flush_row(session_id)
+      end)
+    end
+  end
+
+  defp flush_row(state, session_id) do
+    with {:ok, row} <- state.store.record(state.db, session_id),
+         {:ok, view} <- Records.view(row, row.owner, state) do
+      send_row(state, row.owner, change("changed", view))
+    else
+      _missing_or_failed -> state
+    end
+  end
 
   # A change of a record that has a row. A user owns its rows only, so a
   # record of another user reaches none of its clients. A failed read marks
@@ -247,32 +273,11 @@ defmodule Helyx.Hub.RecordFeed do
   # The `:DOWN` of a session: its asks end with it.
   def clear_asks(state, session_id), do: %{state | asks: Map.delete(state.asks, session_id)}
 
-  # `seeds`: `{session id, {:ok, [ask id]}}` for each live session of a
-  # snapshot, or `:error` for a session whose snapshot read failed and keeps
-  # its old set. A notice that waits in the mailbox is applied after the seed,
-  # and an add or a remove of an id is idempotent.
-  def seed(state, seeds) do
-    Enum.reduce(seeds, state, fn
-      {_session_id, :error}, state ->
-        state
-
-      {session_id, {:ok, ask_ids}}, state ->
-        %{state | asks: put_set(state.asks, session_id, MapSet.new(ask_ids))}
-    end)
-  end
-
-  # Drops the sets of sessions that no longer run, after a seed and the live
-  # set that it read: a notice that the feed dropped leaves no state behind
-  # (`docs/features/live-records.md`, "Bounds").
-  def prune(state) do
-    live = MapSet.new(Live.ids(state))
-
-    %{
-      state
-      | asks:
-          Map.filter(state.asks, fn {session_id, _set} -> MapSet.member?(live, session_id) end)
-    }
-  end
+  # The full state of a session from a `Sync`: its open asks at the send
+  # replace the set. A notice of the session after the Sync is newer, so it
+  # applies on top.
+  def set_asks(state, session_id, ask_ids),
+    do: %{state | asks: put_set(state.asks, session_id, MapSet.new(ask_ids))}
 
   # The poll of the Hub: a subscriber that passed the bound gets the full
   # list, and the changes that wait for a drained subscriber go, one for each
