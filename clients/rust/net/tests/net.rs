@@ -57,13 +57,16 @@ fn a_follow_survives_a_slow_close() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let token = "secret-token";
-    let server = stub::local(port);
-    let shared = Arc::new(Mutex::new(Shared::new(token.into())));
+    let server = Server {
+        token: token.into(),
+        ..stub::local(port)
+    };
+    let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, receive) = channel();
     let (changed, changes) = channel();
     let thread_shared = shared.clone();
     let thread = std::thread::spawn(move || {
-        net::run(&server, &thread_shared, &receive, &|| {
+        net::run(&stub::fixed(&server), &thread_shared, &receive, &|| {
             let _ = changed.send(());
         })
     });
@@ -127,9 +130,9 @@ fn a_follow_survives_a_slow_close() {
 /// the thread ends at the end of the connection.
 fn against_state(serve: impl FnOnce(WebSocket<TcpStream>) + Send + 'static) -> (String, Shared) {
     let (server, stub) = stub::one(serve);
-    let shared = Mutex::new(Shared::new("tok-q4".into()));
+    let shared = Mutex::new(Shared::new());
     let receive = channel::<Command>().1;
-    let line = net::run(&server, &shared, &receive, &|| {});
+    let line = net::run(&stub::fixed(&server), &shared, &receive, &|| {});
     stub.join().unwrap();
     (line, shared.into_inner().unwrap())
 }
@@ -183,7 +186,7 @@ fn a_frame_over_the_bound_is_a_break() {
 
 #[test]
 fn no_debug_form_holds_the_token() {
-    let shared = Shared::new("tok-5b1e".into());
+    let shared = Shared::new();
     assert!(!format!("{shared:?}").contains("tok-5b1e"));
     let server = Server {
         token: "tok-5b1e".into(),
@@ -210,9 +213,9 @@ fn a_slow_upgrade_ends_at_its_wait() {
             std::thread::sleep(Duration::from_millis(400));
         }
     });
-    let shared = Mutex::new(Shared::new("tok-q4".into()));
+    let shared = Mutex::new(Shared::new());
     let (_commands, receive) = channel();
-    let line = net::run(&stub::local(port), &shared, &receive, &|| {});
+    let line = net::run(&stub::fixed(&stub::local(port)), &shared, &receive, &|| {});
     assert!(line.ends_with("the upgrade took over 5000 ms"), "{line}");
     stub.join().unwrap();
 }
@@ -374,7 +377,7 @@ fn a_failed_open_after_a_welcome_reconnects() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = stub::local(port);
-    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, receive) = channel();
     let (lines, notified) = channel();
     let waits = net::socket::Waits {
@@ -387,7 +390,13 @@ fn a_failed_open_after_a_welcome_reconnects() {
         let notify = move || {
             let _ = lines.send(read.lock().unwrap().line.clone());
         };
-        net::run_with(&server, &thread_shared, &receive, &notify, waits)
+        net::run_with(
+            &stub::fixed(&server),
+            &thread_shared,
+            &receive,
+            &notify,
+            waits,
+        )
     });
 
     // The first connection: a follow and its snapshot, then a lost end.
@@ -448,7 +457,7 @@ fn an_active_app_replaces_a_dead_socket_without_the_silence() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = stub::local(port);
-    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, receive) = channel();
     let (welcomed, at_welcome) = channel();
     let (accepted, at_accept) = channel();
@@ -472,7 +481,9 @@ fn an_active_app_replaces_a_dead_socket_without_the_silence() {
         let _ = stopped.recv();
     });
     let thread_shared = shared.clone();
-    let thread = std::thread::spawn(move || net::run(&server, &thread_shared, &receive, &|| {}));
+    let thread = std::thread::spawn(move || {
+        net::run(&stub::fixed(&server), &thread_shared, &receive, &|| {})
+    });
     at_welcome.recv().unwrap();
     let started = Instant::now();
     net::became_active(&commands);
@@ -501,13 +512,15 @@ fn a_wake_up_before_the_welcome_leaves_the_connection() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = stub::local(port);
-    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, receive) = channel();
     // The launch: the host reports that it is active before the thread meets
     // the server.
     net::became_active(&commands);
     let thread_shared = shared.clone();
-    let thread = std::thread::spawn(move || net::run(&server, &thread_shared, &receive, &|| {}));
+    let thread = std::thread::spawn(move || {
+        net::run(&stub::fixed(&server), &thread_shared, &receive, &|| {})
+    });
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     welcome(&mut ws, "tok-q4");
     let _live = request(&mut ws, "sessions.live");
@@ -530,7 +543,7 @@ fn a_drop_in_the_pause_opens_no_connection() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = stub::local(port);
-    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, receive) = channel();
     let (lines, notified) = channel();
     let waits = Waits { pause, ..WAITS };
@@ -540,7 +553,13 @@ fn a_drop_in_the_pause_opens_no_connection() {
         let notify = move || {
             let _ = lines.send(read.lock().unwrap().line.clone());
         };
-        net::run_with(&server, &thread_shared, &receive, &notify, waits)
+        net::run_with(
+            &stub::fixed(&server),
+            &thread_shared,
+            &receive,
+            &notify,
+            waits,
+        )
     });
     let (ended, at_end) = channel();
     let (checked, at_check) = channel();
@@ -621,7 +640,7 @@ fn drive(
     let (commands, receive) = channel();
     let (changed, changes) = channel();
     std::thread::spawn(move || {
-        net::run(&server, &shared, &receive, &|| {
+        net::run(&stub::fixed(&server), &shared, &receive, &|| {
             let _ = changed.send(());
         })
     });
@@ -632,7 +651,7 @@ fn drive(
 fn a_prompt_goes_with_its_text_and_its_reply_is_ok() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, changes) = drive(stub::local(port), shared.clone());
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     start(&mut ws, "tok-q4");
@@ -680,7 +699,7 @@ fn a_prompt_goes_with_its_text_and_its_reply_is_ok() {
 fn an_error_of_the_server_is_its_line() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, changes) = drive(stub::local(port), shared.clone());
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     start(&mut ws, "tok-q4");
@@ -708,7 +727,7 @@ fn an_error_of_the_server_is_its_line() {
 fn a_close_with_a_request_out_takes_its_reply_as_unknown_and_never_resends() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, changes) = drive(stub::local(port), shared.clone());
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     start(&mut ws, "tok-q4");
@@ -754,7 +773,7 @@ fn a_close_with_a_request_out_takes_its_reply_as_unknown_and_never_resends() {
 fn a_lost_reply_of_a_composer_send_fails_its_outcome() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, changes) = drive(stub::local(port), shared.clone());
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     start(&mut ws, "tok-q4");
@@ -781,7 +800,7 @@ fn a_lost_reply_of_a_composer_send_fails_its_outcome() {
 fn a_start_follows_the_session_that_it_made() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, changes) = drive(stub::local(port), shared.clone());
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     start(&mut ws, "tok-q4");
@@ -814,7 +833,7 @@ fn a_start_follows_the_session_that_it_made() {
 fn more_saved_sessions_append_the_next_page() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, changes) = drive(stub::local(port), shared.clone());
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     welcome(&mut ws, "tok-q4");
@@ -855,7 +874,7 @@ fn more_saved_sessions_append_the_next_page() {
 fn two_more_pages_before_a_reply_do_not_replace_the_first_page() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, changes) = drive(stub::local(port), shared.clone());
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     welcome(&mut ws, "tok-q4");
@@ -891,7 +910,7 @@ fn two_more_pages_before_a_reply_do_not_replace_the_first_page() {
 fn a_refresh_then_a_more_keeps_the_first_page() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, changes) = drive(stub::local(port), shared.clone());
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     welcome(&mut ws, "tok-q4");
@@ -953,7 +972,7 @@ fn more_after(frame: &Json) -> Option<&str> {
 fn a_send_between_connections_is_not_sent_and_its_line_stays() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let shared = Arc::new(Mutex::new(Shared::new("tok-q4".into())));
+    let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, changes) = drive(stub::local(port), shared.clone());
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     start(&mut ws, "tok-q4");
@@ -1010,4 +1029,319 @@ fn a_send_between_connections_is_not_sent_and_its_line_stays() {
         shared.requests
     );
     assert_eq!(shared.line, "connected");
+}
+
+/// A margin for load on the notify channel: other worktrees run tests on this
+/// machine.
+const LOAD_MARGIN: Duration = Duration::from_secs(10);
+
+/// Waits for the line `want` among the changes of the network thread.
+fn line_is(lines: &Receiver<String>, want: &str) {
+    loop {
+        let line = lines.recv_timeout(LOAD_MARGIN).expect("the line");
+        if line == want {
+            return;
+        }
+    }
+}
+
+/// The owner restarts the server at another port with another token: the
+/// source gives the new server, the client proves the new token, and the
+/// followed session subscribes again with `after` of its state.
+#[test]
+fn a_restarted_server_at_another_port_and_token_is_followed_again() {
+    // The first server: the welcome, a follow with its snapshot, then its end.
+    let (first, first_stub) = stub::one(|mut ws| {
+        welcome(&mut ws, "tok-q4");
+        let live = request(&mut ws, "sessions.live");
+        ok(&mut ws, id_of(&live), r#"{"sessions":[]}"#);
+        let saved = request(&mut ws, "sessions.saved");
+        ok(&mut ws, id_of(&saved), r#"{"items":[],"next":null}"#);
+        let subscribe = request(&mut ws, "subscribe");
+        ok(
+            &mut ws,
+            id_of(&subscribe),
+            &format!(r#"{{"sub":"0","snapshot":{}}}"#, snapshot(4)),
+        );
+        let _ = ws.close(None);
+        let _ = ws.flush();
+    });
+    let current = Arc::new(Mutex::new(first.clone()));
+    let source = {
+        let current = current.clone();
+        move || -> Result<Server, String> { Ok(current.lock().unwrap().clone()) }
+    };
+    let shared = Arc::new(Mutex::new(Shared::new()));
+    let (commands, receive) = channel();
+    let (lines, notified) = channel();
+    let waits = Waits {
+        pause: Duration::from_millis(20),
+        ..WAITS
+    };
+    let thread_shared = shared.clone();
+    let thread = std::thread::spawn(move || {
+        let read = thread_shared.clone();
+        let notify = move || {
+            let _ = lines.send(read.lock().unwrap().line.clone());
+        };
+        net::run_with(&source, &thread_shared, &receive, &notify, waits)
+    });
+    commands.send(Command::Follow("s1".into())).unwrap();
+    first_stub.join().unwrap();
+    // The first connection ended, and the thread is on the reconnect path.
+    line_is(&notified, "reconnecting");
+
+    // The second server, at another port and with another token. The source
+    // gives it from now on.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let second = Server {
+        token: "tok-second".into(),
+        ..stub::local(port)
+    };
+    *current.lock().unwrap() = second;
+    let (subscribed, at_subscribe) = channel();
+    let (stop, stopped) = channel::<()>();
+    let second_stub = std::thread::spawn(move || {
+        let mut ws = accept(listener.accept().unwrap().0).unwrap();
+        // The proof of the second token, as the handshake of this server has
+        // it.
+        welcome(&mut ws, "tok-second");
+        // The live list and the subscribe with `after`; the saved list went
+        // at the first welcome of the run.
+        let mut texts = vec![];
+        for _ in 0..2 {
+            texts.push(next_text(&mut ws));
+        }
+        let after =
+            r#""params":{"session":"s1","after":{"instance_id":"i1","seq":4},"answers":true}"#;
+        assert!(texts.iter().any(|text| text.contains(after)), "{texts:?}");
+        subscribed.send(()).unwrap();
+        let _ = stopped.recv();
+    });
+    at_subscribe
+        .recv_timeout(LOAD_MARGIN)
+        .expect("the second server took the subscribe with after");
+    assert_eq!(shared.lock().unwrap().line, "connected");
+
+    // The window is gone: the thread ends at the end of the connection.
+    drop(commands);
+    stop.send(()).unwrap();
+    second_stub.join().unwrap();
+    assert_eq!(thread.join().unwrap(), "reconnecting");
+    let shared = shared.lock().unwrap();
+    assert_eq!(shared.followed.as_deref(), Some("s1"));
+    assert_eq!(
+        shared
+            .client
+            .state("s1")
+            .and_then(|state| state.seq.to_u64()),
+        Some(4)
+    );
+}
+
+/// A source that fails after a welcome: its error is the line, the loop does
+/// not end, and when the source gives a server again the client connects.
+#[test]
+fn a_source_that_fails_after_a_welcome_waits_for_the_server() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let first = stub::local(port);
+    let state = Arc::new(Mutex::new(Ok(first.clone())));
+    let source = {
+        let state = state.clone();
+        move || state.lock().unwrap().clone()
+    };
+    let shared = Arc::new(Mutex::new(Shared::new()));
+    let (commands, receive) = channel();
+    let (lines, notified) = channel();
+    let waits = Waits {
+        pause: Duration::from_millis(20),
+        ..WAITS
+    };
+    let thread_shared = shared.clone();
+    let thread = std::thread::spawn(move || {
+        let read = thread_shared.clone();
+        let notify = move || {
+            let _ = lines.send(read.lock().unwrap().line.clone());
+        };
+        net::run_with(&source, &thread_shared, &receive, &notify, waits)
+    });
+
+    // The first connection comes up and ends.
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    start(&mut ws, "tok-q4");
+    let _ = ws.close(None);
+    let _ = ws.flush();
+
+    // The source fails: the line is its error, and the loop goes on.
+    let down = "no server runs for the data folder";
+    *state.lock().unwrap() = Err(down.into());
+    line_is(&notified, down);
+    assert!(!thread.is_finished(), "the loop ended at a failed source");
+
+    // The source gives a server again: the client connects.
+    *state.lock().unwrap() = Ok(first.clone());
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let live = request(&mut ws, "sessions.live");
+    ok(&mut ws, id_of(&live), r#"{"sessions":[]}"#);
+    line_is(&notified, "connected");
+
+    // The window is gone: the thread ends at the end of the connection.
+    drop(commands);
+    drop(ws);
+    drop(listener);
+    assert_eq!(thread.join().unwrap(), "reconnecting");
+}
+
+/// A source that fails before the first welcome: the loop does not end, and it
+/// connects when the source gives a server.
+#[test]
+fn a_source_that_fails_before_the_first_welcome_waits_for_the_server() {
+    let state: Arc<Mutex<Result<Server, String>>> = Arc::new(Mutex::new(Err(
+        "no server runs for the data folder".to_string(),
+    )));
+    let source = {
+        let state = state.clone();
+        move || state.lock().unwrap().clone()
+    };
+    let shared = Arc::new(Mutex::new(Shared::new()));
+    let (commands, receive) = channel();
+    let (lines, notified) = channel();
+    let waits = Waits {
+        pause: Duration::from_millis(20),
+        ..WAITS
+    };
+    let thread_shared = shared.clone();
+    let thread = std::thread::spawn(move || {
+        let read = thread_shared.clone();
+        let notify = move || {
+            let _ = lines.send(read.lock().unwrap().line.clone());
+        };
+        net::run_with(&source, &thread_shared, &receive, &notify, waits)
+    });
+
+    let down = "no server runs for the data folder";
+    line_is(&notified, down);
+    assert!(!thread.is_finished(), "the loop ended before a connection");
+
+    // A server starts: the source gives it, and the client connects.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    *state.lock().unwrap() = Ok(stub::local(port));
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    welcome(&mut ws, "tok-q4");
+    let live = request(&mut ws, "sessions.live");
+    ok(&mut ws, id_of(&live), r#"{"sessions":[]}"#);
+    line_is(&notified, "connected");
+
+    // The window is gone: the thread ends at the end of the connection.
+    drop(commands);
+    drop(ws);
+    drop(listener);
+    assert_eq!(thread.join().unwrap(), "reconnecting");
+}
+
+/// A source that gives a server keeps the rule of a failed first connect: a
+/// connect that fails before the welcome stops the loop.
+#[test]
+fn a_source_that_gives_a_server_that_does_not_answer_stops() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = stub::local(port);
+    drop(listener);
+    let shared = Mutex::new(Shared::new());
+    let (_commands, receive) = channel();
+    let line = net::run(&stub::fixed(&server), &shared, &receive, &|| {});
+    assert!(line.starts_with("could not connect"), "{line}");
+}
+
+/// A `4401` of the second server stops the loop: with a fresh read before each
+/// connection, the token of the file is wrong for the server at that address,
+/// and a retry cannot pass.
+#[test]
+fn a_second_server_that_refuses_the_token_stops_the_loop() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let first = stub::local(port);
+    let state = Arc::new(Mutex::new(Ok(first)));
+    let source = {
+        let state = state.clone();
+        move || state.lock().unwrap().clone()
+    };
+    let shared = Arc::new(Mutex::new(Shared::new()));
+    let (_commands, receive) = channel();
+    let waits = Waits {
+        pause: Duration::from_millis(20),
+        ..WAITS
+    };
+    let thread_shared = shared.clone();
+    let thread =
+        std::thread::spawn(move || net::run_with(&source, &thread_shared, &receive, &|| {}, waits));
+
+    // The first connection comes up and ends.
+    let mut ws = accept(listener.accept().unwrap().0).unwrap();
+    start(&mut ws, "tok-q4");
+    let _ = ws.close(None);
+    let _ = ws.flush();
+    drop(listener);
+
+    // The second server refuses the proof of the token.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let second = Server {
+        token: "tok-second".into(),
+        ..stub::local(port)
+    };
+    *state.lock().unwrap() = Ok(second);
+    let second_stub = std::thread::spawn(move || {
+        let mut ws = accept(listener.accept().unwrap().0).unwrap();
+        challenge(&mut ws);
+        let _hello = next_text(&mut ws);
+        let close = CloseFrame {
+            code: CloseCode::from(4401),
+            reason: "token".into(),
+        };
+        ws.close(Some(close)).unwrap();
+        let _ = ws.flush();
+    });
+
+    assert_eq!(thread.join().unwrap(), "the server refused the token");
+    second_stub.join().unwrap();
+}
+
+/// The host that goes away while the source fails ends the loop: the pause is
+/// a wait on the commands, so no thread waits for a server that the host gave
+/// up on.
+#[test]
+fn a_host_that_goes_while_the_source_fails_ends_the_loop() {
+    /// A margin for load: other worktrees run tests on this machine.
+    const LOAD_MARGIN: Duration = Duration::from_secs(3);
+    let pause = Duration::from_secs(6);
+    let waits = Waits { pause, ..WAITS };
+    let shared = Arc::new(Mutex::new(Shared::new()));
+    let (commands, receive) = channel();
+    let (lines, notified) = channel();
+    let thread_shared = shared.clone();
+    let thread = std::thread::spawn(move || {
+        let read = thread_shared.clone();
+        let notify = move || {
+            let _ = lines.send(read.lock().unwrap().line.clone());
+        };
+        let source =
+            || -> Result<Server, String> { Err("no server runs for the data folder".into()) };
+        net::run_with(&source, &thread_shared, &receive, &notify, waits)
+    });
+    let down = "no server runs for the data folder";
+    line_is(&notified, down);
+    // Well before the pause, as the commands are the pause.
+    let dropped = Instant::now();
+    drop(commands);
+    assert_eq!(thread.join().unwrap(), down);
+    assert!(
+        dropped.elapsed() < pause - LOAD_MARGIN,
+        "{:?}",
+        dropped.elapsed()
+    );
 }

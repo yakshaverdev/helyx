@@ -46,8 +46,8 @@ fn after_welcome(
     let (send, receive) = channel();
     let thread = std::thread::spawn(move || {
         let started = Instant::now();
-        let shared = Mutex::new(Shared::new("tok-q4".into()));
-        let line = net::run_with(&server, &shared, &receive, &|| {}, waits);
+        let shared = Mutex::new(Shared::new());
+        let line = net::run_with(&stub::fixed(&server), &shared, &receive, &|| {}, waits);
         (line, started.elapsed())
     });
     at_welcome.recv().unwrap();
@@ -170,11 +170,11 @@ fn the_tcp_connect_ends_at_its_wait() {
         connect: Duration::from_millis(500),
         ..WAITS
     };
-    let shared = Mutex::new(Shared::new("tok-q4".into()));
+    let shared = Mutex::new(Shared::new());
     let (_commands, receive) = channel();
     let started = Instant::now();
     let line = net::run_with(
-        &stub::local(address.port()),
+        &stub::fixed(&stub::local(address.port())),
         &shared,
         &receive,
         &|| {},
@@ -215,9 +215,9 @@ fn a_failed_send_after_a_binary_frame_is_a_break() {
     // A subscribe of 3 MB goes at the welcome, more than the socket takes.
     let (send, receive) = channel();
     send.send(Command::Follow("x".repeat(3_000_000))).unwrap();
-    let shared = Mutex::new(Shared::new("tok-q4".into()));
+    let shared = Mutex::new(Shared::new());
     let started = Instant::now();
-    let line = net::run_with(&server, &shared, &receive, &|| {}, waits);
+    let line = net::run_with(&stub::fixed(&server), &shared, &receive, &|| {}, waits);
     // The send failed at its deadline, not at the read of the mark.
     assert!(started.elapsed() >= waits.send, "{:?}", started.elapsed());
     stop.send(()).unwrap();
@@ -259,8 +259,8 @@ fn a_failed_send_keeps_the_frames_read_before_it() {
     send.send(Command::Follow("x".repeat(3_000_000))).unwrap();
     // The window is gone: the thread ends at the end of the connection.
     drop(send);
-    let shared = Mutex::new(Shared::new("tok-q4".into()));
-    let line = net::run_with(&server, &shared, &receive, &|| {}, waits);
+    let shared = Mutex::new(Shared::new());
+    let line = net::run_with(&stub::fixed(&server), &shared, &receive, &|| {}, waits);
     stop.send(()).unwrap();
     stub.join().unwrap();
     assert_eq!(line, "reconnecting");

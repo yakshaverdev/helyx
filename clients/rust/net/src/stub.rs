@@ -69,3 +69,10 @@ pub fn one(serve: impl FnOnce(WebSocket<TcpStream>) + Send + 'static) -> (Server
     });
     (local(port), stub)
 }
+
+/// The source of a test that gives `server` at each turn of the network
+/// thread: the fixed server of a host with no data folder.
+pub fn fixed(server: &Server) -> impl Fn() -> Result<Server, String> + Send + Sync + 'static {
+    let server = server.clone();
+    move || Ok(server.clone())
+}

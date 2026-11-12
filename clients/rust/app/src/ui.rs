@@ -67,15 +67,23 @@ struct Desktop {
     focus: FocusHandle,
 }
 
-/// Opens the window and runs the network thread for `server`.
-pub fn run(server: Server) {
-    let shared = Arc::new(Mutex::new(Shared::new(server.token.clone())));
+/// Opens the window and runs the network thread for `folder`. The first
+/// connection uses `server`, which the start read; each later one reads the
+/// folder again, so a restarted server is found (`settings::source`).
+pub fn run(folder: std::path::PathBuf, server: Server) {
+    let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, receive) = channel();
     // One slot: a change that finds it full is in the next redraw anyway.
     let (changed, changes) = sync_channel::<()>(1);
     let thread_shared = shared.clone();
     std::thread::spawn(move || {
-        net::run(&server, &thread_shared, &receive, &|| {
+        let first = Mutex::new(Some(server));
+        let again = helyx_desktop::settings::source(&folder);
+        let source = move || match first.lock().unwrap().take() {
+            Some(server) => Ok(server),
+            None => again(),
+        };
+        net::run(&source, &thread_shared, &receive, &|| {
             let _ = changed.try_send(());
         })
     });

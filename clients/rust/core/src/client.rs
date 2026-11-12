@@ -86,7 +86,6 @@ pub struct Closed {
 
 #[derive(Debug)]
 pub struct Client {
-    token: Option<Token>,
     limits: Limits,
     pub(crate) sessions: HashMap<String, Session>,
     /// The statements of the host, for all sessions: each takes the next
@@ -99,15 +98,15 @@ pub struct Client {
 }
 
 impl Client {
-    /// A client that proves `token` at each handshake, or sends no proof.
-    pub fn new(token: Option<String>) -> Client {
-        Client::with_limits(token, json::WIRE)
+    /// A client with no connection: each `connect` gives it the token of that
+    /// connection.
+    pub fn new() -> Client {
+        Client::with_limits(json::WIRE)
     }
 
     /// A client with other decode bounds, for tests.
-    pub fn with_limits(token: Option<String>, limits: Limits) -> Client {
+    pub fn with_limits(limits: Limits) -> Client {
         Client {
-            token: token.map(Token::new),
             limits,
             sessions: HashMap::new(),
             statements: 0,
@@ -136,9 +135,11 @@ impl Client {
         idle
     }
 
-    /// Starts a new connection: the host has opened the socket.
-    pub fn connect(&mut self) {
-        self.connection = Some(Connection::new(self.token.clone()));
+    /// Starts a new connection: the host has opened the socket. The
+    /// handshake proves `token`, the token of the server of this connection,
+    /// or sends no proof. The state of the followed sessions stays.
+    pub fn connect(&mut self, token: Option<String>) {
+        self.connection = Some(Connection::new(token.map(Token::new)));
     }
 
     /// The socket ended, with its close code or none for a lost connection,
@@ -482,6 +483,12 @@ impl Client {
             }
             (_, _, result) => Ok(vec![Output::Reply { id, result }]),
         }
+    }
+}
+
+impl Default for Client {
+    fn default() -> Client {
+        Client::new()
     }
 }
 

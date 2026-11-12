@@ -60,7 +60,7 @@ impl Connection {
             port,
             token,
         };
-        let shared = Arc::new(Mutex::new(Shared::new(server.token.clone())));
+        let shared = Arc::new(Mutex::new(Shared::new()));
         let (commands, receive) = channel();
         let thread_shared = shared.clone();
         // The callback runs on the network thread, so the host hears about a
@@ -73,7 +73,10 @@ impl Connection {
             let _ = listener.on_snapshot(snapshot);
         };
         let thread = std::thread::spawn(move || {
-            helyx_client_net::run(&server, &shared, &receive, &notify);
+            // A phone has no data folder: the server that the host gave is the
+            // source of every connection.
+            let source = move || Ok(server.clone());
+            helyx_client_net::run(&source, &shared, &receive, &notify);
         });
         Ok(Arc::new(Connection {
             commands: Mutex::new(Some(commands)),
