@@ -7,6 +7,7 @@ mod common;
 use common::{at, load, matches, observe};
 use helyx_client_core::Broken;
 use helyx_client_core::client::{Client, Follow, Hold, MAX_IN_FLIGHT, Next, Output, Refusal, Wait};
+use helyx_client_core::handshake::Credential;
 use helyx_client_core::json::{Json, Limits, WIRE, decode};
 use helyx_client_core::operation::Operation;
 use helyx_client_core::parts::{self, FRAME_BYTES, PART_BYTES, REQUEST_BYTES, TooLarge};
@@ -30,7 +31,7 @@ fn sent(outputs: &[Output]) -> Vec<Value> {
 
 /// A client past the handshake of a new connection, and what the welcome gave.
 fn welcomed(client: &mut Client) -> Vec<Output> {
-    client.connect(None);
+    client.connect(Credential::none());
     let hello = client.receive(CHALLENGE).unwrap();
     assert_eq!(sent(&hello), [json!({"type": "hello", "protocol": 15})]);
     let outputs = client.receive(WELCOME).unwrap();
@@ -192,7 +193,7 @@ fn a_reconnect_after_a_slow_close_subscribes_with_after() {
 #[test]
 fn a_close_before_the_welcome_or_after_a_break_stops() {
     let mut client = Client::new();
-    client.connect(None);
+    client.connect(Credential::none());
     client.receive(CHALLENGE).unwrap();
     assert_eq!(client.closed(None).next, Next::Stop);
 
@@ -207,7 +208,7 @@ fn a_close_before_the_welcome_or_after_a_break_stops() {
     assert_eq!(client.closed(Some(1000)).next, Next::Stop);
 
     let mut client = Client::new();
-    client.connect(None);
+    client.connect(Credential::none());
     client.receive(CHALLENGE).unwrap();
     let refused = r#"{"type":"refused","code":"protocol","server_protocol":4}"#;
     assert_eq!(client.receive(refused).unwrap(), [Output::Refused(4)]);
@@ -217,7 +218,7 @@ fn a_close_before_the_welcome_or_after_a_break_stops() {
     // the old one for ever.
     let mut client = following(4);
     assert_eq!(client.closed(None).next, Next::Reconnect);
-    client.connect(None);
+    client.connect(Credential::none());
     assert_eq!(client.closed(Some(4401)).next, Next::Stop);
     // Before any welcome, a failed open stops.
     assert_eq!(Client::new().closed(None).next, Next::Stop);
@@ -233,7 +234,7 @@ fn no_handshake_frame_follows_its_answer() {
     assert_eq!(client.receive(WELCOME), Err(Broken("frame type")));
     // A refused handshake ends the connection.
     let mut client = Client::new();
-    client.connect(None);
+    client.connect(Credential::none());
     client.receive(CHALLENGE).unwrap();
     let refused = r#"{"type":"refused","code":"protocol","server_protocol":13}"#;
     assert_eq!(client.receive(refused).unwrap(), [Output::Refused(13)]);
@@ -241,12 +242,12 @@ fn no_handshake_frame_follows_its_answer() {
     // A second challenge ends the handshake, and so does a nonce of the
     // wrong size.
     let mut client = Client::new();
-    client.connect(None);
+    client.connect(Credential::none());
     client.receive(CHALLENGE).unwrap();
     assert!(client.receive(CHALLENGE).is_err());
     assert_eq!(client.receive(WELCOME), Err(Broken("no connection")));
     let mut client = Client::new();
-    client.connect(None);
+    client.connect(Credential::none());
     assert!(
         client
             .receive(r#"{"type":"challenge","nonce":"AAAA"}"#)
@@ -265,10 +266,10 @@ fn after_a_welcome_a_failed_open_reconnects() {
     for _ in 0..2 {
         assert_eq!(client.closed(None).next, Next::Reconnect);
     }
-    client.connect(None);
+    client.connect(Credential::none());
     client.receive(CHALLENGE).unwrap();
     assert_eq!(client.closed(None).next, Next::Reconnect);
-    client.connect(None);
+    client.connect(Credential::none());
     client.receive(CHALLENGE).unwrap();
     let refused = r#"{"type":"refused","code":"protocol","server_protocol":13}"#;
     assert_eq!(client.receive(refused).unwrap(), [Output::Refused(13)]);
@@ -745,7 +746,7 @@ fn the_frame_and_subscription_breaks() {
     }
     // A request goes only after the welcome.
     let mut client = Client::new();
-    client.connect(None);
+    client.connect(Credential::none());
     client.receive(CHALLENGE).unwrap();
     assert_eq!(
         client.request("abort", json_params()),
@@ -759,7 +760,7 @@ fn the_frame_and_subscription_breaks() {
 fn no_debug_form_holds_the_token() {
     let mut client = Client::new();
     assert!(!format!("{client:?}").contains("tok-7f3a9"));
-    client.connect(Some("tok-7f3a9".into()));
+    client.connect(Credential::token("tok-7f3a9"));
     assert!(!format!("{client:?}").contains("tok-7f3a9"));
 }
 
@@ -771,7 +772,7 @@ fn each_connection_proves_the_token_that_it_was_given() {
     use helyx_client_core::handshake::{PROTOCOL, proof};
     let mut client = Client::new();
     for token in ["tok-first", "tok-second"] {
-        client.connect(Some(token.into()));
+        client.connect(Credential::token(token));
         let hello = sent(&client.receive(CHALLENGE).unwrap());
         assert_eq!(
             hello,

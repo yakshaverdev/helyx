@@ -21,7 +21,7 @@ fn a_valid_file_gives_the_server_and_debug_hides_the_token() {
     std::fs::write(dir.join("server.json"), GOOD).unwrap();
     let server = read(&dir).unwrap();
     assert_eq!(server.url(), "ws://127.0.0.1:4000");
-    assert_eq!(server.token, "t");
+    assert_eq!(server.local_parts().unwrap().2, "t");
     assert!(!format!("{server:?}").contains("\"t\""));
     let v6 = r#"{"address":"::1","port":1,"token":"t"}"#;
     std::fs::write(dir.join("server.json"), v6).unwrap();
@@ -94,16 +94,15 @@ fn the_source_reads_the_folder_again() {
     std::fs::write(dir.join("server.json"), GOOD).unwrap();
     let again = source(&dir);
     let first = again().unwrap();
-    assert_eq!(
-        (first.url().as_str(), first.token.as_str()),
-        ("ws://127.0.0.1:4000", "t")
-    );
+    assert_eq!(first.url(), "ws://127.0.0.1:4000");
+    assert_eq!(first.local_parts().map(|(_, _, token)| token), Some("t"));
     let restarted = r#"{"address":"127.0.0.1","port":5000,"token":"other"}"#;
     std::fs::write(dir.join("server.json"), restarted).unwrap();
     let second = again().unwrap();
+    assert_eq!(second.url(), "ws://127.0.0.1:5000");
     assert_eq!(
-        (second.url().as_str(), second.token.as_str()),
-        ("ws://127.0.0.1:5000", "other")
+        second.local_parts().map(|(_, _, token)| token),
+        Some("other")
     );
     // A folder with no file is the error of the read, for the line.
     std::fs::remove_file(dir.join("server.json")).unwrap();

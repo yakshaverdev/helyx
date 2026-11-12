@@ -75,11 +75,7 @@ fn parse(text: &str) -> Option<Server> {
         .and_then(Json::as_u64)
         .filter(|p| (1..=65_535).contains(p))?;
     let token = value.get("token").and_then(Json::as_str)?.to_owned();
-    Some(Server {
-        address,
-        port: port as u16,
-        token,
-    })
+    Some(Server::local(address, port as u16, token))
 }
 
 #[cfg(unix)]

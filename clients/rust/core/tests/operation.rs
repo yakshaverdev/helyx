@@ -8,6 +8,7 @@ mod common;
 
 use helyx_client_core::client::{Client, Next, Output, Refusal};
 use helyx_client_core::frame::Reply;
+use helyx_client_core::handshake::Credential;
 use helyx_client_core::json::{Json, decode};
 use helyx_client_core::operation::{
     FormAnswer, Invalid, MAX_ANSWER_BYTES, MAX_CWD_BYTES, MAX_LIMIT, MAX_MODEL_BYTES,
@@ -33,7 +34,7 @@ fn sent(outputs: &[Output]) -> Vec<Json> {
 
 /// A client past the handshake of a new connection.
 fn welcomed(client: &mut Client) -> Vec<Output> {
-    client.connect(None);
+    client.connect(Credential::none());
     let hello = client.receive(CHALLENGE).unwrap();
     assert_eq!(
         sent(&hello)[0].get("type").and_then(Json::as_str),
@@ -414,7 +415,7 @@ fn a_request_is_in_flight_until_its_reply_matches_it() {
 #[test]
 fn a_request_waits_for_the_welcome_and_is_not_queued() {
     let mut client = Client::new();
-    client.connect(None);
+    client.connect(Credential::none());
     client.receive(CHALLENGE).unwrap();
     assert_eq!(
         client.perform(Operation::abort("s1")),
@@ -444,7 +445,7 @@ fn a_lost_reply_is_unknown_and_never_sent_again() {
     assert_eq!(closed.next, Next::Reconnect);
     assert_eq!(closed.unknown, [(prompt, "prompt"), (abort, "abort")]);
     // The next connection states no intent of its own: neither goes again.
-    client.connect(None);
+    client.connect(Credential::none());
     client.receive(CHALLENGE).unwrap();
     assert_eq!(client.receive(WELCOME).unwrap(), [Output::Welcome]);
     assert!(client.outstanding().is_empty());
@@ -478,7 +479,7 @@ fn a_reconciling_request_is_not_a_lost_reply() {
     assert_eq!(closed.next, Next::Reconnect);
     // The next connection states the intent again.
     let outputs = {
-        client.connect(None);
+        client.connect(Credential::none());
         client.receive(CHALLENGE).unwrap();
         client.receive(WELCOME).unwrap()
     };

@@ -47,7 +47,14 @@ fn after_welcome(
     let thread = std::thread::spawn(move || {
         let started = Instant::now();
         let shared = Mutex::new(Shared::new());
-        let line = net::run_with(&stub::fixed(&server), &shared, &receive, &|| {}, waits);
+        let line = net::run_with(
+            &stub::fixed(&server),
+            None,
+            &shared,
+            &receive,
+            &|| {},
+            waits,
+        );
         (line, started.elapsed())
     });
     at_welcome.recv().unwrap();
@@ -175,6 +182,7 @@ fn the_tcp_connect_ends_at_its_wait() {
     let started = Instant::now();
     let line = net::run_with(
         &stub::fixed(&stub::local(address.port())),
+        None,
         &shared,
         &receive,
         &|| {},
@@ -217,7 +225,14 @@ fn a_failed_send_after_a_binary_frame_is_a_break() {
     send.send(Command::Follow("x".repeat(3_000_000))).unwrap();
     let shared = Mutex::new(Shared::new());
     let started = Instant::now();
-    let line = net::run_with(&stub::fixed(&server), &shared, &receive, &|| {}, waits);
+    let line = net::run_with(
+        &stub::fixed(&server),
+        None,
+        &shared,
+        &receive,
+        &|| {},
+        waits,
+    );
     // The send failed at its deadline, not at the read of the mark.
     assert!(started.elapsed() >= waits.send, "{:?}", started.elapsed());
     stop.send(()).unwrap();
@@ -263,7 +278,14 @@ fn a_failed_send_keeps_the_frames_read_before_it() {
     // The window is gone: the thread ends at the end of the connection.
     drop(send);
     let shared = Mutex::new(Shared::new());
-    let line = net::run_with(&stub::fixed(&server), &shared, &receive, &|| {}, waits);
+    let line = net::run_with(
+        &stub::fixed(&server),
+        None,
+        &shared,
+        &receive,
+        &|| {},
+        waits,
+    );
     stop.send(()).unwrap();
     stub.join().unwrap();
     assert_eq!(line, "reconnecting");

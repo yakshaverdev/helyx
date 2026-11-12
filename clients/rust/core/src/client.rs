@@ -11,7 +11,7 @@ use crate::connection::{Connection, Decoded, Link, Request, Stop};
 use crate::fold::{State, ack};
 use crate::follow::Session;
 use crate::frame::{self, Reply, ServerFrame, Subscribed};
-use crate::handshake::{Step, Token};
+use crate::handshake::{Credential, Step};
 use crate::json::{self, Json, Limits};
 use crate::operation::{self, Operation};
 use crate::reconcile::subscribe_fits;
@@ -107,8 +107,7 @@ pub struct Client {
 }
 
 impl Client {
-    /// A client with no connection: each `connect` gives it the token of that
-    /// connection.
+    /// A client with the decode bounds of the wire.
     pub fn new() -> Client {
         Client::with_limits(json::WIRE)
     }
@@ -153,11 +152,10 @@ impl Client {
         idle
     }
 
-    /// Starts a new connection: the host has opened the socket. The
-    /// handshake proves `token`, the token of the server of this connection,
-    /// or sends no proof. The state of the followed sessions stays.
-    pub fn connect(&mut self, token: Option<String>) {
-        self.connection = Some(Connection::new(token.map(Token::new)));
+    /// Starts a new connection: the host has opened the socket and gives the
+    /// credential of this connection.
+    pub fn connect(&mut self, credential: Credential) {
+        self.connection = Some(Connection::new(credential));
     }
 
     /// The socket ended, with its close code or none for a lost connection,

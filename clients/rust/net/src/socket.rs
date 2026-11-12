@@ -151,6 +151,11 @@ impl Drop for Watchdog {
 /// bytes before it, and every later read fails: the schema has text frames
 /// only, and the read returns before the WebSocket joins the fragments.
 ///
+/// The tap sits on the plaintext side of a connection: on the local socket,
+/// or on the TLS stream of a remote server, whose bytes are the same frames.
+/// So the guards hold on both paths, and the watchdog shuts the TCP socket
+/// down under either.
+///
 /// After the upgrade, a write that fails, a timeout too, is kept: the tap
 /// gives `WouldBlock` in its place, which the read of `tungstenite` takes for
 /// a pong that waits, so it still gives the frames that it read before, and
@@ -291,6 +296,38 @@ impl<S: Write> Write for Tap<S> {
 
     fn flush(&mut self) -> std::io::Result<()> {
         self.kept(S::flush)
+    }
+}
+
+/// The stream under the tap: the plain socket of a local server, or the TLS
+/// stream of a remote one.
+pub(crate) enum Transport {
+    Plain(TcpStream),
+    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
+}
+
+impl Read for Transport {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Transport::Plain(stream) => stream.read(buf),
+            Transport::Tls(stream) => stream.read(buf),
+        }
+    }
+}
+
+impl Write for Transport {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Transport::Plain(stream) => stream.write(buf),
+            Transport::Tls(stream) => stream.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Transport::Plain(stream) => stream.flush(),
+            Transport::Tls(stream) => stream.flush(),
+        }
     }
 }
 

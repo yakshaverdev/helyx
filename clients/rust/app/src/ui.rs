@@ -92,25 +92,57 @@ struct Desktop {
     focus: FocusHandle,
 }
 
-/// Opens the window and runs the network thread for `folder`. The first
-/// connection uses `server`, which the start read; each later one reads the
-/// folder again, so a restarted server is found (`settings::source`).
-pub fn run(folder: std::path::PathBuf, server: Server) {
+/// Opens the window and runs the network thread. `server` is the first
+/// server, which the start read; with a `folder`, each later connection reads
+/// it again, so a restarted server is found (`settings::source`). Without one,
+/// the same server serves each connection. `store` saves the state of a
+/// pairing at its `welcome`.
+pub fn run(folder: Option<std::path::PathBuf>, server: Server, store: Option<Arc<dyn net::Store>>) {
     let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, receive) = channel();
     // One slot: a change that finds it full is in the next redraw anyway.
     let (changed, changes) = sync_channel::<()>(1);
     let thread_shared = shared.clone();
-    std::thread::spawn(move || {
-        let first = Mutex::new(Some(server));
-        let again = helyx_desktop::settings::source(&folder);
-        let source = move || match first.lock().unwrap().take() {
-            Some(server) => Ok(server),
-            None => again(),
-        };
-        net::run(&source, &thread_shared, &receive, &|| {
+    let notify = {
+        let changed = changed.clone();
+        move || {
             let _ = changed.try_send(());
-        })
+        }
+    };
+    let network = std::thread::spawn(move || {
+        let fixed = server.clone();
+        let source: Box<helyx_desktop::net::Source> = match folder {
+            Some(folder) => {
+                let first = Mutex::new(Some(server));
+                let again = helyx_desktop::settings::source(&folder);
+                Box::new(move || match first.lock().unwrap().take() {
+                    Some(server) => Ok(server),
+                    None => again(),
+                })
+            }
+            None => Box::new(move || Ok(fixed.clone())),
+        };
+        match store {
+            Some(store) => net::run(
+                source.as_ref(),
+                Some(store.as_ref()),
+                &thread_shared,
+                &receive,
+                &notify,
+            ),
+            None => net::run(source.as_ref(), None, &thread_shared, &receive, &notify),
+        }
+    });
+    // A pairing that cannot save its state stops the app with its line: the
+    // link is used at the server, and only a new link pairs again.
+    std::thread::spawn(move || {
+        let Ok(line) = network.join() else {
+            return;
+        };
+        if line.starts_with("the link is used") {
+            eprintln!("helyx-desktop: {line}");
+            std::process::exit(1);
+        }
     });
     Application::new().run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1000.), px(700.)), cx);

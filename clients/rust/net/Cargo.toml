@@ -7,7 +7,16 @@ description = "The network layer of the Helyx client kit: the WebSocket thread, 
 publish = false
 
 [dependencies]
+base64 = "0.22"
 helyx-client-core = { path = "../core" }
+# The pin of a certificate (`tls`): SHA-256 over the DER of its
+# SubjectPublicKeyInfo. The same version as the lock.
+ring = "0.17"
+# TLS 1.3 of a remote server (`tls`). The ring provider, and no default
+# features, so no second crypto provider enters the build. The TLS 1.2 code is
+# there for the test whose stub offers only TLS 1.2; the client names TLS 1.3
+# as its only version, so such a server is refused.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 # The seam of the feature `stub`: a test caps the send buffer of the socket.
 socket2 = { version = "0.6", optional = true }
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }

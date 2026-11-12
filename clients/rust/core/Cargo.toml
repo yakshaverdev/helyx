@@ -10,6 +10,8 @@ publish = false
 base64 = "0.22"
 hmac = "0.12"
 num-bigint = { version = "0.4", default-features = false }
+# The Ed25519 key of a pairing (`key`). The same version as the lock.
+ring = "0.17"
 serde = "1"
 serde_json = { version = "1", features = ["raw_value"] }
 sha2 = "0.10"

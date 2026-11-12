@@ -58,18 +58,21 @@ fn a_follow_survives_a_slow_close() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let token = "secret-token";
-    let server = Server {
-        token: token.into(),
-        ..stub::local(port)
-    };
+    let server = Server::local("127.0.0.1".parse().unwrap(), port, token);
     let shared = Arc::new(Mutex::new(Shared::new()));
     let (commands, receive) = channel();
     let (changed, changes) = channel();
     let thread_shared = shared.clone();
     let thread = std::thread::spawn(move || {
-        net::run(&stub::fixed(&server), &thread_shared, &receive, &|| {
-            let _ = changed.send(());
-        })
+        net::run(
+            &stub::fixed(&server),
+            None,
+            &thread_shared,
+            &receive,
+            &|| {
+                let _ = changed.send(());
+            },
+        )
     });
 
     // The first connection: the records subscription refused, the live list
@@ -139,7 +142,7 @@ fn against_state(serve: impl FnOnce(WebSocket<TcpStream>) + Send + 'static) -> (
     let (server, stub) = stub::one(serve);
     let shared = Mutex::new(Shared::new());
     let receive = channel::<Command>().1;
-    let line = net::run(&stub::fixed(&server), &shared, &receive, &|| {});
+    let line = net::run(&stub::fixed(&server), None, &shared, &receive, &|| {});
     stub.join().unwrap();
     (line, shared.into_inner().unwrap())
 }
@@ -195,10 +198,7 @@ fn a_frame_over_the_bound_is_a_break() {
 fn no_debug_form_holds_the_token() {
     let shared = Shared::new();
     assert!(!format!("{shared:?}").contains("tok-5b1e"));
-    let server = Server {
-        token: "tok-5b1e".into(),
-        ..stub::local(1)
-    };
+    let server = Server::local("127.0.0.1".parse().unwrap(), 1, "tok-5b1e");
     assert!(!format!("{server:?}").contains("tok-5b1e"));
 }
 
@@ -222,7 +222,13 @@ fn a_slow_upgrade_ends_at_its_wait() {
     });
     let shared = Mutex::new(Shared::new());
     let (_commands, receive) = channel();
-    let line = net::run(&stub::fixed(&stub::local(port)), &shared, &receive, &|| {});
+    let line = net::run(
+        &stub::fixed(&stub::local(port)),
+        None,
+        &shared,
+        &receive,
+        &|| {},
+    );
     assert!(line.ends_with("the upgrade took over 5000 ms"), "{line}");
     stub.join().unwrap();
 }
@@ -410,6 +416,7 @@ fn a_failed_open_after_a_welcome_reconnects() {
         };
         net::run_with(
             &stub::fixed(&server),
+            None,
             &thread_shared,
             &receive,
             &notify,
@@ -498,7 +505,13 @@ fn an_active_app_replaces_a_dead_socket_without_the_silence() {
     });
     let thread_shared = shared.clone();
     let thread = std::thread::spawn(move || {
-        net::run(&stub::fixed(&server), &thread_shared, &receive, &|| {})
+        net::run(
+            &stub::fixed(&server),
+            None,
+            &thread_shared,
+            &receive,
+            &|| {},
+        )
     });
     at_welcome.recv().unwrap();
     let started = Instant::now();
@@ -535,7 +548,13 @@ fn a_wake_up_before_the_welcome_leaves_the_connection() {
     net::became_active(&commands);
     let thread_shared = shared.clone();
     let thread = std::thread::spawn(move || {
-        net::run(&stub::fixed(&server), &thread_shared, &receive, &|| {})
+        net::run(
+            &stub::fixed(&server),
+            None,
+            &thread_shared,
+            &receive,
+            &|| {},
+        )
     });
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
     welcome(&mut ws, "tok-q4");
@@ -579,6 +598,7 @@ fn a_drop_in_the_pause_opens_no_connection() {
         };
         net::run_with(
             &stub::fixed(&server),
+            None,
             &thread_shared,
             &receive,
             &notify,
@@ -720,6 +740,7 @@ fn drive_with(
     std::thread::spawn(move || {
         net::run_with(
             &stub::fixed(&server),
+            None,
             &shared,
             &receive,
             &|| {
@@ -1498,7 +1519,7 @@ fn a_restarted_server_at_another_port_and_token_is_followed_again() {
         let notify = move || {
             let _ = lines.send(read.lock().unwrap().line.clone());
         };
-        net::run_with(&source, &thread_shared, &receive, &notify, waits)
+        net::run_with(&source, None, &thread_shared, &receive, &notify, waits)
     });
     commands.send(Command::Follow("s1".into())).unwrap();
     first_stub.join().unwrap();
@@ -1509,10 +1530,7 @@ fn a_restarted_server_at_another_port_and_token_is_followed_again() {
     // gives it from now on.
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let second = Server {
-        token: "tok-second".into(),
-        ..stub::local(port)
-    };
+    let second = Server::local("127.0.0.1".parse().unwrap(), port, "tok-second");
     *current.lock().unwrap() = second;
     let (subscribed, at_subscribe) = channel();
     let (stop, stopped) = channel::<()>();
@@ -1579,7 +1597,7 @@ fn a_source_that_fails_after_a_welcome_waits_for_the_server() {
         let notify = move || {
             let _ = lines.send(read.lock().unwrap().line.clone());
         };
-        net::run_with(&source, &thread_shared, &receive, &notify, waits)
+        net::run_with(&source, None, &thread_shared, &receive, &notify, waits)
     });
 
     // The first connection comes up. The source fails before the close: the
@@ -1639,7 +1657,7 @@ fn a_source_that_fails_before_the_first_welcome_waits_for_the_server() {
         let notify = move || {
             let _ = lines.send(read.lock().unwrap().line.clone());
         };
-        net::run_with(&source, &thread_shared, &receive, &notify, waits)
+        net::run_with(&source, None, &thread_shared, &receive, &notify, waits)
     });
 
     let down = "no server runs for the data folder";
@@ -1671,7 +1689,7 @@ fn a_source_that_gives_a_server_that_does_not_answer_stops() {
     drop(listener);
     let shared = Mutex::new(Shared::new());
     let (_commands, receive) = channel();
-    let line = net::run(&stub::fixed(&server), &shared, &receive, &|| {});
+    let line = net::run(&stub::fixed(&server), None, &shared, &receive, &|| {});
     assert!(line.starts_with("could not connect"), "{line}");
 }
 
@@ -1695,8 +1713,9 @@ fn a_second_server_that_refuses_the_token_stops_the_loop() {
         ..WAITS
     };
     let thread_shared = shared.clone();
-    let thread =
-        std::thread::spawn(move || net::run_with(&source, &thread_shared, &receive, &|| {}, waits));
+    let thread = std::thread::spawn(move || {
+        net::run_with(&source, None, &thread_shared, &receive, &|| {}, waits)
+    });
 
     // The first connection comes up and ends.
     let mut ws = accept(listener.accept().unwrap().0).unwrap();
@@ -1708,10 +1727,7 @@ fn a_second_server_that_refuses_the_token_stops_the_loop() {
     // The second server refuses the proof of the token.
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let second = Server {
-        token: "tok-second".into(),
-        ..stub::local(port)
-    };
+    let second = Server::local("127.0.0.1".parse().unwrap(), port, "tok-second");
     *state.lock().unwrap() = Ok(second);
     let second_stub = std::thread::spawn(move || {
         let mut ws = accept(listener.accept().unwrap().0).unwrap();
@@ -1749,7 +1765,7 @@ fn a_host_that_goes_while_the_source_fails_ends_the_loop() {
         };
         let source =
             || -> Result<Server, String> { Err("no server runs for the data folder".into()) };
-        net::run_with(&source, &thread_shared, &receive, &notify, waits)
+        net::run_with(&source, None, &thread_shared, &receive, &notify, waits)
     });
     let down = "no server runs for the data folder";
     line_is(&notified, down);

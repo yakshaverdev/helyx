@@ -31,7 +31,14 @@ fn the_watchdog_ends_with_its_connection() {
     let shared = Mutex::new(Shared::new());
     // The window is gone: the thread ends at the end of the connection.
     let receive = channel::<net::Command>().1;
-    net::run_with(&stub::fixed(&server), &shared, &receive, &|| {}, waits);
+    net::run_with(
+        &stub::fixed(&server),
+        None,
+        &shared,
+        &receive,
+        &|| {},
+        waits,
+    );
     let ended = Instant::now();
     stub.join().unwrap();
     while live_watchdogs() > 0 {

@@ -1,12 +1,14 @@
 //! The object that the bindings expose: the network thread of one server, the
 //! operations that the desktop app sends, and the callback that the host
-//! implements (`docs/features/client-kit.md`, "Bindings for Swift").
+//! implements (`docs/features/client-kit.md`, "Bindings for Swift" and "A
+//! remote server").
 
 use crate::convert;
 use crate::types::{NetError, Snapshot};
 use helyx_client_core::json;
+use helyx_client_core::link::Link;
 use helyx_client_core::operation::{Invalid, Operation};
-use helyx_client_net::{self, Command, Server, Shared};
+use helyx_client_net::{self, Command, Server, Shared, State, Store};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, channel};
@@ -21,6 +23,18 @@ pub trait NetListener: Send + Sync {
     /// A listener that fails does not stop the network layer: the next change
     /// calls it again.
     fn on_snapshot(&self, snapshot: Snapshot) -> Result<(), NetError>;
+}
+
+/// Where a host saves the state of a pairing: its keychain, or a file. The
+/// network layer calls it at the `welcome` of a pairing, before any other
+/// frame of the connection.
+#[uniffi::export(rust, foreign)]
+pub trait PairingStorage: Send + Sync {
+    /// Saves the state of a pairing: the address, the pin, the name, and the
+    /// key, as the JSON text of `State`.
+    fn save(&self, state: Vec<u8>) -> Result<(), NetError>;
+    /// The state saved for `name`, or none when there is none.
+    fn load(&self, name: String) -> Result<Option<Vec<u8>>, NetError>;
 }
 
 /// The network layer of one server: it starts the thread at `new` and stops it
@@ -42,9 +56,9 @@ pub struct Connection {
 
 #[uniffi::export]
 impl Connection {
-    /// Starts the network thread of the server at `address`:`port`, with the
-    /// token of its handshake. The thread connects at once, and the callback
-    /// reports the first state.
+    /// Starts the network thread of the local server at `address`:`port`, with
+    /// the token of its handshake. The thread connects at once, and the
+    /// callback reports the first state.
     #[uniffi::constructor]
     pub fn new(
         address: String,
@@ -55,34 +69,43 @@ impl Connection {
         let address: IpAddr = address.parse().map_err(|_| NetError::Invalid {
             reason: "the address is not an IP address".to_owned(),
         })?;
-        let server = Server {
-            address,
-            port,
-            token,
-        };
-        let shared = Arc::new(Mutex::new(Shared::new()));
-        let (commands, receive) = channel();
-        let thread_shared = shared.clone();
-        // The callback runs on the network thread, so the host hears about a
-        // change without a poll of its own.
-        let notify = move || {
-            let snapshot = {
-                let mut shared = thread_shared.lock().unwrap_or_else(PoisonError::into_inner);
-                convert::snapshot(&mut shared)
-            };
-            let _ = listener.on_snapshot(snapshot);
-        };
-        let thread = std::thread::spawn(move || {
-            // A phone has no data folder: the server that the host gave is the
-            // source of every connection.
-            let source = move || Ok(server.clone());
-            helyx_client_net::run(&source, &shared, &receive, &notify);
-        });
-        Ok(Arc::new(Connection {
-            commands: Mutex::new(Some(commands)),
-            thread: Mutex::new(Some(thread)),
-            next_send: AtomicU64::new(1),
-        }))
+        Ok(start(Server::local(address, port, token), None, listener))
+    }
+
+    /// Pairs with the server of `link`, saves the state through `storage` at
+    /// the `welcome`, and goes on with the same connection as a paired client.
+    /// A link that does not parse throws `NetError`, and nothing goes on the
+    /// wire.
+    #[uniffi::constructor]
+    pub fn pair(
+        link: String,
+        storage: Arc<dyn PairingStorage>,
+        listener: Arc<dyn NetListener>,
+    ) -> Result<Arc<Connection>, NetError> {
+        let link = Link::parse(&link).map_err(|fault| NetError::Invalid {
+            reason: fault.text().to_owned(),
+        })?;
+        let store = Arc::new(CallbackStore(storage));
+        let server =
+            Server::pair(&link, store.as_ref()).map_err(|reason| NetError::Invalid { reason })?;
+        Ok(start(server, Some(store), listener))
+    }
+
+    /// Starts the network thread of a paired server from the state that the
+    /// host saved, as the bytes of `State`. A state that is not valid throws
+    /// `NetError`.
+    #[uniffi::constructor]
+    pub fn paired(
+        state: Vec<u8>,
+        listener: Arc<dyn NetListener>,
+    ) -> Result<Arc<Connection>, NetError> {
+        let text = String::from_utf8(state).map_err(|_| NetError::Invalid {
+            reason: "the state is not valid".to_owned(),
+        })?;
+        let state = State::from_bytes(&text).ok_or_else(|| NetError::Invalid {
+            reason: "the state is not valid".to_owned(),
+        })?;
+        Ok(start(Server::paired(state), None, listener))
     }
 
     /// Follows `session`, and stops following the one before.
@@ -125,8 +148,8 @@ impl Connection {
         self.perform(Operation::steer(&session, &text))
     }
 
-    /// Sends `text` to the session after its running turn. Gives the number
-    /// of the send, whose outcome comes in the snapshot.
+    /// Sends `text` to the session after its running turn. Gives the number of
+    /// the send, whose outcome comes in the snapshot.
     pub fn follow_up(&self, session: String, text: String) -> Result<u64, NetError> {
         self.perform(Operation::follow_up(&session, &text))
     }
@@ -226,4 +249,63 @@ impl Drop for Connection {
             }
         }
     }
+}
+
+/// The store of a host's callback: the state crosses as its bytes, so a host
+/// puts them in its keychain.
+struct CallbackStore(Arc<dyn PairingStorage>);
+
+impl Store for CallbackStore {
+    fn save(&self, state: &State, _replace: bool) -> Result<(), String> {
+        self.0.save(state.to_bytes()).map_err(|e| e.to_string())
+    }
+
+    fn load(&self, name: &str) -> Result<Option<State>, String> {
+        let bytes = self.0.load(name.to_owned()).map_err(|e| e.to_string())?;
+        let Some(bytes) = bytes else {
+            return Ok(None);
+        };
+        let text = String::from_utf8(bytes).map_err(|_| "the state is not valid".to_owned())?;
+        State::from_bytes(&text)
+            .map(Some)
+            .ok_or_else(|| "the state is not valid".to_owned())
+    }
+}
+
+/// Starts the network thread of `server`, with `store` for the state of a
+/// pairing, and gives the object of the host.
+fn start(
+    server: Server,
+    store: Option<Arc<dyn Store>>,
+    listener: Arc<dyn NetListener>,
+) -> Arc<Connection> {
+    let shared = Arc::new(Mutex::new(Shared::new()));
+    let (commands, receive) = channel();
+    let thread_shared = shared.clone();
+    // The callback runs on the network thread, so the host hears about a
+    // change without a poll of its own.
+    let notify = move || {
+        let snapshot = {
+            let mut shared = thread_shared.lock().unwrap_or_else(PoisonError::into_inner);
+            convert::snapshot(&mut shared)
+        };
+        let _ = listener.on_snapshot(snapshot);
+    };
+    let thread = std::thread::spawn(move || {
+        // A binding host gives one server: every connection of the thread
+        // reaches it.
+        let source = move || Ok::<_, String>(server.clone());
+        let source: &helyx_client_net::Source = &source;
+        match store {
+            Some(store) => {
+                helyx_client_net::run(source, Some(store.as_ref()), &shared, &receive, &notify)
+            }
+            None => helyx_client_net::run(source, None, &shared, &receive, &notify),
+        };
+    });
+    Arc::new(Connection {
+        commands: Mutex::new(Some(commands)),
+        thread: Mutex::new(Some(thread)),
+        next_send: AtomicU64::new(1),
+    })
 }

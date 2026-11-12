@@ -11,11 +11,16 @@
 
 mod net;
 pub mod send;
+mod server;
 pub mod socket;
+pub mod state;
 #[cfg(feature = "stub")]
 pub mod stub;
+pub mod tls;
 
 pub use net::{
-    BUSY, Command, MAX_LINES, MAX_PROMPT_BYTES, RequestLine, RequestState, Server, Shared, Source,
-    became_active, follow_line, run, run_with,
+    BUSY, Command, MAX_LINES, MAX_PROMPT_BYTES, RequestLine, RequestState, Shared, Source,
+    became_active, follow_line, run, run_pair, run_pair_with, run_with,
 };
+pub use server::Server;
+pub use state::{FileStore, State, Store};

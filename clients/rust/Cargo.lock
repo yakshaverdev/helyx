@@ -2157,6 +2157,7 @@ dependencies = [
  "base64",
  "hmac",
  "num-bigint",
+ "ring",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2176,8 +2177,11 @@ dependencies = [
 name = "helyx-client-net"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "helyx-client-core",
  "helyx-client-net",
+ "ring",
+ "rustls",
  "socket2",
  "tungstenite",
 ]
@@ -2186,6 +2190,7 @@ dependencies = [
 name = "helyx-desktop"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "gpui",
  "helyx-client-core",
  "helyx-client-net",

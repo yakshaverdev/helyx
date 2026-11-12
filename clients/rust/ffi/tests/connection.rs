@@ -134,10 +134,11 @@ fn the_surface_connects_lists_and_takes_a_result() {
         // The drop of the object ends the connection: the socket goes.
         assert!(ws.read().is_err());
     });
+    let (address, port, token) = server.local_parts().unwrap();
     let connection = Connection::new(
-        server.address.to_string(),
-        server.port,
-        server.token.clone(),
+        address.to_string(),
+        port,
+        token.to_owned(),
         listener.clone(),
     )
     .unwrap();
@@ -210,10 +211,11 @@ fn the_snapshot_carries_the_records_feed() {
         // socket ends.
         while ws.read().is_ok() {}
     });
+    let (address, port, token) = server.local_parts().expect("a local server");
     let connection = Connection::new(
-        server.address.to_string(),
-        server.port,
-        server.token.clone(),
+        address.to_string(),
+        port,
+        token.to_owned(),
         listener.clone(),
     )
     .unwrap();
@@ -271,10 +273,11 @@ fn a_drop_on_the_network_thread_returns() {
         let _ = ws.close(None);
         let _ = ws.flush();
     });
+    let (address, port, token) = server.local_parts().unwrap();
     let connection = Connection::new(
-        server.address.to_string(),
-        server.port,
-        server.token.clone(),
+        address.to_string(),
+        port,
+        token.to_owned(),
         listener.clone(),
     )
     .unwrap();
@@ -316,10 +319,11 @@ fn a_refused_operation_reports_a_failed_outcome_with_its_number() {
         ws.send(Message::text(live(&id_of(&asked)))).unwrap();
         assert!(ws.read().is_err());
     });
+    let (address, port, token) = server.local_parts().unwrap();
     let connection = Connection::new(
-        server.address.to_string(),
-        server.port,
-        server.token.clone(),
+        address.to_string(),
+        port,
+        token.to_owned(),
         listener.clone(),
     )
     .unwrap();
