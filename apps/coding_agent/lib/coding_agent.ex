@@ -62,21 +62,32 @@ defmodule CodingAgent do
 
   defp run_prompt(conn, ref, opts) do
     with {:ok, live_before} <- Connection.list_live(conn),
-         {:ok, id} <- open(conn, opts),
-         {:ok, cwd} <- session_cwd(conn, id),
-         {:ok, cwd} <- directory(cwd) do
+         {:ok, id} <- open(conn, opts) do
       # A session that was live before this run belongs to another client:
       # it keeps running, so a print run next to a TUI joins it.
       own? = not Enum.any?(live_before, &(&1.id == id))
-      home = Application.get_env(:coding_agent, :home, System.user_home!())
-      prompt = CodingAgent.Print.skills(Keyword.fetch!(opts, :prompt), cwd, home)
 
-      try do
-        CodingAgent.Print.run(conn, ref, id, prompt, end_session(conn, id, own?))
-      after
-        _ = stop_session(conn, id, own?)
+      case folder(conn, id) do
+        {:ok, cwd} ->
+          home = Application.get_env(:coding_agent, :home, System.user_home!())
+          prompt = CodingAgent.Print.skills(Keyword.fetch!(opts, :prompt), cwd, home)
+
+          try do
+            CodingAgent.Print.run(conn, ref, id, prompt, end_session(conn, id, own?))
+          after
+            _ = stop_session(conn, id, own?)
+          end
+
+        {:error, _reason} = error ->
+          # No turn ran, so a session of another client has nothing to abort.
+          _ = own? and Connection.stop(conn, id)
+          error
       end
     end
+  end
+
+  defp folder(conn, id) do
+    with {:ok, cwd} <- session_cwd(conn, id), do: directory(cwd)
   end
 
   # `resume: id` takes no `:cwd`: the session runs in the folder of its
