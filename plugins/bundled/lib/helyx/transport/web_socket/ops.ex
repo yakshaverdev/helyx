@@ -85,6 +85,22 @@ defmodule Helyx.Transport.WebSocket.Ops do
                   invalid_origin queue_full turn_running text_too_large instance_changed
                   unknown_message invalid_answer not_waiting)a
 
+  # The atoms of the params that reach a Core call as a keyword list
+  # (`subscribe_params/2`, `sessions.saved`, `start`). The table names them,
+  # so this module holds the atom of every key that `keyword/1` converts:
+  # `String.to_existing_atom/1` made the atom the business of whichever
+  # module the VM had loaded, and in the fresh VM of a print run the
+  # connection process died on `:answers` before the session server loaded
+  # one that holds it (2026-11-11). A key with no entry here is a bug.
+  @option_atoms %{
+    "after" => :after,
+    "answers" => :answers,
+    "cwd" => :cwd,
+    "limit" => :limit,
+    "model" => :model,
+    "tail" => :tail
+  }
+
   @core_codes Enum.map(@core_errors, &Atom.to_string/1)
 
   @spec deadline(String.t()) :: pos_integer() | :infinity
@@ -290,9 +306,10 @@ defmodule Helyx.Transport.WebSocket.Ops do
 
   defp cast(_core, _type, _value), do: :bad_params
 
-  # The checked values as a keyword list for an option list.
+  # The checked values as a keyword list for an option list. The values hold
+  # only the keys of the params of the op, and `@option_atoms` names each.
   defp keyword(values),
-    do: Enum.map(values, fn {key, value} -> {String.to_existing_atom(key), value} end)
+    do: Enum.map(values, fn {key, value} -> {Map.fetch!(@option_atoms, key), value} end)
 
   defp origin(%{"origin" => origin}) when origin != nil, do: [origin: origin]
   defp origin(_values), do: []
