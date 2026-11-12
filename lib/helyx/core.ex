@@ -164,6 +164,10 @@ defmodule Helyx.Core do
           # The child spec holds the plugin table, the provider ids, the recall
           # limit, and the server configuration, so a restart keeps them.
           {Registry, keys: :unique, name: sessions_registry(name), meta: meta},
+          # The watchers of the session feed, one entry for each type that a
+          # watcher names (docs/features/session-feed.md). The supervisor stops
+          # its children in reverse order, so the feed outlives the sessions.
+          {Registry, keys: :duplicate, name: feed_registry(name)},
           {Task.Supervisor, name: task_supervisor(name)},
           # The memory sync workers, apart from the sessions so that the cap
           # counts sessions only (#707). It is before the session supervisor, so
@@ -228,6 +232,8 @@ defmodule Helyx.Core do
   def max_sessions, do: @max_sessions
   @doc false
   def sessions_registry(name), do: Module.concat(name, Sessions)
+  @doc false
+  def feed_registry(name), do: Module.concat(name, Feed)
   @doc false
   def task_supervisor(name), do: Module.concat(name, Tasks)
   @doc false

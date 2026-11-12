@@ -311,11 +311,15 @@ defmodule Helyx.Hub.Store.SQLite do
   @impl true
   defdelegate put_record(db, record, max, deadline), to: Records
   @impl true
+  defdelegate seen_record(db, record, deadline), to: Records
+  @impl true
+  defdelegate ensure_records(db, records, deadline), to: Records
+  @impl true
   defdelegate touch_record(db, session_id, at, prompt, deadline), to: Records
   @impl true
   defdelegate labels(db, session_ids), to: Records
   @impl true
-  defdelegate update_record(db, session_id, new, changes, max, deadline), to: Records
+  defdelegate update_record(db, session_id, changes, deadline), to: Records
   @impl true
   defdelegate delete_record(db, session_id, deadline), to: Records
   @impl true
