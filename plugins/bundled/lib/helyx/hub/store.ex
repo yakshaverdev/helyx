@@ -375,4 +375,34 @@ defmodule Helyx.Hub.Store do
               deadline()
             ) ::
               :ok | {:error, :too_many_pending | :rate_limited | :timeout | :failed}
+
+  @typedoc """
+  A paired peer of the public listener (`docs/features/remote-hands.md`,
+  "Peers"). `public_key` is the 32-byte Ed25519 public key; the store keeps
+  no secret of a peer.
+  """
+  @type peer :: %{
+          name: String.t(),
+          kind: String.t(),
+          public_key: binary(),
+          created_at: integer()
+        }
+
+  @doc """
+  Inserts a peer, or replaces the key of the row of its kind and name,
+  unless the store holds `max` peers and the name is new.
+  """
+  @callback put_peer(t(), peer(), max :: pos_integer(), deadline()) ::
+              :ok | {:error, :too_many_peers | :timeout | :failed}
+
+  @doc "The peer row of a kind and a name."
+  @callback peer(t(), kind :: String.t(), name :: String.t()) ::
+              {:ok, peer()} | {:error, :not_found | :failed}
+
+  @doc "Deletes a peer."
+  @callback delete_peer(t(), kind :: String.t(), name :: String.t(), deadline()) ::
+              :ok | {:error, :not_found | :timeout | :failed}
+
+  @doc "Every peer, by kind and name."
+  @callback peers(t()) :: {:ok, [peer()]} | {:error, :failed}
 end

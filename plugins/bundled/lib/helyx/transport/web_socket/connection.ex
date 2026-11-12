@@ -8,7 +8,18 @@ defmodule Helyx.Transport.WebSocket.Connection do
 
   @behaviour WebSock
 
-  alias Helyx.Transport.WebSocket.{Authorize, Bounds, Frame, Ops, Outbound, Records, Subscription}
+  alias Helyx.Transport.WebSocket.{
+    Authorize,
+    Bounds,
+    Frame,
+    HandsLease,
+    Hello,
+    Ops,
+    Outbound,
+    PairOps,
+    Records,
+    Subscription
+  }
 
   @hello_ms Bounds.get("hello_ms")
   @ping_ms Bounds.get("ping_ms")
@@ -32,6 +43,13 @@ defmodule Helyx.Transport.WebSocket.Connection do
        phase: :hello,
        nonce: nonce,
        auth: nil,
+       role: nil,
+       runner: nil,
+       lease_at: nil,
+       lease_ms: nil,
+       live_id: nil,
+       live_seq: 0,
+       live_ack: 0,
        parts: nil,
        out: Outbound.new(self()),
        writers: %{},
@@ -62,25 +80,8 @@ defmodule Helyx.Transport.WebSocket.Connection do
   def handle_control(_ping_or_pong, state), do: {:ok, %{state | last_in: now()}}
 
   defp frame(%{"type" => "hello", "protocol" => protocol} = hello, %{phase: :hello} = state)
-       when is_integer(protocol) and protocol >= 0 do
-    server = Helyx.Transport.WebSocket.protocol()
-
-    # The protocol number first: a client of another protocol learns that it
-    # must update, whatever its proof.
-    if protocol != server do
-      refused = %{"type" => "refused", "code" => "protocol", "server_protocol" => server}
-      {:stop, {:shutdown, :closed}, 4426, texts(refused), state}
-    else
-      case authenticate(state, hello) do
-        {:ok, auth} ->
-          welcome = texts(%{"type" => "welcome", "protocol" => server})
-          {:push, welcome, %{state | phase: :open, auth: auth}}
-
-        {:close, code} ->
-          close(code, state)
-      end
-    end
-  end
+       when is_integer(protocol) and protocol >= 0,
+       do: Hello.frame(state, hello)
 
   defp frame(%{"type" => "req", "id" => id} = req, %{phase: :open} = state)
        when is_binary(id) and byte_size(id) in 1..64 do
@@ -104,24 +105,58 @@ defmodule Helyx.Transport.WebSocket.Connection do
     end
   end
 
+  defp frame(
+         %{"type" => "res", "id" => id, "ok" => true, "result" => %{"seq" => seq}},
+         %{role: "hands", live_id: id} = state
+       )
+       when is_integer(seq) and is_binary(id) do
+    {:ok, %{state | lease_at: now(), live_ack: seq, live_id: nil}}
+  end
+
+  defp frame(%{"type" => "res"}, %{role: "hands"} = state), do: {:ok, state}
+
   defp frame(_frame, state), do: close(4400, state)
 
-  # With an authority, the authority decides the credential of the
-  # connection; with none, the proof of the server token.
-  defp authenticate(%{authority: nil} = state, hello) do
-    if proof?(state.key, state.nonce, hello["proof"]), do: {:ok, nil}, else: {:close, 4401}
+  # A pairing operation runs in a worker of `PairOps`, so a Hub call in it
+  # does not hold the socket.
+  defp pair_request(id, op, params, pairing, state) do
+    pid = PairOps.start(state.out, id, op, params, pairing)
+    {:ok, put_writer(state, pid, {:worker, id, :none})}
   end
 
-  defp authenticate(state, hello), do: Authorize.hello(state.authority, state.nonce, hello)
+  # The pairing operations of the loopback listener, and the registration of
+  # a hands connection (`docs/features/remote-hands.md`, "Pairing and the
+  # public listener", "Registration and lease"). A client operation on a
+  # hands connection, and a hands operation on a client connection, are
+  # `unknown_op`.
+  defp request(id, "pair." <> _op = op, params, %{listener: :loopback} = state) do
+    cond do
+      state.pairing == nil ->
+        error(id, "no_public_listener", state)
 
-  defp proof?(nil, _nonce, _given), do: true
+      not PairOps.allowed?(state) ->
+        {:push, texts(Outbound.res(id, Ops.error(op, "forbidden"))), state}
 
-  defp proof?(key, nonce, given) when is_binary(given) do
-    proof = Base.encode64(:crypto.mac(:hmac, :sha256, key.(), nonce))
-    Plug.Crypto.secure_compare(proof, given)
+      true ->
+        pair_request(id, op, params, state.pairing, state)
+    end
   end
 
-  defp proof?(_key, _nonce, _given), do: false
+  defp request(id, "pair." <> _op, _params, %{listener: :public} = state),
+    do: error(id, "unknown_op", state)
+
+  # A hands role over the loopback listener proved the server token, and it
+  # has no pairing to register with (`docs/features/remote-hands.md`,
+  # "The pairing handshake").
+  defp request(_id, "hands.register", _params, %{role: "hands", pairing: nil} = state),
+    do: close(4401, state)
+
+  defp request(id, "hands.register", params, %{role: "hands"} = state),
+    do: HandsLease.register(id, params, state)
+
+  defp request(id, "hands." <> _op, _params, state), do: error(id, "unknown_op", state)
+
+  defp request(id, _op, _params, %{role: "hands"} = state), do: error(id, "unknown_op", state)
 
   defp request(id, "subscribe", params, state) do
     with {:ok, session, opts} <- Ops.subscribe_params(state.core, params),
@@ -303,6 +338,10 @@ defmodule Helyx.Transport.WebSocket.Connection do
     Process.send_after(self(), :ping, @ping_ms)
     {:push, [{:ping, ""}], state}
   end
+
+  def handle_info(:hands_live, state), do: HandsLease.live(state)
+
+  def handle_info(:hands_lease, state), do: HandsLease.expiry(state)
 
   def handle_info(:idle, state) do
     case now() - state.last_in do

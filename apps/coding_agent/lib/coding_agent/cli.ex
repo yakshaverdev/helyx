@@ -7,7 +7,8 @@ defmodule CodingAgent.CLI do
   helyx [directory] [--model provider/model | --resume] -p prompt
   helyx --session id [-p prompt]
   helyx --list [--all] [directory]
-  helyx serve [--host ip] [--port n] [--model provider/model]
+  helyx serve [--host ip] [--port n] [--public host:port] [--model provider/model]
+  helyx pair --runner name
   helyx --version | --help
   """
 
@@ -33,6 +34,7 @@ defmodule CodingAgent.CLI do
   `docs/features/serve.md`, and `docs/features/tui-attach.md`.
   """
 
+  alias CodingAgent.CLI.Pair
   alias CodingAgent.Lease
   alias CodingAgent.Print
   alias Helyx.Tool.Bash
@@ -52,6 +54,12 @@ defmodule CodingAgent.CLI do
     print: {:string, "-p prompt", "run one prompt with no TUI and print the answer (--print)"},
     host: {:string, "--host ip", "with serve, the address to listen on, default 127.0.0.1"},
     port: {:integer, "--port n", "with serve, the port, 0 to 65535; default 0, a free port"},
+    public:
+      {:string, "--public host:port",
+       "with serve, a second listener of the wire with TLS, the address a link carries"},
+    runner:
+      {:string, "--runner name",
+       "with pair, the name of the runner, 1 to 64 bytes of a-z, 0-9, and _"},
     version: {:boolean, "--version", "print the version"},
     help: {:boolean, "--help", "print this help (-h)"}
   ]
@@ -88,9 +96,9 @@ defmodule CodingAgent.CLI do
     {:directory, :all, ""}
   ]
 
-  # A switch that needs another switch, or the command `serve`, which this
-  # path never has (`serve` runs before the check).
-  @needs [all: :list, host: :serve, port: :serve]
+  # A switch that needs another switch, or a command, which this path never
+  # has (`serve` and `pair` run before the check).
+  @needs [all: :list, host: :serve, port: :serve, public: :serve, runner: :pair]
 
   @doc """
   Runs the agent with the command line `argv` until the user quits, and
@@ -160,19 +168,21 @@ defmodule CodingAgent.CLI do
 
   defp command_path(env), do: env["PATH"]
 
-  # `serve` is the first argument only, as in the launcher of the release.
+  # `serve` and `pair` are the first argument only, as in the launcher of the
+  # release.
   defp start(argv, release_version, launcher, halt) do
-    {serve?, argv} =
+    {command, argv} =
       case argv do
-        ["serve" | rest] -> {true, rest}
-        argv -> {false, argv}
+        [command | rest] when command in ["serve", "pair"] -> {command, rest}
+        argv -> {nil, argv}
       end
 
     with {:ok, opts, args} <- parse(argv) do
       cond do
         opts[:help] -> IO.write(@help)
         opts[:version] -> IO.puts("helyx " <> version(release_version))
-        serve? -> serve(opts, args)
+        command == "serve" -> serve(opts, args)
+        command == "pair" -> Pair.run(opts, args, sessions_dir())
         true -> start_agent(opts, args, launcher, halt)
       end
     end
@@ -215,13 +225,15 @@ defmodule CodingAgent.CLI do
     with :ok <- serve_switches(opts),
          {:ok, ip} <- ip(Keyword.get(opts, :host, "127.0.0.1")),
          {:ok, port} <- port(Keyword.get(opts, :port, 0)),
+         {:ok, public} <- Pair.public_option(opts[:public]),
          {:ok, _apps} <- Application.ensure_all_started(:coding_agent) do
       result =
         CodingAgent.Serve.run(
           sessions_dir: sessions_dir(),
           model: Keyword.get(opts, :model, @default_model),
           ip: ip,
-          port: port
+          port: port,
+          public: public
         )
 
       # The folder in a line comes from the configuration.
@@ -233,7 +245,7 @@ defmodule CodingAgent.CLI do
     do: {:error, "serve takes no directory argument, got: #{inspect(args)}"}
 
   defp serve_switches(opts) do
-    case Enum.find(Keyword.keys(opts), &(&1 not in [:host, :port, :model])) do
+    case Enum.find(Keyword.keys(opts), &(&1 not in [:host, :port, :model, :public])) do
       nil -> :ok
       name -> {:error, "#{switch(name)} does not combine with serve"}
     end
@@ -249,6 +261,7 @@ defmodule CodingAgent.CLI do
 
   defp switch(:directory), do: "a directory argument"
   defp switch(:serve), do: "serve"
+  defp switch(:pair), do: "pair"
   defp switch(name), do: "--#{name}"
 
   # `--session` runs in the folder of the session header, which the resume

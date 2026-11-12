@@ -541,6 +541,18 @@ defmodule Helyx.Hub.Server do
     end
   end
 
+  # The peers of the public listener (protocol 14): one read or write.
+  defp handle(:peers, _deadline, %{store: mod, db: db}), do: mod.peers(db)
+
+  defp handle({:put_peer, peer, max}, deadline, %{store: mod, db: db}),
+    do: mod.put_peer(db, peer, max, deadline)
+
+  defp handle({:peer, kind, name}, _deadline, %{store: mod, db: db}),
+    do: mod.peer(db, kind, name)
+
+  defp handle({:revoke_peer, kind, name}, deadline, %{store: mod, db: db}),
+    do: mod.delete_peer(db, kind, name, deadline)
+
   # The row of a session whose file is gone; a session with none is as it is.
   defp handle({:record_gone, id}, deadline, %{store: mod, db: db}) do
     case mod.delete_record(db, id, deadline) do

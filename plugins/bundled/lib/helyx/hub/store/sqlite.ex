@@ -179,13 +179,12 @@ defmodule Helyx.Hub.Store.SQLite do
     end
   end
 
-  # The version of the file, and the upgrade of a file of version 2. A file of
-  # another version is refused (decision 9).
+  # The version of the file: a new file, and a file that `schema/1` moves to
+  # the current version. A file of another version is refused (decision 9).
   defp version(db) do
     case one(db, "PRAGMA user_version", []) do
-      {:ok, [@version]} -> :ok
       {:ok, [0]} -> empty(db)
-      {:ok, [2]} -> upgrade_2(db)
+      {:ok, [n]} when n in [2, 3, @version] -> :ok
       {:ok, [n]} -> {:error, {:store_version, n}}
       {:error, _} = error -> error
     end
@@ -193,18 +192,24 @@ defmodule Helyx.Hub.Store.SQLite do
 
   # SQLite cannot add a table check, so the pair rule of `parent_id` and
   # `parent_kind` holds in the store code here and in the schema of a new
-  # file; every write sets both.
+  # file; every write sets both. A file of version 2 holds no peers table, so
+  # the upgrade adds it too, in one step.
   defp upgrade_2(db) do
-    transaction(db, :infinity, fn ->
-      with :ok <- exec(db, "ALTER TABLE records ADD COLUMN parent_id TEXT"),
-           :ok <-
-             exec(
-               db,
-               "ALTER TABLE records ADD COLUMN parent_kind TEXT " <>
-                 "CHECK (parent_kind IN ('child', 'thread'))"
-             ),
-           do: exec(db, "PRAGMA user_version = #{@version}")
-    end)
+    with :ok <- exec(db, "ALTER TABLE records ADD COLUMN parent_id TEXT"),
+         :ok <-
+           exec(
+             db,
+             "ALTER TABLE records ADD COLUMN parent_kind TEXT " <>
+               "CHECK (parent_kind IN ('child', 'thread'))"
+           ),
+         :ok <- exec(db, Schema.peers_sql()),
+         do: set_version(db)
+  end
+
+  # A file of version 3 holds no peers table; the upgrade adds it and moves
+  # the version, in one step.
+  defp upgrade_3(db) do
+    with :ok <- exec(db, Schema.peers_sql()), do: set_version(db)
   end
 
   # A file of version 0 is new only when it holds no schema: a database of
@@ -221,13 +226,17 @@ defmodule Helyx.Hub.Store.SQLite do
     case one(db, "PRAGMA user_version", []) do
       {:ok, [@version]} -> :ok
       {:ok, [0]} -> transaction(db, :infinity, fn -> create_schema(db) end)
+      {:ok, [2]} -> transaction(db, :infinity, fn -> upgrade_2(db) end)
+      {:ok, [3]} -> transaction(db, :infinity, fn -> upgrade_3(db) end)
       {:error, _} = error -> error
     end
   end
 
   defp create_schema(db) do
-    with :ok <- exec(db, Schema.sql()), do: exec(db, "PRAGMA user_version = #{@version}")
+    with :ok <- exec(db, Schema.sql()), do: set_version(db)
   end
+
+  defp set_version(db), do: exec(db, "PRAGMA user_version = #{@version}")
 
   @impl true
   def close(%{db: db, lock: lock}) do
@@ -387,4 +396,53 @@ defmodule Helyx.Hub.Store.SQLite do
   defdelegate delete_subscription(db, owner, id, deadline), to: Subscriptions
   @impl true
   defdelegate subscription_sent(db, id, at, outcome, deadline), to: Subscriptions
+
+  # The peers of the public listener (protocol 14).
+  @impl true
+  def peers(db) do
+    with {:ok, rows} <- all(db, Tables.select_sql(:peers) <> " ORDER BY kind, name", []) do
+      {:ok, Enum.map(rows, &Tables.row(:peers, &1))}
+    end
+  end
+
+  @impl true
+  def peer(db, kind, name) do
+    sql = Tables.select_sql(:peers) <> " WHERE kind = ?1 AND name = ?2"
+
+    case one(db, sql, [kind, name]) do
+      {:ok, nil} -> {:error, :not_found}
+      {:ok, row} -> {:ok, Tables.row(:peers, row)}
+      {:error, _} = error -> error
+    end
+  end
+
+  @impl true
+  def put_peer(db, peer, max, deadline) do
+    sql = "SELECT count(*), count(*) FILTER (WHERE kind = ?1 AND name = ?2) FROM peers"
+
+    transaction(db, deadline, fn ->
+      with {:ok, [count, taken]} <- one(db, sql, [peer.kind, peer.name]) do
+        insert_peer(db, peer, count >= max, taken > 0)
+      end
+    end)
+  end
+
+  defp insert_peer(_db, _peer, true, false), do: {:error, :too_many_peers}
+
+  # A pairing of a name that already has a row replaces its key: the new
+  # key wins, and the old connection closes (`docs/features/remote-hands.md`,
+  # "Make a link").
+  defp insert_peer(db, peer, _full, _taken) do
+    sql = """
+    INSERT INTO peers (name, kind, public_key, created_at) VALUES (?1, ?2, ?3, ?4)
+    ON CONFLICT (kind, name) DO UPDATE SET
+      public_key = excluded.public_key, created_at = excluded.created_at
+    """
+
+    run(db, sql, [peer.name, peer.kind, {:blob, peer.public_key}, peer.created_at])
+  end
+
+  @impl true
+  def delete_peer(db, kind, name, deadline),
+    do: delete(db, deadline, "DELETE FROM peers WHERE kind = ?1 AND name = ?2", [kind, name])
 end

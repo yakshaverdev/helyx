@@ -117,6 +117,14 @@ defmodule Helyx.TUI.Wire.Connection do
   @spec list_live(pid()) :: {:ok, [live()]} | {:error, error()}
   def list_live(conn), do: request(conn, "sessions.live", %{})
 
+  @doc """
+  Makes a pairing link for a peer of the public listener
+  (`docs/features/remote-hands.md`): `{link, expires_ms}`.
+  """
+  @spec pair(pid(), String.t(), String.t()) ::
+          {:ok, %{String.t() => term()}} | {:error, error()}
+  def pair(conn, kind, name), do: request(conn, "pair.create", %{"kind" => kind, "name" => name})
+
   @doc "Sends `text` to `session` as its prompt, as `Helyx.Session.prompt/2`."
   @spec prompt(pid(), String.t(), String.t()) :: :ok | {:error, error()}
   def prompt(conn, session, text), do: text_request(conn, "prompt", session, text)

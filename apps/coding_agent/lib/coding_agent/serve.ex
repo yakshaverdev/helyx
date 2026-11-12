@@ -58,7 +58,9 @@ defmodule CodingAgent.Serve do
   server holds the data folder, when the start fails, or when Core, the
   Hub, the transport, or the lock ends while the server runs. The options are
   `:sessions_dir` (the data folder, an absolute path), `:model` (the
-  default model ref), `:ip`, and `:port`. The server runs under the supervisor
+  default model ref), `:ip`, `:port`, and `:public` (`{ip, port, address}`
+  for a second listener of the wire with TLS, the design in
+  `docs/features/remote-hands.md`). The server runs under the supervisor
   `CodingAgent.Servers` of the application, so the stop of the VM
   (`init:stop/0`, the OTP answer to SIGTERM) stops it in order.
   """
@@ -245,30 +247,66 @@ defmodule CodingAgent.Serve do
   defp token(token) when is_binary(token), do: fn -> token end
   defp token(_other), do: nil
 
-  # Each step that fails stops the steps before it.
+  # Each step that fails stops the steps before it. The TLS files of the
+  # public listener come before Core, so a bad folder stops the start with
+  # one line (`docs/features/remote-hands.md`, "Certificate").
   defp start(lock, dir, opts) do
-    case start_core(dir, opts) do
-      {:ok, core} -> start_hub(lock, core, dir, opts)
-      error -> stop([], lock, dir, error)
+    case tls_files(opts[:public], dir) do
+      {:ok, tls} ->
+        case start_core(dir, opts) do
+          {:ok, core} -> start_hub(lock, core, dir, opts, tls)
+          error -> stop([], lock, dir, error)
+        end
+
+      {:error, _text} = error ->
+        stop([], lock, dir, error)
+    end
+  end
+
+  defp tls_files(nil, _dir), do: {:ok, nil}
+
+  defp tls_files(_public, dir) do
+    case Helyx.Transport.WebSocket.TLS.ensure(dir) do
+      {:ok, tls} ->
+        {:ok, tls}
+
+      {:error, reason} ->
+        {:error, "could not make the TLS files of the public listener: " <> tls_text(reason)}
+    end
+  end
+
+  # The one line of a TLS failure names the file (`docs/features/
+  # remote-hands.md`, "Certificate").
+  defp tls_text({:tls_folder, reason}),
+    do: "the tls folder: " <> to_string(:file.format_error(reason))
+
+  defp tls_text({:tls_file, path, reason}), do: "#{path}: " <> tls_reason(reason)
+
+  defp tls_text(reason), do: Helyx.Reason.text(reason)
+
+  defp tls_reason(reason) when is_atom(reason) do
+    case :file.format_error(reason) do
+      ~c"unknown POSIX error" -> Atom.to_string(reason)
+      text -> to_string(text)
     end
   end
 
   # The Hub of the data folder, its store `hub.db` there, with the server
   # token of this start for the default owner (docs/features/hub.md,
   # decision 15).
-  defp start_hub(lock, core, dir, opts) do
+  defp start_hub(lock, core, dir, opts, tls) do
     token = token()
 
     case Helyx.Hub.start_link(core: Helyx.Core, default_owner: "owner", server_token: token) do
-      {:ok, hub} -> authorize(lock, [hub, core], dir, opts, token)
+      {:ok, hub} -> authorize(lock, [hub, core], dir, opts, token, tls)
       {:error, reason} -> stop([core], lock, dir, hub_error(reason))
     end
   end
 
   # The transport asks the Hub for its authority before it listens.
-  defp authorize(lock, [hub | _] = parts, dir, opts, token) do
+  defp authorize(lock, [hub | _] = parts, dir, opts, token, tls) do
     case authority(hub) do
-      {:ok, authority} -> listen(lock, parts, dir, opts, token, authority)
+      {:ok, authority} -> listen(lock, parts, dir, opts, token, authority, hub, tls)
       {:error, reason} -> stop(parts, lock, dir, hub_error(reason))
     end
   end
@@ -305,11 +343,22 @@ defmodule CodingAgent.Serve do
   end
 
   # `parts` are the parts that run, in their order of stop.
-  defp listen(lock, parts, dir, opts, token, authority) do
+  defp listen(lock, parts, dir, opts, token, authority, hub, tls) do
     ip = Keyword.fetch!(opts, :ip)
     port = Keyword.fetch!(opts, :port)
+    public = public_option(opts[:public])
 
-    case WebSocket.start_link(core: Helyx.Core, ip: ip, port: port, authority: authority) do
+    websocket = [
+      core: Helyx.Core,
+      ip: ip,
+      port: port,
+      authority: authority,
+      public: public,
+      tls: tls,
+      pairing: hub
+    ]
+
+    case WebSocket.start_link(websocket) do
       {:ok, transport} ->
         port = WebSocket.port(transport)
 
@@ -326,12 +375,18 @@ defmodule CodingAgent.Serve do
     end
   end
 
+  # The second listener of the wire (`docs/features/remote-hands.md`,
+  # "Public listener"): its address is the one a link carries.
+  defp public_option(nil), do: nil
+  defp public_option({ip, port, address}), do: [ip: ip, port: port, address: address]
+
   # The socket error of the listener, such as `:eaddrinuse`, in the start
   # error of the transport supervisor; any other error as a term.
   defp listen_error({{:shutdown, {:failed_to_start_child, :listener, reason}}, _child})
        when is_atom(reason),
        do: to_string(:inet.format_error(reason))
 
+  defp listen_error(:pairing_required), do: "a public listener needs the Hub of the server"
   defp listen_error(reason), do: Helyx.Reason.text(reason)
 
   # The token of a start, in a closure: no frame, argument, or process

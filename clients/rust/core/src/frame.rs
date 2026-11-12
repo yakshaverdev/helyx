@@ -1,8 +1,7 @@
-//! The server frames of protocol 13 after the handshake: `res`, `event`,
+//! The server frames of protocol 14 after the handshake: `res`, `event`,
 //! `session_end`, and the records feed frames, each checked by the schema of
 //! `docs/features/wire-protocol.md`. A `res` is read by the op of its
 //! request, which the caller keeps by `id`.
-
 use crate::check::{
     Broken, Checked, boolean, field, id, int_key, list_of, object, one_of, string, string_or_null,
 };
@@ -140,6 +139,9 @@ pub const ERROR_CODES: &[&str] = &[
     // The codes of the event subscriptions of a Hub (protocol 9, #921).
     "too_many_event_subscriptions",
     "unknown_subscription",
+    // The codes of the pairing of a runner (protocol 14, #927).
+    "too_many_links",
+    "no_public_listener",
 ];
 
 /// Checks a frame after `welcome`. `op_of` gives the op of the request with

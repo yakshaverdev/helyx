@@ -11,7 +11,11 @@ defmodule Helyx.Hub.Store.SQLiteTest do
   defp token(id, user_id),
     do: %{id: id, user_id: user_id, name: "t", key: :crypto.hash(:sha256, id), created_at: 1}
 
-  test "a new file gets mode 0600, schema version 2, and opens again after a close", %{
+  defp peer(name, kind \\ "hands", key \\ nil) do
+    %{name: name, kind: kind, public_key: key || :crypto.strong_rand_bytes(32), created_at: 1}
+  end
+
+  test "a new file gets mode 0600, schema version 4, and opens again after a close", %{
     tmp_dir: dir
   } do
     path = Path.join(dir, "hub.db")
@@ -31,10 +35,112 @@ defmodule Helyx.Hub.Store.SQLiteTest do
   test "a file of another schema version stops the open", %{tmp_dir: dir} do
     path = Path.join(dir, "hub.db")
     {:ok, db} = Exqlite.Sqlite3.open(path)
-    :ok = Exqlite.Sqlite3.execute(db, "PRAGMA user_version = 4")
+    :ok = Exqlite.Sqlite3.execute(db, "PRAGMA user_version = 5")
     :ok = Exqlite.Sqlite3.close(db)
 
-    assert SQLite.open(path: path) == {:error, {:store_version, 4}}
+    assert SQLite.open(path: path) == {:error, {:store_version, 5}}
+  end
+
+  test "a store of version 2 opens with its rows and gets the parents and the peers table", %{
+    tmp_dir: dir
+  } do
+    path = Path.join(dir, "hub.db")
+    version_2(path)
+
+    {:ok, db} = SQLite.open(path: path)
+    assert {:ok, [%{name: "ann"}]} = SQLite.users(db)
+
+    assert {:ok, %{session_id: "OLDxxxxxxxxx", parent_id: nil, parent_kind: nil}} =
+             SQLite.record(db, "OLDxxxxxxxxx")
+
+    assert SQLite.peers(db) == {:ok, []}
+
+    %{db: connection} = db
+    assert {:ok, [4]} = Helyx.Hub.Store.SQLite.Query.one(connection, "PRAGMA user_version", [])
+
+    row = %{
+      session_id: "NEWxxxxxxxxx",
+      owner: "ann",
+      cwd: "/w",
+      model: "fake/echo",
+      prompt: "",
+      active_at: 20,
+      created_at: 20,
+      parent_id: "PARENTxxxxxx",
+      parent_kind: "child"
+    }
+
+    assert :ok = SQLite.seen_record(db, row, :infinity)
+
+    assert {:ok, %{parent_id: "PARENTxxxxxx", parent_kind: "child"}} =
+             SQLite.record(db, "NEWxxxxxxxxx")
+
+    :ok = SQLite.close(db)
+  end
+
+  # A file of version 3, the schema before the peers table.
+  defp version_3(path) do
+    {:ok, db} = SQLite.open(path: path)
+    :ok = SQLite.add_user(db, user("ann"), 64, :infinity)
+    :ok = SQLite.close(db)
+
+    {:ok, raw} = Exqlite.Sqlite3.open(path)
+    :ok = Exqlite.Sqlite3.execute(raw, "DROP TABLE peers")
+    :ok = Exqlite.Sqlite3.execute(raw, "PRAGMA user_version = 3")
+    :ok = Exqlite.Sqlite3.close(raw)
+  end
+
+  test "a store of version 3 opens with its rows and gets the peers table", %{tmp_dir: dir} do
+    path = Path.join(dir, "hub.db")
+    version_3(path)
+
+    {:ok, db} = SQLite.open(path: path)
+    assert {:ok, [%{name: "ann"}]} = SQLite.users(db)
+    assert SQLite.peers(db) == {:ok, []}
+
+    %{db: connection} = db
+    assert {:ok, [4]} = Helyx.Hub.Store.SQLite.Query.one(connection, "PRAGMA user_version", [])
+
+    :ok = SQLite.close(db)
+  end
+
+  describe "peers" do
+    test "the cap is 64 rows: one under, at, and one over" do
+      {:ok, db} = SQLite.open(path: nil)
+
+      for n <- 1..63, do: assert(:ok = SQLite.put_peer(db, peer("r#{n}"), 64, :infinity))
+      assert :ok = SQLite.put_peer(db, peer("r64"), 64, :infinity)
+      assert SQLite.put_peer(db, peer("r65"), 64, :infinity) == {:error, :too_many_peers}
+      :ok = SQLite.close(db)
+    end
+
+    test "a pairing of a name replaces its key, and a kind is its own row" do
+      {:ok, db} = SQLite.open(path: nil)
+      new_key = :crypto.strong_rand_bytes(32)
+
+      assert :ok = SQLite.put_peer(db, peer("mac"), 64, :infinity)
+      assert :ok = SQLite.put_peer(db, peer("mac", "hands", new_key), 64, :infinity)
+      assert {:ok, %{public_key: ^new_key, kind: "hands"}} = SQLite.peer(db, "hands", "mac")
+
+      assert :ok = SQLite.put_peer(db, peer("mac", "client"), 64, :infinity)
+      assert {:ok, peers} = SQLite.peers(db)
+      assert length(peers) == 2
+
+      assert :ok = SQLite.delete_peer(db, "hands", "mac", :infinity)
+      assert SQLite.peer(db, "hands", "mac") == {:error, :not_found}
+      assert SQLite.delete_peer(db, "hands", "mac", :infinity) == {:error, :not_found}
+      :ok = SQLite.close(db)
+    end
+
+    test "a name of 64 bytes is stored, and a name at the cap does not push a row out" do
+      {:ok, db} = SQLite.open(path: nil)
+      name = String.duplicate("a", 64)
+
+      assert :ok = SQLite.put_peer(db, peer(name), 1, :infinity)
+      assert SQLite.put_peer(db, peer("b"), 1, :infinity) == {:error, :too_many_peers}
+      assert {:ok, %{name: ^name}} = SQLite.peer(db, "hands", name)
+      :ok = SQLite.close(db)
+    end
   end
 
   # A store of version 2, the schema before the parent columns of a record.
@@ -69,41 +175,6 @@ defmodule Helyx.Hub.Store.SQLiteTest do
       """)
 
     :ok = Exqlite.Sqlite3.close(db)
-  end
-
-  test "a store of version 2 opens as version 3 with its rows, and takes a parent", %{
-    tmp_dir: dir
-  } do
-    path = Path.join(dir, "hub.db")
-    version_2(path)
-
-    {:ok, db} = SQLite.open(path: path)
-    assert {:ok, [%{name: "ann"}]} = SQLite.users(db)
-
-    assert {:ok, %{session_id: "OLDxxxxxxxxx", parent_id: nil, parent_kind: nil}} =
-             SQLite.record(db, "OLDxxxxxxxxx")
-
-    %{db: connection} = db
-    assert {:ok, [3]} = Helyx.Hub.Store.SQLite.Query.one(connection, "PRAGMA user_version", [])
-
-    row = %{
-      session_id: "NEWxxxxxxxxx",
-      owner: "ann",
-      cwd: "/w",
-      model: "fake/echo",
-      prompt: "",
-      active_at: 20,
-      created_at: 20,
-      parent_id: "PARENTxxxxxx",
-      parent_kind: "child"
-    }
-
-    assert :ok = SQLite.seen_record(db, row, :infinity)
-
-    assert {:ok, %{parent_id: "PARENTxxxxxx", parent_kind: "child"}} =
-             SQLite.record(db, "NEWxxxxxxxxx")
-
-    :ok = SQLite.close(db)
   end
 
   test "a store in memory ends with its connection" do

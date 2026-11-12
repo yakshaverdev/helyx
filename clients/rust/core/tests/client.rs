@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 const CHALLENGE: &str =
     r#"{"type":"challenge","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}"#;
-const WELCOME: &str = r#"{"type":"welcome","protocol":13}"#;
+const WELCOME: &str = r#"{"type":"welcome","protocol":14}"#;
 
 /// The frames that the client sends among `outputs`, decoded.
 fn sent(outputs: &[Output]) -> Vec<Value> {
@@ -32,7 +32,7 @@ fn sent(outputs: &[Output]) -> Vec<Value> {
 fn welcomed(client: &mut Client) -> Vec<Output> {
     client.connect(None);
     let hello = client.receive(CHALLENGE).unwrap();
-    assert_eq!(sent(&hello), [json!({"type": "hello", "protocol": 13})]);
+    assert_eq!(sent(&hello), [json!({"type": "hello", "protocol": 14})]);
     let outputs = client.receive(WELCOME).unwrap();
     assert_eq!(outputs[0], Output::Welcome);
     outputs
@@ -235,8 +235,8 @@ fn no_handshake_frame_follows_its_answer() {
     let mut client = Client::new();
     client.connect(None);
     client.receive(CHALLENGE).unwrap();
-    let refused = r#"{"type":"refused","code":"protocol","server_protocol":14}"#;
-    assert_eq!(client.receive(refused).unwrap(), [Output::Refused(14)]);
+    let refused = r#"{"type":"refused","code":"protocol","server_protocol":13}"#;
+    assert_eq!(client.receive(refused).unwrap(), [Output::Refused(13)]);
     assert_eq!(client.receive(WELCOME), Err(Broken("no connection")));
     // A second challenge ends the handshake, and so does a nonce of the
     // wrong size.
@@ -270,8 +270,8 @@ fn after_a_welcome_a_failed_open_reconnects() {
     assert_eq!(client.closed(None).next, Next::Reconnect);
     client.connect(None);
     client.receive(CHALLENGE).unwrap();
-    let refused = r#"{"type":"refused","code":"protocol","server_protocol":14}"#;
-    assert_eq!(client.receive(refused).unwrap(), [Output::Refused(14)]);
+    let refused = r#"{"type":"refused","code":"protocol","server_protocol":13}"#;
+    assert_eq!(client.receive(refused).unwrap(), [Output::Refused(13)]);
     assert_eq!(client.closed(Some(4426)).next, Next::Stop);
     let mut client = following(4);
     assert!(client.receive(&notice(9)).is_err());

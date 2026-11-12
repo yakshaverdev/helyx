@@ -33,7 +33,8 @@ defmodule Helyx.Transport.WebSocket.Outbound do
     "too_many_subscriptions" => "too many subscriptions",
     "session_not_found" => "no such session runs",
     "timeout" => "the operation passed its deadline",
-    "failed" => "the operation failed"
+    "failed" => "the operation failed",
+    "no_public_listener" => "the server has no public listener"
   }
 
   # The error of a code of the transport, with its fixed text.

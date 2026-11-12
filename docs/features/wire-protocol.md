@@ -38,15 +38,15 @@ The same listener serves the webhook of an event subscription: `POST /hooks/<id>
 | Code | Meaning |
 |---|---|
 | `4400` | a frame that the contract does not allow: a text that the server cannot decode (bad JSON, a text that is not UTF-8, a float out of range, or a text over the decode bounds, see "Bounds"), an unknown `type`, a frame or a part before `welcome`, a `hello` whose `protocol` is not an integer of 0 or more, a part out of order, a request `id` whose reply was not sent, an `ack` of a `seq` that the subscription did not send |
-| `4401` | no `hello` within 5,000 ms, or a missing or wrong proof; under a Hub also a `token` that is not an id, unknown, or revoked |
-| `4408` | a slow client: a subscription passed its credits (`:slow`), the outbound queue held more than 64 MiB when a frame was added, or no inbound frame or pong for 45,000 ms |
+| `4401` | no `hello` within 5,000 ms, or a missing or wrong proof; under a Hub also a `token` that is not an id, unknown, or revoked; on the public listener a field of the `hello` of the wrong type or size, the proof of the server token, a wrong pairing proof, a link that is expired or used, a wrong peer signature, and a pairing over the peer cap |
+| `4408` | a slow client: a subscription passed its credits (`:slow`), the outbound queue held more than 64 MiB when a frame was added, or no inbound frame or pong for 45,000 ms; a hands connection that answered no `hands.live` within its lease |
 | `4413` | an inbound frame joined from parts over 25 MiB |
 | `1002`, `1008` | a WebSocket frame that RFC 6455 does not allow, such as a continuation with no frame before it (`1002`) or an empty continuation that is not the last (`1008`): the WebSocket server closes |
 | `1011` | a crash of the connection process from a bug: the WebSocket server closes |
 | `1009` | an inbound WebSocket frame over 1 MiB: the WebSocket server closes with the code of RFC 6455 before it reads the payload, so the frame takes no memory |
 | `4426` | a protocol number that is not the server's, after `refused` |
 | `4403` | under a Hub: the access of the user changed (a revoked token, a removed user, a record change that takes read access), at once or at the next request or subscription (`docs/features/hub.md`, decision 13) |
-| `4503` | under a Hub: the authority gave no answer to the `hello` (its Hub call exited or got `busy`); the client connects again later |
+| `4503` | under a Hub: the authority gave no answer to the `hello` (its Hub call exited or got `busy`); also a Hub that gave no answer to a pairing on the public listener, which the connection waits for as `Helyx.Transport.WebSocket.Pairing.call_ms/0`; the client connects again later |
 | `1000` | the stop of the transport: the WebSocket server closes (see "Bounds") |
 
 At each of these closes the connection process ends: the server handles no later frame of the client, and the writers of the connection end with it. A close that a subscription or a writer decides (a full outbound queue, `:slow`, an `ack` above the `seq` that the subscription sent) reaches the connection as a message, so the frames that the connection took before it run first.
@@ -76,8 +76,28 @@ Every `req` gets one `res`: `ok: true` with the result, or `ok: false` with an e
 | `compact` | `{session, text?}`: the instructions, default `""` | `{}`; a provider that keeps no history gives a `notice` event | `session_not_found`, `text_too_large`, `invalid_utf8`, `turn_running`, and under a Hub `forbidden` |
 | `answer` | `{session, ask_id, answer}`: `ask_id` is the id of an `ask` event; `answer` is a JSON object of at most 16,384 bytes; a frame over the decode bounds ("Bounds") closes with `4400` before the op is known | `{}`; the first answer to an open ask goes to its call, and every client gets `ask_end`; an id that is not open gets `not_waiting` | `session_not_found`, `invalid_answer`, `not_waiting`, and under a Hub `forbidden` |
 | `stop` | `{session}` | `{}` after the session ended: a running turn aborts first, as at `abort`, then the session stops and every subscription of it gets `session_end` with `stopped`. A stopped session frees its place in the live-session cap and can be resumed from its file. The answer is `{}` also when a handle of the session was not released: the wire does not carry the stop report of `Helyx.Sessions.stop/1` (#752) | `session_not_found`, and under a Hub `forbidden` |
+| `pair.create` | `{kind, name}`: `kind` is `"hands"` in this build, `name` a name | `{link, expires_ms}`; served only on the loopback listener, on a connection that proved the server token | `bad_params` for another kind or a kind or name that is not a string, `too_many_links`, `no_public_listener`, `forbidden` for a user token, and `unknown_op` on the public listener |
+| `pair.revoke` | `{kind, name}`: `kind` is `"hands"` | `{}`; deletes the peer and closes its connection; served only on the loopback listener, on a connection that proved the server token | `bad_params` for another kind or a kind or name that is not a string, `no_public_listener`, `forbidden` for a user token, and `unknown_op` on the public listener |
+| `pair.list` | `{}` | `{peers: [peer]}`, by kind and name; served only on the loopback listener, on a connection that proved the server token | `no_public_listener`, `forbidden` for a user token, and `unknown_op` on the public listener |
 | `records.subscribe` | `{}` | `{records: [record], more}`, ordered: the sessions that wait for the user first, then by `active_at`, newest first, then by session id; the page and every live record beside it, at most `Helyx.Hub.RecordFeed.max_reply/0`, and `more` says that the user owns more | `unknown_op` on a server with no Hub, `too_many_subscriptions` for a second subscription on the connection |
 | `records.unsubscribe` | `{}` | `{}` | `unknown_sub` |
+
+A `hands.register` is a `req` of a connection whose `hello` had the role `hands`, and its result is `{lease_ms}`. Its errors are `bad_params` and `unknown_op` on a client connection. A registration with another name than the `hello`, or a `hello` that the pairing does not accept, closes with `4401`. `hands.live` is a `req` that the server sends on a hands connection; the runner answers with `{seq}`.
+
+### The public listener
+
+`helyx serve --public <host>:<port>` starts a second listener of the same wire with TLS 1.3 only (`docs/features/remote-hands.md`, "Pairing and the public listener"). The loopback listener and `server.json` stay as they are. The host is the address that a link carries, and the listener binds every interface.
+
+- A `hello` on the public listener proves a pairing link or a paired key: `pair` with `{proof, public_key, signature}`, or `signature` alone. It never accepts the proof of the server token: such a `hello` closes with `4401`.
+- Every field of a public `hello` is checked for type and size before any other work: the role `hands`, a `runner` that is a name, and one handshake of parts of 32 or 64 decoded bytes. A bad field closes that connection with `4401`; the other connections keep serving.
+- The `challenge` and its nonce are the same as on the loopback listener. The proof of a pairing is rule O1 with the bootstrap token of the link in place of the server token.
+- The signature of both handshakes is Ed25519 over the signature text: the context text `helyx-handshake-v1`, the 32 bytes of the nonce, the pin of the server, the kind, and the name, in that order, each preceded by its length as a 32-bit big-endian integer (`Helyx.Transport.WebSocket.Pairing.signature_text/4`). A signature made for one server, one kind, or one name is of no use at another.
+- A Hub that is busy or gives no answer to a pairing closes with `4503`; the peer connects again later.
+- `pair.create`, `pair.revoke`, and `pair.list` answer `unknown_op` on the public listener.
+- The public listener serves no webhook: every path under `/hooks` answers 404 before any other work.
+- Without `--public`, the server has one listener, and the three operations answer `no_public_listener`.
+- Each listener has its own gate of `Helyx.Transport.WebSocket.max_connections/0`, so a public connection never takes a place of the loopback listener; the total is two gates. Each listener admits `Helyx.Transport.WebSocket.tcp_connections/0` TCP connections before the upgrade. `Helyx.Transport.WebSocket.TLS.handshake_ms/0` bounds the TLS handshake and the HTTP request of an upgrade (two waits of `Helyx.Transport.WebSocket.TLS.request_ms/0`); the upgraded WebSocket of the public listener keeps no read timeout of the listener; its idle rule is the ping and the lease.
+- The pin of the certificate is the base64url, without padding, of the SHA-256 of the DER of its SubjectPublicKeyInfo. A peer accepts only that pin.
 
 Every operation can also answer `unknown_op`, `bad_params`, `busy`, `timeout`, and `failed`.
 
@@ -140,7 +160,7 @@ The schema below is the contract. The test of #660 computes the SHA-256 of the l
 
 <!-- wire-schema:start -->
 ```text
-protocol 13
+protocol 14
 
 notation: {k: T} an object; k? may be absent (absent = null or false);
   T | U either; [T] a list; "x" that string; int a JSON integer >= 0;
@@ -149,7 +169,10 @@ notation: {k: T} an object; k? may be absent (absent = null or false);
   name a string of 1 to 64 bytes of a-z, 0-9, and _; json any JSON value
 
 # client to server
-hello   = {type: "hello", protocol: int, proof?: base64, token?: id}
+hello   = {type: "hello", protocol: int, proof?: base64, token?: id,
+           role?: "client" | "hands", runner?: name,
+           pair?: {proof: base64, public_key: base64, signature: base64},
+           signature?: base64}
 req     = {type: "req", id: id, op: op, params: object}
 ack     = {type: "ack", sub: string, seq: int}
 part    = {type: "part", n: int, last: bool, data: base64}
@@ -179,10 +202,12 @@ error_code = "unknown_op" | "bad_params" | "busy" | "timeout" | "failed"
            | "unknown_project" | "unknown_token"
            | "too_many_schedules" | "unknown_schedule"
            | "too_many_event_subscriptions" | "unknown_subscription"
+           | "too_many_links" | "no_public_listener"
 
 op = "sessions.live" | "sessions.saved" | "start" | "resume" | "subscribe"
    | "unsubscribe" | "history" | "prompt" | "steer" | "follow_up"
    | "abort" | "set_model" | "compact" | "stop" | "answer"
+   | "pair.create" | "pair.revoke" | "pair.list"
    | "hub.me" | "hub.records.get" | "hub.records.update" | "hub.records.delete"
    | "hub.records.search" | "hub.projects.list" | "hub.projects.create"
    | "hub.projects.update" | "hub.projects.delete" | "hub.tokens.list"
@@ -208,6 +233,9 @@ params.set_model       = {session: string, model: string}
 params.compact         = {session: string, text?: string}
 params.stop            = {session: string}
 params.answer          = {session: string, ask_id: string, answer: object}
+params.pair.create     = {kind: "hands", name: name}
+params.pair.revoke     = {kind: "hands", name: name}
+params.pair.list       = {}
 product_origin         = {kind: "product", id: string}
 params.hub.me              = {}
 params.hub.records.get     = {session: string}
@@ -240,6 +268,9 @@ result.subscribe      = {sub: string, replay: [event]} | {sub: string, snapshot:
 result.history        = {messages: [message], older: int, next: string | null}
 result.unsubscribe, result.prompt, result.steer, result.follow_up,
 result.abort, result.set_model, result.compact, result.stop, result.answer = {}
+result.pair.create         = {link: string, expires_ms: int}
+result.pair.revoke         = {}
+result.pair.list           = {peers: [peer]}
 result.hub.me              = {user: user}
 result.hub.records.get, result.hub.records.update = {record: record}
 result.hub.records.search  = {items: [record], next: string | null}
@@ -259,6 +290,7 @@ result.records.unsubscribe = {}
 live_session  = {id: string, instance_id: string, cwd: string, model: string,
                  status: "idle" | "running"}
 saved_session = {id: string, cwd: string, model: string, mtime: int, prompt: string}
+peer          = {kind: "hands", name: name, created_at: int, connected: bool}
 
 user     = {id: string, name: string}
 # project: null for a user who does not own the record (the project is the owner's)
@@ -337,6 +369,15 @@ usage = {input: int, output: int, cache_read: int, cache_write: int,
 # the envelope of a UI block; each other key is a field of its kind
 ui_block = {kind: name, text: string, cut?: bool, *: json}
 
+# on a hands connection (hello role "hands"); the ops of the hands namespace
+hands.register (client) = {type: "req", op: "hands.register",
+                           params: {runner: name, folder: string}}
+result.hands.register   = {lease_ms: int}
+# the server sends this req; the runner answers with result.hands.live
+hands.live (server)     = {type: "req", op: "hands.live",
+                           params: {seq: int, ack: int}}
+result.hands.live       = {seq: int}
+
 # order rules (a schema cannot show them; a change needs a new protocol number)
 O1 challenge is the first server frame, once; hello is the first client
    frame; the server sends nothing but challenge before hello and nothing but
@@ -367,7 +408,7 @@ Notes on the codec:
 
 ## Conformance fixtures
 
-`test/fixtures/wire/` holds fixtures of protocol 13 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, the TUI tests run the server frames and the folds against the client and its view model, and the Rust client core runs `records.json`, so the fixtures and the code cannot drift.
+`test/fixtures/wire/` holds fixtures of protocol 14 as plain JSON (#855): the frames that a client sends, each with the frames and the close code of the server; the frames that a server sends, each valid, ignored, or a contract break for a client; and folds, event sequences with the state that a client holds after them. Its `README.md` states what a conforming client or server must pass and which rules are in prose only. The transport tests run the client frames against the server, the TUI tests run the server frames and the folds against the client and its view model, and the Rust client core runs `records.json`, so the fixtures and the code cannot drift.
 
 What this doc does not pin down for an implementation that does not run on the BEAM. Each is open, not decided here:
 
@@ -398,6 +439,7 @@ What this doc does not pin down for an implementation that does not run on the B
 17. **Protocol 10** (E.2, `docs/features/hub.md`, decision 8). Protocol 11 gives `record` what a sidebar needs in one call: `cwd`, `model`, `prompt`, `active_at`, `parent`, and the derived `status`; it removes `stored`, which was always true, so `created_at` and `updated_at` are always integers. A client of protocol 10 gets `refused` and the close `4426`, and the fixtures name protocol 11.
 18. **Protocol 11** (#957, `docs/features/live-records.md`). Protocol 12 adds the records feed of a user: the operations `records.subscribe` and `records.unsubscribe`, their params and results, the `record_frame` and `records_frame` frames, `record_change`, and the status `"waiting"` of a record. A client of protocol 11 gets `refused` and the close `4426`, and the fixtures name protocol 12.
 19. **Protocol 12** (review of 2026-11-12, `docs/features/live-records.md`). Protocol 13 adds `records_end`, the last frame of a records feed when the Hub process behind it ends, such as a restart of Hub under its supervisor: the client subscribes again and gets the list. It also lets `records.unsubscribe` answer `unknown_sub` on a server with no Hub, as a client that never subscribed has no subscription. A client of protocol 12 gets `refused` and the close `4426`, and the fixtures name protocol 13.
+20. **Protocol 13** (#927, `docs/features/remote-hands.md`). Protocol 14 adds the hands role and the pairing of a runner: the fields `role`, `runner`, `pair`, and `signature` of `hello`; the operations `pair.create`, `pair.revoke`, and `pair.list` with the shape `peer`; the hands operation `hands.register`; the server request `hands.live`; the public listener with TLS of `helyx serve --public`; and the error codes `too_many_links` and `no_public_listener`. A server with no `--public` answers the three `pair.*` operations with `no_public_listener`, and a client of protocol 13 gets `refused` and the close `4426`, and the fixtures name protocol 14. The term codec of the hands namespace comes with the build ticket of ADR 0012 and does not change the schema of this doc yet.
 
 ## Bounds
 
@@ -410,13 +452,15 @@ What this doc does not pin down for an implementation that does not run on the B
 | the decode bounds of one outbound frame, for a client (#814) | 1,611,661,312 bytes of a frame joined from parts, 38,797,312 values counted as for an inbound frame, and integers of at most 1,024 characters: the largest frame that the server sends by its bounds, a `queue_dropped` of 64 texts of 4 MiB in their worst JSON form, and the most values, a tail snapshot whose newest group comes from the file. The derivation and the measurements are in `docs/features/tui-attach.md`, decision 13 | a contract break of the server: the client ends the connection | the client (`Helyx.Transport.WebSocket.Frame.decode/3` with `:outbound`) |
 | the largest integer of the BEAM, for the JSON decoders of other boundaries | 2^4,194,240 − 1 on OTP 28 (65,535 words of 64 bits, 1,262,593 digits; measured): every integer of 1,262,592 digits or fewer decodes with `JSON.decode/1`, and 1,262,593 nines raise `SystemLimitError`. The transport refuses an integer far below it, at its decode bounds | `Helyx.JSON.decode/1` gives an error, not a raise; the decoder of each boundary states its answer | OTP; `Helyx.JSON.decode/1` at the other boundaries, and the Credo check `Helyx.Credo.JSONDecode` reports a call written `JSON.decode` or `JSON.decode!` in other `lib/` code (#792) |
 | requests in flight per connection | 16, from the `req` to the end of its worker; a `subscribe` from the `req` to its reply | `res` with `busy` | transport |
-| requests in flight per server | 1,024: 64 connections of 16 | as above | transport |
+| requests in flight per server | 2,048: two groups of 64 connections of 16, one group for each listener | as above | transport |
 | calls that a session holds after their caller timed out | unbounded, ticket #677: Core does not count them. A caller adds one call for each call timeout while the session stalls. A call that the session takes past its deadline does not act (`docs/features/session-lifecycle.md`, "Late calls", #679). The worker of a remote request must keep its slot until the session answers or the call passes its deadline (#660) | the late call does not act and gets no reply | Core (#679), transport (#660) |
 | params of a request worker | the checked params of its one request: the connection checks the params before it starts the worker, so the decoded frame, within the decode bounds, stays in the connection. The decode makes each string a copy (`Helyx.Transport.WebSocket.Frame`), so no worker, subscription, or session keeps the text of the frame; the copy takes at most one more request size in the connection while it decodes. The checked values are strings and integers, each no larger than its JSON text, so a worker holds at most the request size, 26,214,400 bytes; the 16 workers of a connection at most 419,430,400 bytes (400 MiB). The answer of `answer` is an object: the op is a key in the JSON text, so the connection decodes the frame before it knows the op, and then checks the answer with `Helyx.Session.check_answer/1`, a walk that stops past 16,384 bytes of JSON. A worker holds an answer of at most that JSON (#744) | `res` with `bad_params`, and no worker; an answer over its bound gets a worker that holds only the error and replies `invalid_answer` | transport |
 | subscriptions per connection | 16 | `res` with `too_many_subscriptions` | transport |
-| connections per server | 64 | HTTP 503 at the upgrade | transport |
+| connections per server | two gates of `Helyx.Transport.WebSocket.max_connections/0`, one for each listener; each listener admits `Helyx.Transport.WebSocket.tcp_connections/0` TCP connections before the upgrade | HTTP 503 at the upgrade; a TCP connection over `tcp_connections/0` waits for a place | transport |
+| the TLS handshake and the HTTP request of an upgrade on the public listener | `Helyx.Transport.WebSocket.TLS.handshake_ms/0`, the request from two waits of `Helyx.Transport.WebSocket.TLS.request_ms/0` | the handshake closes; the request answers HTTP 408 and closes | transport |
+| the wait of a connection for a pairing answer | `Helyx.Transport.WebSocket.Pairing.call_ms/0` | `timeout` at the caller; the pairing answers `4503` when its Hub waited to its bound | transport |
 | stop of the transport (#793) | 20,000 ms in all, the sum of the two shutdowns below, and the milliseconds of the process exits (20,006 ms measured with a stuck first step, review of 2026-10-19). Its first step, within 5,000 ms (the shutdown of that step), closes the listener and the connection gate, so a later upgrade gets HTTP 503, and kills at once each connection that is not inside the gate: a connection inside its HTTP headers, or one whose upgrade was refused, holds no session. Then each WebSocket connection gets close `1000` and stops. All connections are in one acceptor group of Thousand Island, so they stop together, each within 15,000 ms (`shutdown_timeout`): the close can wait for a client that does not read. After a crash of the gate or of the listener, the first step does nothing: Thousand Island alone stops every connection, within 15,000 ms | the transport supervisor kills the first step past 5,000 ms, and its stalled connections then stop with the WebSocket ones; Thousand Island kills a connection past 15,000 ms | transport (`Helyx.Transport.WebSocket`) |
-| TCP connections per server, before and after the upgrade | 16,384: the `num_connections` of the one acceptor group of Thousand Island | Thousand Island waits up to 5 × 1,000 ms for a place, then closes the new connection; the acceptor takes no other connection while it waits | transport (Thousand Island) |
+| TCP connections per listener, before and after the upgrade | `Helyx.Transport.WebSocket.tcp_connections/0`, the `num_connections` of the one acceptor group of Thousand Island | Thousand Island waits up to 5 × 1,000 ms for a place, then closes the new connection; the acceptor takes no other connection while it waits | transport (Thousand Island) |
 | live sessions per server | 64 | `start` or `resume` gets `too_many_sessions`; a `resume` of a session that runs attaches | the session supervisor of Core, for every caller (`docs/features/server-management.md`, #657) |
 | auth wait | 5,000 ms from the upgrade to `hello` | close `4401` | transport |
 | challenge | one for each connection, a nonce of 32 random bytes | a second `hello`: close `4400` | transport |
@@ -475,4 +519,4 @@ Each numeric limit gets tests at the limit, one under, and one over, and the fra
 - A browser client.
 - Paging inside one message body: parts carry any size (#658).
 - stdio framing code: same frames, a later ticket when a client needs it (#660).
-- The `hands` role of `hello` and the `hands.*` operations and events of remote hands: decided in ADR 0012 (#856); the codec and a new protocol number come with its build ticket.
+- The `hands` role of `hello`, the pairing of a runner, and the `pair.*` and `hands.register` operations of `helyx serve --public`: the schema and protocol 14 are here, and the design is in `docs/features/remote-hands.md` (#927). The term codec of the hands namespace, the session that uses a runner, and `helyx hands` come with later slices of that doc.

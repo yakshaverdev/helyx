@@ -26,7 +26,9 @@ defmodule Helyx.Hub.RefusalTest do
   # user itself, or a sub of the connection. `sessions.saved` and `resume`
   # of a folder filter by access: `saved_test.exs` checks them.
   @no_object ~w(sessions.live sessions.saved start unsubscribe hub.me hub.projects.list
-                hub.projects.create hub.tokens.list records.subscribe records.unsubscribe)
+                hub.projects.create hub.tokens.list
+                pair.create pair.revoke pair.list
+                records.subscribe records.unsubscribe)
   @session_ops ~w(subscribe history prompt steer follow_up abort set_model compact answer stop
                   hub.records.get hub.records.update hub.records.delete
                   hub.schedules.create hub.schedules.list

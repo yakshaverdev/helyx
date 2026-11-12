@@ -34,6 +34,9 @@ defmodule Helyx.Hub do
   @max_name_bytes 64
   # The Core cap of live sessions, the default and the top of the option.
   @max_live 64
+  # The cap of the peers of the public listener (`docs/features/
+  # remote-hands.md`, "Peers").
+  @max_peers 64
   # The stop of Hub (decision 16).
   @shutdown_ms 5_000
 
@@ -102,6 +105,45 @@ defmodule Helyx.Hub do
           :ok | {:error, :unknown_token | :busy | :timeout | :failed}
   def revoke_token(hub, token_id) when is_binary(token_id),
     do: call(hub, {:revoke_token, token_id})
+
+  @doc "The most peers that a Hub stores."
+  @spec max_peers() :: pos_integer()
+  def max_peers, do: @max_peers
+
+  @typedoc "A paired peer of the public listener."
+  @type peer :: %{
+          name: String.t(),
+          kind: String.t(),
+          public_key: binary(),
+          created_at: integer()
+        }
+
+  @doc """
+  Stores a peer, or replaces the key of the row of its kind and name. At the
+  cap of `max_peers/0`, a new name answers `{:error, :too_many_peers}`.
+  """
+  @spec put_peer(hub(), peer(), pos_integer()) ::
+          :ok | {:error, :too_many_peers | :busy | :timeout | :failed}
+  def put_peer(hub, peer, max) when is_map(peer) and is_integer(max),
+    do: call(hub, {:put_peer, peer, max})
+
+  @doc "The peer of a kind and a name, or `{:error, :not_found}`."
+  @spec peer(hub(), String.t(), String.t()) ::
+          {:ok, peer()} | {:error, :not_found | :busy | :timeout | :failed}
+  def peer(hub, kind, name) when is_binary(kind) and is_binary(name),
+    do: call(hub, {:peer, kind, name})
+
+  @doc false
+  # Deletes the row of a peer. The one revoke path that also closes the
+  # connection is `Helyx.Transport.WebSocket.Pairing.revoke/3`.
+  @spec revoke_peer(hub(), String.t(), String.t()) ::
+          :ok | {:error, :not_found | :busy | :timeout | :failed}
+  def revoke_peer(hub, kind, name) when is_binary(kind) and is_binary(name),
+    do: call(hub, {:revoke_peer, kind, name})
+
+  @doc "Every peer, by kind and name."
+  @spec peers(hub()) :: {:ok, [peer()]} | {:error, :busy | :timeout | :failed}
+  def peers(hub), do: call(hub, :peers)
 
   @doc """
   Saves a prompt that Hub sends to a session of the user `user_id` at a
@@ -288,6 +330,10 @@ defmodule Helyx.Hub do
     {:ok, config} = call(hub, :authority)
     {Helyx.Hub.Access, Map.put(config, :hub, hub)}
   end
+
+  @doc "The longest wait of one Hub call, in milliseconds."
+  @spec call_ms() :: pos_integer()
+  def call_ms, do: @call_ms
 
   # A Hub call (decision 5). No counter: the admission count is the mailbox.
   # `until`, a monotonic time in ms, is a deadline of the caller that can
