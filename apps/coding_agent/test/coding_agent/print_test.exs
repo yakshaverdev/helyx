@@ -381,7 +381,7 @@ defmodule CodingAgent.PrintTest do
 
       lock =
         "helyx: could not test the lock of the data folder: perl is not on the PATH; " <>
-          "Helyx needs it to lock a session\n"
+          "Helyx needs it for its file locks\n"
 
       for argv <- [["-p", "x", "--model", "fake/echo", dir], ["--list", dir]] do
         assert {1, "", ^lock} = io("", fn -> CLI.main(argv, halt(self())) end)
@@ -409,11 +409,6 @@ defmodule CodingAgent.PrintTest do
                io("", fn -> CLI.main(["-p", "one", "--model", "fake/echo", dir], halt(self())) end)
 
       id = String.trim_trailing(line, "\n")
-      [path] = Path.wildcard(Path.join([s, "*", id <> ".jsonl"]))
-
-      # Each run stops its server, and perl frees the lock after the stop.
-      Helyx.Test.SessionFile.await_lock_free(path)
-
       # --session takes the folder of the header, not the current one.
       assert {0, "two\n", stderr} =
                io("", fn -> CLI.main(["-p", "two", "--session", id], halt(self())) end)
@@ -421,8 +416,6 @@ defmodule CodingAgent.PrintTest do
       assert stderr == "helyx: session #{id}\n"
 
       three = "three\n\n<stdin>\npiped\n</stdin>"
-
-      Helyx.Test.SessionFile.await_lock_free(path)
 
       assert {0, ^three <> "\n", ^stderr} =
                io("piped", fn -> CLI.main(["-p", "three", "--resume", dir], halt(self())) end)
@@ -447,38 +440,6 @@ defmodule CodingAgent.PrintTest do
         assert {1, "", ^line} = io("", fn -> CLI.main(["-p", "x" | argv], halt(self())) end)
         assert_received {:halt, 1}
       end
-    end
-
-    # #579: an OS process holds the lock of the session. A client of the
-    # server joins a session that another client has open, but a lock that
-    # another process holds is the text of the server
-    # (docs/features/print-mode.md).
-    test "a session open in another process is one line and 1, with -p and without", %{
-      tmp_dir: dir,
-      sessions: s
-    } do
-      assert {0, _, "helyx: session " <> line} =
-               io("", fn -> CLI.main(["-p", "one", "--model", "fake/echo", dir], halt(self())) end)
-
-      id = String.trim_trailing(line, "\n")
-      [path] = Path.wildcard(Path.join([s, "*", id <> ".jsonl"]))
-      # The run stops its server, and perl frees the lock after the stop.
-      Helyx.Test.SessionFile.await_lock_free(path)
-      {:ok, lock, nil} = Helyx.Session.Lock.hold(path, fn -> {:ok, nil} end)
-      expected = "helyx: could not start the agent: {:session_locked, #{inspect(id)}}\n"
-
-      for argv <- [["--session", id], ["--resume", dir]] do
-        # The server of this VM logs the failed start on stderr too, and the
-        # start of the print run swaps the log there: the line is the last.
-        assert {1, "", stderr} =
-                 io("", fn -> CLI.main(["-p", "two" | argv], halt(self())) end)
-
-        assert String.ends_with?(stderr, expected)
-        assert_received {:halt, 1}
-      end
-
-      assert {1, "", ^expected} = io("", fn -> CLI.main(["--session", id]) end)
-      Helyx.Session.Lock.release(lock)
     end
 
     test "--resume skips a file whose name is not a session id", %{tmp_dir: dir, sessions: s} do
@@ -654,14 +615,14 @@ defmodule CodingAgent.PrintTest do
     end
 
     # #606: the notice of a loss before the subscribe reached no client.
-    test "a session that lost its lock before the run writes the not-saved notice on stderr",
+    test "a session that stopped saving before the run writes the not-saved notice on stderr",
          %{tmp_dir: dir} do
       server = server(dir)
 
       {:ok, session} =
         Helyx.Session.start(server.core, model: "fake/echo", sessions_dir: dir, cwd: dir)
 
-      Helyx.Test.LostLock.kill(session)
+      Helyx.Test.UnsavedSession.stop_saving(session)
 
       assert {0, "q\n", stderr} =
                io("", fn -> print_run(server, prompt: "q", cwd: dir, resume: session.id) end)

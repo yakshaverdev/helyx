@@ -57,12 +57,12 @@ defmodule Helyx.Session.InstanceTest do
       core: core,
       tmp_dir: dir
     } do
-      other = start_core([Helyx.Test.Provider])
-
       {:ok, a} = Session.start(core, model: "test/ok", sessions_dir: dir)
-      # A second folder with a link of the file: the lock of the first
-      # folder does not stop the second Core (docs/features/session-lock.md).
-      {:ok, b} = Session.resume(other, sessions_dir: link_session(dir, a.id), id: a.id)
+      # A second folder with a link of the file: each folder has its own Core
+      # and its own folder lock (docs/features/session-lock.md).
+      link = link_session(dir, a.id)
+      other = start_core([Helyx.Test.Provider], sessions_dir: link)
+      {:ok, b} = Session.resume(other, sessions_dir: link, id: a.id)
       assert a.id == b.id
 
       {:ok, snapshot_a, _} = Session.subscribe(a)

@@ -4,7 +4,7 @@ defmodule Helyx.Session.HooksTest do
   use ExUnit.Case, async: true
 
   import Helyx.Test.Events, only: [collect_until: 1, of_type: 2, snapshot: 1, wait_until: 1]
-  import Helyx.Test.SessionCase, only: [start_core: 1, stop_session: 2]
+  import Helyx.Test.SessionCase, only: [start_core: 2, stop_session: 2]
 
   alias Helyx.{Message, Session}
   alias Helyx.Test.Hook
@@ -17,8 +17,8 @@ defmodule Helyx.Session.HooksTest do
 
   # The hooks report to a proxy of the test process, so that the test
   # process stays free for a gate (`Helyx.Test.Gate.open/0`).
-  defp core(hooks, tools \\ @tools) do
-    core = start_core([Helyx.Test.Provider | tools ++ hooks])
+  defp core(hooks, tools \\ @tools, opts \\ []) do
+    core = start_core([Helyx.Test.Provider | tools ++ hooks], opts)
     Hook.proxy(core, self())
     core
   end
@@ -81,7 +81,7 @@ defmodule Helyx.Session.HooksTest do
   describe "before_tool" do
     @tag :tmp_dir
     test "every hook allows: the call runs, and each answer is an entry", %{tmp_dir: dir} do
-      core = core([Hook.A, Hook.B])
+      core = core([Hook.A, Hook.B], @tools, sessions_dir: dir)
       Hook.script(core, Hook.B, :before_tool, fn _ -> {:allow, "fine"} end)
       session = run(core, "loop", sessions_dir: dir)
       events = collect_until(:turn_end)
@@ -133,7 +133,7 @@ defmodule Helyx.Session.HooksTest do
 
     @tag :tmp_dir
     test "a deny wins: the call does not run, and no later hook is asked", %{tmp_dir: dir} do
-      core = core([Hook.A, Hook.B])
+      core = core([Hook.A, Hook.B], @tools, sessions_dir: dir)
       Hook.script(core, Hook.A, :before_tool, fn %{tool: tool} -> {:deny, "no #{tool}"} end)
       run(core, "loop", sessions_dir: dir)
 
@@ -181,7 +181,7 @@ defmodule Helyx.Session.HooksTest do
 
     @tag :tmp_dir
     test "a hook past its limit fails closed and is recorded", %{tmp_dir: dir} do
-      core = core([Hook.Short])
+      core = core([Hook.Short], @tools, sessions_dir: dir)
       Hook.script(core, Hook.Short, :before_tool, fn _ -> Process.sleep(:infinity) end)
       run(core, "loop", sessions_dir: dir)
 
@@ -200,7 +200,7 @@ defmodule Helyx.Session.HooksTest do
     @tag :tmp_dir
     test "a reason and the arguments are cut at 4,096 bytes at a character boundary",
          %{tmp_dir: dir} do
-      core = core([Hook.A])
+      core = core([Hook.A], @tools, sessions_dir: dir)
 
       Hook.script(core, Hook.A, :before_tool, fn _ ->
         {:allow, "x" <> String.duplicate("é", 3_000)}
@@ -228,7 +228,7 @@ defmodule Helyx.Session.HooksTest do
     @tag :tmp_dir
     @tag :capture_log
     test "a resume reads no hook entry, and drops a bad one", %{tmp_dir: dir} do
-      core = core([Hook.A])
+      core = core([Hook.A], @tools, sessions_dir: dir)
       session = run(core, "loop", sessions_dir: dir)
       collect_until(:turn_end)
       transcript = snapshot(session).messages
@@ -258,7 +258,7 @@ defmodule Helyx.Session.HooksTest do
   describe "an abort" do
     @tag :tmp_dir
     test "kills the running hook with a cancel release, and it has no entry", %{tmp_dir: dir} do
-      core = core([Hook.A, Hook.B])
+      core = core([Hook.A, Hook.B], @tools, sessions_dir: dir)
       test = self()
       Hook.script(core, Hook.A, :before_tool, fn _ -> {:allow, "first"} end)
 
@@ -281,7 +281,7 @@ defmodule Helyx.Session.HooksTest do
   describe "a late answer" do
     @tag :tmp_dir
     test "an answer of a turn that ended is written, with no notice", %{tmp_dir: dir} do
-      core = core([Hook.A])
+      core = core([Hook.A], @tools, sessions_dir: dir)
       session = run(core, "loop", sessions_dir: dir)
       collect_until(:turn_end)
 
@@ -309,7 +309,7 @@ defmodule Helyx.Session.HooksTest do
     @tag :tmp_dir
     test "each hook gets the result the hook before it left; a keep is not recorded",
          %{tmp_dir: dir} do
-      core = core([Hook.A, Hook.B])
+      core = core([Hook.A, Hook.B], @tools, sessions_dir: dir)
 
       Hook.script(core, Hook.A, :after_tool, fn
         %{result: {:ok, text}} -> {:replace, {:error, text <> "!"}}

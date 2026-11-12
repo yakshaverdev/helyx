@@ -303,7 +303,7 @@ defmodule CodingAgent.Attach do
             Lock.release(lock)
             false
 
-          {:error, {:session_locked, _}} ->
+          {:error, :locked} ->
             true
 
           {:error, {:lock_failed, text}} ->

@@ -99,7 +99,7 @@ defmodule Helyx.Hub.Store.SQLite do
   defp take_lock(path) do
     case Lock.take(path <> ".lock") do
       {:ok, port} -> {:ok, port}
-      {:error, {:session_locked, _name}} -> {:error, :store_locked}
+      {:error, :locked} -> {:error, :store_locked}
       {:error, {:lock_failed, _text} = error} -> {:error, error}
     end
   end

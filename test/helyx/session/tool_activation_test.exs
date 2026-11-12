@@ -5,7 +5,7 @@ defmodule Helyx.Session.ToolActivationTest do
   use ExUnit.Case, async: true
 
   import Helyx.Test.Events
-  import Helyx.Test.SessionCase, only: [start_core: 1]
+  import Helyx.Test.SessionCase, only: [start_core: 2]
   import Helyx.Test.SourceCase
 
   alias Helyx.Session
@@ -14,8 +14,10 @@ defmodule Helyx.Session.ToolActivationTest do
 
   @plugins [Helyx.Test.Provider, InCall, Source]
 
-  setup do
-    core = start_core(@plugins)
+  @moduletag :tmp_dir
+
+  setup %{tmp_dir: dir} do
+    core = start_core(@plugins, sessions_dir: dir)
     observe(core)
     %{core: core}
   end

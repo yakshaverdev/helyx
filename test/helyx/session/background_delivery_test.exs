@@ -14,14 +14,19 @@ defmodule Helyx.Session.BackgroundDeliveryTest do
 
   # The test process holds the name of a gate, so a proxy holds the name
   # of the controller of `Helyx.Test.Connected` and forwards its messages.
-  setup do
+  @moduletag :tmp_dir
+
+  setup %{tmp_dir: dir} do
     core =
-      start_core([
-        Helyx.Test.Provider,
-        Helyx.Test.Connected,
-        Helyx.Test.Gate,
-        Helyx.Test.Tool.Background
-      ])
+      start_core(
+        [
+          Helyx.Test.Provider,
+          Helyx.Test.Connected,
+          Helyx.Test.Gate,
+          Helyx.Test.Tool.Background
+        ],
+        sessions_dir: dir
+      )
 
     test = self()
     proxy = spawn_link(fn -> forward(test) end)

@@ -6,8 +6,9 @@ defmodule CodingAgent.Serve do
   answer to SIGTERM starts; the launcher of the release sends SIGTERM for
   each signal that it catches. One server runs for each data
   folder, the sessions folder: it holds the lock `server.lock` there and
-  writes `server.json` with mode 0600 when it is ready. The design is in
-  `docs/features/serve.md`.
+  writes `server.json` with mode 0600 when it is ready. Core holds
+  `core.lock` in the data folder too (`docs/features/session-lock.md`). The
+  design is in `docs/features/serve.md`.
   """
 
   import Bitwise
@@ -175,7 +176,7 @@ defmodule CodingAgent.Serve do
       {:ok, lock} ->
         {:ok, lock}
 
-      {:error, {:session_locked, _}} ->
+      {:error, :locked} ->
         running(dir, deadline)
 
       {:error, {:lock_failed, text}} ->

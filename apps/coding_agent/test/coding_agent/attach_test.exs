@@ -188,17 +188,15 @@ defmodule CodingAgent.AttachTest do
     assert helyx([dir, "--model", "nope/m"]) == no_provider.("nope")
     assert helyx([empty]) == no_provider.("none")
 
-    # A newest session that another OS process has open is not skipped.
-    locked = Path.join(dir, "locked")
-    File.mkdir_p!(locked)
-    {:ok, session} = Helyx.Session.File.create(sessions, Helyx.Session.Id.new(), locked, "x/m")
+    # A newest session that does not resume is not skipped.
+    broken = Path.join(dir, "broken")
+    File.mkdir_p!(broken)
+    {:ok, session} = Helyx.Session.File.create(sessions, Helyx.Session.Id.new(), broken, "x/m")
     Helyx.Test.SessionFile.append_message(session, Helyx.Message.user("p"))
-    {:ok, lock} = Lock.take(Path.rootname(session.path))
 
-    assert helyx([locked]) =~
-             ~r/^helyx: could not reattach to the newest session \(helyx --new starts one\): .*session_locked/
-
-    Lock.release(lock)
+    assert helyx([broken]) ==
+             "helyx: could not reattach to the newest session (helyx --new starts one): " <>
+               ~s(no provider has the id "x"\n)
 
     assert helyx([empty, "--resume"]) ==
              "helyx: could not start the agent: no saved session for this directory; " <>

@@ -424,26 +424,26 @@ defmodule Helyx.TUI.SwitchTest do
 
   test "a failed resume shows the error and stays on the current session",
        %{core: core, sessions: sessions, opts: opts} do
-    # The session runs in another Core, so its lock is held. A resume in
-    # the same Core would attach to it (#657).
-    other = :"switch_other_#{System.unique_integer([:positive])}"
-    other_opts = [name: other, plugins: [Fake], sessions_dir: sessions, model: "fake/echo"]
-    start_supervised!({Helyx.Core, other_opts}, id: other)
-    open = saved(other, opts, "still open", false)
+    # The saved session names a provider that its Core does not have, so a
+    # resume of it fails (#657).
+    broken = saved(core, opts, "still open")
+    [path] = Path.wildcard(Path.join([sessions, "**", broken.id <> ".jsonl"]))
+    File.write!(path, String.replace(File.read!(path), ~s("fake/echo"), ~s("gone/echo")))
     {:ok, current} = start(core, opts)
     state = current |> mount!(opts) |> command("/resume") |> listed()
     link = state.session
     assert [{id, _line}] = state.list.items
-    assert id == open.id
+    assert id == broken.id
 
     state = state |> key("enter") |> finish()
 
     assert state.session == link
     assert Process.alive?(Session.pid(current))
 
-    # The server gives one fixed text, with no term of its error.
+    # The wire maps the unknown provider to its own fixed text; no term of
+    # the error reaches the notice.
     assert List.last(ViewModel.cells(state.vm)) ==
-             {:infos, ["could not switch: the server could not open the session"]}
+             {:infos, ["could not switch: the model has an unknown provider"]}
   end
 
   test "when the session ends during a failed switch, a new one takes its place; a failed /new then ends the TUI",
@@ -509,7 +509,8 @@ defmodule Helyx.TUI.SwitchTest do
        %{sessions: sessions, opts: opts} do
     core = :"switch_raise_#{System.unique_integer([:positive])}"
     plugins = [Fake, Helyx.TUI.Test.Tool.Raises]
-    core_opts = [name: core, plugins: plugins, sessions_dir: sessions, model: "fake/echo"]
+    local_sessions = Path.join(sessions, "raise")
+    core_opts = [name: core, plugins: plugins, sessions_dir: local_sessions, model: "fake/echo"]
     start_supervised!({Helyx.Core, core_opts}, id: core)
     {:ok, current} = start(core, opts)
     state = mount!(current, opts)

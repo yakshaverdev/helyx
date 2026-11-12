@@ -276,8 +276,8 @@ defmodule Helyx.Session.Server.Records do
     %{state | transcript: state.transcript ++ [message]}
   end
 
-  defp persist(%State{save: {:saving, file, lock}} = state, append) do
-    %{state | save: {:saving, append.(file), lock}}
+  defp persist(%State{save: {:saving, file}} = state, append) do
+    %{state | save: {:saving, append.(file)}}
   rescue
     # A disk failure must not take the session down: the turn goes on in
     # memory, and persistence stays off. Only the disk write is caught, so an
@@ -288,14 +288,14 @@ defmodule Helyx.Session.Server.Records do
 
   defp persist(state, _append), do: state
 
-  # Persistence goes off for the rest of the session: after a disk failure,
-  # and after the loss of the writer lock. One notice tells the clients, the
-  # snapshot says `persisting: false`, and the log has the detail.
+  # Persistence goes off for the rest of the session after a disk failure.
+  # One notice tells the clients, the snapshot says `persisting: false`, and
+  # the log has the detail.
 
-  def stop_saving(%State{save: {:saving, _file, lock}} = state, cause, detail) do
+  defp stop_saving(%State{save: {:saving, _file}} = state, cause, detail) do
     Logger.warning("#{cause}, persistence off: #{detail}")
     text = cause <> "; the rest of this session is not saved"
-    state = %{state | save: {:stopped, length(state.transcript), lock}}
+    state = %{state | save: {:stopped, length(state.transcript)}}
     emit(state, turn_id(state.phase), :notice, %{text: text})
   end
 
@@ -306,8 +306,8 @@ defmodule Helyx.Session.Server.Records do
   def turn_entries(%State{phase: %{turn: %Turn{start: start}}} = state) do
     unsaved =
       case state.save do
-        {:saving, _file, _lock} -> nil
-        {:stopped, from, _lock} -> from
+        {:saving, _file} -> nil
+        {:stopped, from} -> from
         :never -> 0
       end
 

@@ -12,9 +12,15 @@ defmodule Helyx.Session.CompactionTest do
 
   @done {:done, %{stop_reason: :end_turn, usage: nil}}
 
-  setup do
+  @moduletag :tmp_dir
+
+  setup %{tmp_dir: dir} do
     core = :"core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [Connected, Helyx.Test.Provider]})
+
+    start_supervised!(
+      {Helyx.Core, name: core, plugins: [Connected, Helyx.Test.Provider], sessions_dir: dir}
+    )
+
     Process.register(self(), Connected.controller(core))
     %{core: core}
   end

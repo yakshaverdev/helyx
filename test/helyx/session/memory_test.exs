@@ -64,7 +64,7 @@ defmodule Helyx.Session.MemoryTest do
     @tag :tmp_dir
     test "the block is the last message of the call, and never a message of the session",
          %{tmp_dir: dir} do
-      core = start_core()
+      core = start_core(sessions_dir: dir)
       session = start(core, sessions_dir: dir)
       events = turn(session, "hello")
 
@@ -230,7 +230,7 @@ defmodule Helyx.Session.MemoryTest do
   describe "sync" do
     @tag :tmp_dir
     test "a turn end sends the messages of the turn, in order, saved", %{tmp_dir: dir} do
-      core = start_core()
+      core = start_core(sessions_dir: dir)
       session = start(core, sessions_dir: dir)
       events = turn(session, "hello")
       [user, answer] = messages(events)
@@ -261,7 +261,7 @@ defmodule Helyx.Session.MemoryTest do
     @tag :tmp_dir
     test "a raise and a wrong shape drop the chunk with a notice, and later batches go on",
          %{tmp_dir: dir} do
-      core = start_core()
+      core = start_core(sessions_dir: dir)
       session = start(core, sessions_dir: dir)
 
       for text <- ["sync_raise", "sync_bad"] do
@@ -283,7 +283,7 @@ defmodule Helyx.Session.MemoryTest do
 
     @tag :tmp_dir
     test "a resume replays every saved message before any live batch", %{tmp_dir: dir} do
-      core = start_core()
+      core = start_core(sessions_dir: dir)
       session = start(core, sessions_dir: dir)
       first = messages(turn(session, "one"))
       assert_receive {:sync, _, _}

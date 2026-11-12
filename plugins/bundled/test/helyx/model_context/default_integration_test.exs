@@ -29,8 +29,8 @@ defmodule Helyx.ModelContext.DefaultIntegrationTest do
        %{tmp_dir: dir} do
     core = :"core_#{System.unique_integer([:positive])}"
     plugins = [Helyx.Provider.Fake, Helyx.ModelContext.Default]
-    start_supervised!({Helyx.Core, name: core, plugins: plugins})
     sessions = Path.join(dir, "sessions")
+    start_supervised!({Helyx.Core, name: core, plugins: plugins, sessions_dir: sessions})
 
     {:ok, session} = Session.start(core, model: "fake/system", cwd: dir, sessions_dir: sessions)
     {:ok, _, _} = Session.subscribe(session)

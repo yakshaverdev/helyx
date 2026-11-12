@@ -3,7 +3,7 @@ defmodule Helyx.Session.TurnRecordTest do
   use ExUnit.Case, async: true
 
   import Helyx.Test.Events
-  import Helyx.Test.SessionCase, only: [start_core: 1, final_text: 1]
+  import Helyx.Test.SessionCase, only: [start_core: 2, final_text: 1]
 
   alias Helyx.Session
 
@@ -11,8 +11,8 @@ defmodule Helyx.Session.TurnRecordTest do
 
   @cap Helyx.Session.File.max_system_bytes()
 
-  setup do
-    %{core: start_core([Helyx.Test.Provider, Helyx.Test.PromptContext])}
+  setup %{tmp_dir: dir} do
+    %{core: start_core([Helyx.Test.Provider, Helyx.Test.PromptContext], sessions_dir: dir)}
   end
 
   defp start(core, dir) do
@@ -171,13 +171,14 @@ defmodule Helyx.Session.TurnRecordTest do
     [old] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl.old"))
     lines = String.split(File.read!(old), "\n", trim: true)
     assert [_header, %{"role" => "user"}] = Enum.map(lines, &JSON.decode!/1)
-    assert {:stopped, _, _} = :sys.get_state(Session.pid(session)).save
+    assert {:stopped, _} = :sys.get_state(Session.pid(session)).save
   end
 
   test "the answer to a context request writes the prompt that it sends", %{tmp_dir: dir} do
-    core = start_core([Helyx.Test.Connected, Helyx.Test.PrepareContext])
+    d = Path.join(dir, "context")
+    core = start_core([Helyx.Test.Connected, Helyx.Test.PrepareContext], sessions_dir: d)
     Process.register(self(), Helyx.Test.Connected.controller(core))
-    {:ok, session} = Session.start(core, model: "conn/context", sessions_dir: dir)
+    {:ok, session} = Session.start(core, model: "conn/context", sessions_dir: d)
     {:ok, _, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "one")
     assert_receive {:conn, :turn, proc, {:turn, turn_id, _}}
@@ -185,7 +186,7 @@ defmodule Helyx.Session.TurnRecordTest do
     assert_receive {:conn, :context, ^proc, {:context, ^turn_id, {:ok, _}}}
     collect_until(:turn_end)
 
-    assert [%{"system" => "prepared"}, %{"system" => system}] = prompts(entries(dir, session))
+    assert [%{"system" => "prepared"}, %{"system" => system}] = prompts(entries(d, session))
     assert system == "prepared for #{turn_id}"
   end
 end

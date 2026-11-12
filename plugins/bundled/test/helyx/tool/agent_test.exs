@@ -246,12 +246,13 @@ defmodule Helyx.Tool.AgentTest do
   # #854: the child gets the ModelContext of its parent, not the first one.
   test "a child gets the ModelContext of its parent", %{tmp_dir: dir} do
     core = :"core_#{System.unique_integer([:positive])}"
+    d = Path.join(dir, "context")
     plugins = [Fake, Helyx.Tool.Agent, First, Second]
-    start_supervised!({Helyx.Core, name: core, plugins: plugins, sessions_dir: dir}, id: core)
+    start_supervised!({Helyx.Core, name: core, plugins: plugins, sessions_dir: d}, id: core)
     Process.register(self(), :"#{core}_builds")
 
     session =
-      parent(core, dir, [[agent("c1")], ["child"], ["Done."]], model_context: Second)
+      parent(core, d, [[agent("c1")], ["child"], ["Done."]], model_context: Second)
 
     [result] = results(collect_until(:turn_end))
     assert Message.text(result) == "child"
@@ -266,8 +267,10 @@ defmodule Helyx.Tool.AgentTest do
     tmp_dir: dir
   } do
     core = :"core_#{System.unique_integer([:positive])}"
+    # A folder of its own: the Core of the setup holds the lock of `dir`.
+    d = Path.join(dir, "command")
     plugins = [Fake, Helyx.Tool.Agent, Commands]
-    start_supervised!({Helyx.Core, name: core, plugins: plugins, sessions_dir: dir}, id: core)
+    start_supervised!({Helyx.Core, name: core, plugins: plugins, sessions_dir: d}, id: core)
     Process.register(self(), :"#{core}_builds")
 
     session = parent(core, dir, [[agent("c1", "/skill do it")], ["child"], ["Done."]])

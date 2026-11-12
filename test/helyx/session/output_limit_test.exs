@@ -5,7 +5,7 @@ defmodule Helyx.Session.OutputLimitTest do
   use ExUnit.Case, async: true
 
   import Helyx.Test.Events, only: [collect_until: 1]
-  import Helyx.Test.SessionCase, only: [start_core: 1, final_text: 1]
+  import Helyx.Test.SessionCase, only: [start_core: 2, final_text: 1]
 
   alias Helyx.Session
 
@@ -13,8 +13,13 @@ defmodule Helyx.Session.OutputLimitTest do
 
   @max 2_147_483_647
 
-  setup do
-    %{core: start_core([Helyx.Test.Provider, Helyx.Test.ProviderOther, Helyx.Test.Connected])}
+  setup %{tmp_dir: dir} do
+    %{
+      core:
+        start_core([Helyx.Test.Provider, Helyx.Test.ProviderOther, Helyx.Test.Connected],
+          sessions_dir: dir
+        )
+    }
   end
 
   defp start(core, dir, model, opts),
@@ -66,7 +71,7 @@ defmodule Helyx.Session.OutputLimitTest do
              inspect(bad)
     end
 
-    assert File.ls!(dir) == []
+    assert File.ls!(dir) -- ["core.lock"] == []
   end
 
   test "a provider that cannot apply the limit starts nothing", %{core: core, tmp_dir: dir} do
@@ -77,7 +82,7 @@ defmodule Helyx.Session.OutputLimitTest do
     assert start(core, dir, "conn/echo", max_output_tokens: 7) ==
              {:error, {:max_output_tokens_unsupported, "conn"}}
 
-    assert File.ls!(dir) == []
+    assert File.ls!(dir) -- ["core.lock"] == []
 
     # Without the limit both start.
     assert {:ok, _} = start(core, dir, "other/x", [])
@@ -123,11 +128,12 @@ defmodule Helyx.Session.OutputLimitTest do
 
   test "Helyx.Sessions.start/2 passes the option", %{tmp_dir: dir} do
     core = :"core_#{System.unique_integer([:positive])}"
+    d = Path.join(dir, "sessions")
 
     start_supervised!(
       {Helyx.Core,
        name: core,
-       sessions_dir: dir,
+       sessions_dir: d,
        model: "test/limit",
        plugins: [Helyx.Test.Provider, Helyx.Test.ProviderOther]},
       id: core

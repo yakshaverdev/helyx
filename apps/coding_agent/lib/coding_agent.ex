@@ -235,8 +235,8 @@ defmodule CodingAgent do
     with {:ok, id} <- Connection.resume(conn, cwd: opts[:cwd]), do: {:ok, id, true}
   end
 
-  # A newest session that does not resume (its file, its lock, or its saved
-  # model) names `--new`. The wire gives a `{code, text}` for those, and for
+  # A newest session that does not resume (its file or its saved model) names
+  # `--new`. The wire gives a `{code, text}` for those, and for
   # a few causes outside the session (tui-attach.md, Accepted holes).
   defp start_or_resume(conn, :reattach, opts) do
     case start_or_resume(conn, true, opts) do
@@ -304,6 +304,10 @@ defmodule CodingAgent do
     do: ~s(not a directory: "#{Helyx.TUI.SessionList.folder(cwd)}")
 
   defp sentence(:invalid_cwd), do: "the directory is not UTF-8 or holds a NUL byte"
+
+  # Another Core, in this node or in another OS process, holds the folder.
+  defp sentence({:data_folder_locked, dir}),
+    do: "another Helyx process holds the data folder #{dir}"
 
   # The errors of a start or a resume over the wire.
   defp sentence(:too_many_sessions), do: "the server runs as many sessions as it can"
