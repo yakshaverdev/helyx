@@ -6,7 +6,7 @@ defmodule Helyx.Session.Server.Feed do
   # never blocks, and the session keeps no state for each watcher.
 
   alias Helyx.{Event, ModelRef}
-  alias Helyx.Session.Server.{Flow, State}
+  alias Helyx.Session.Server.{Asks, Flow, State}
 
   # The mailbox length of a watcher at which the session drops a notice and
   # counts it (session-feed.md, "Bounds").
@@ -40,6 +40,27 @@ defmodule Helyx.Session.Server.Feed do
   end
 
   def event(core, %Event{type: type} = event), do: dispatch(core, type, event)
+
+  # The answer of `Helyx.Sessions.sync/1`: the full state at this send to one
+  # watcher, through the deliver rule of the feed. The Live goes in the Sync,
+  # so `fed` takes its key and no second Live follows. A session before its
+  # open has no state to send.
+  def reply(%State{instance_id: nil} = state, _watcher), do: state
+
+  def reply(%State{} = state, watcher) do
+    sync = %Helyx.Sessions.Sync{
+      live: live(state),
+      asks: Enum.map(Asks.snapshot(state), & &1.ask_id)
+    }
+
+    registry = Helyx.Core.feed_registry(state.core)
+
+    for {^watcher, dropped} <- Registry.lookup(registry, :live),
+        do: deliver(watcher, dropped, {:helyx_feed, self(), sync})
+
+    key = {state.instance_id, Flow.idle?(state.phase), state.model}
+    %{state | fed: key}
+  end
 
   defp dispatch(core, key, payload) do
     Registry.dispatch(Helyx.Core.feed_registry(core), key, fn entries ->

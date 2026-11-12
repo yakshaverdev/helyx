@@ -20,7 +20,7 @@ defmodule Helyx.Hub.Records do
          :ok <- ensure(session_id, found, deadline, state),
          {:ok, access} <- Rules.access(session_id, found != nil, state),
          :ok <- Rules.allowed(:read, access, auth.user),
-         do: view(session_id, auth.user, state)
+         do: row_view(session_id, auth.user, state)
   end
 
   # Only the owner writes; the row of a session that the existence check
@@ -33,7 +33,7 @@ defmodule Helyx.Hub.Records do
          {:ok, access} <- Rules.access(session_id, found != nil, state),
          :ok <- Rules.allowed(:write, access, auth.user),
          :ok <- mod.update_record(db, session_id, changes, deadline),
-         do: view(session_id, auth.user, state)
+         do: row_view(session_id, auth.user, state)
   end
 
   def handle({:record_delete, auth, session_id, found}, deadline, %{store: mod, db: db} = state) do
@@ -113,7 +113,8 @@ defmodule Helyx.Hub.Records do
   # A Live of the feed writes the row of its session, or moves the model and
   # `active_at` of the row it has (decision 8). A write that fails is dropped:
   # the repair path writes the row the next time Hub sees the session. A
-  # parent link goes in a new row only.
+  # parent link goes in a new row only. The result lets the records feed send
+  # a change only after a write that took.
   def seen(%Live{} = live, deadline, %{store: mod, db: db} = state) do
     if Params.record_fields?(live.cwd, live.model) do
       now = System.os_time(:second)
@@ -223,7 +224,7 @@ defmodule Helyx.Hub.Records do
   # `failed`: the record no longer has a `stored` field to tell a stored row
   # from one the store does not hold, so it does not answer a record that it
   # cannot read back (decision 8).
-  defp view(session_id, user, %{store: mod, db: db} = state) do
+  defp row_view(session_id, user, %{store: mod, db: db} = state) do
     case mod.record(db, session_id) do
       {:ok, row} -> with {:ok, [view]} <- views([row], user, state), do: {:ok, view}
       {:error, :not_found} -> {:error, :failed}
@@ -232,8 +233,10 @@ defmodule Helyx.Hub.Records do
   end
 
   # A record as the wire shows it: the project only for its owner, and the
-  # status derived from the live set, never stored (decision 8).
-  defp views(rows, user, %{store: mod, db: db} = state) do
+  # status derived from the live set, never stored (decision 8;
+  # live-records.md).
+  @doc false
+  def views(rows, user, %{store: mod, db: db} = state) do
     with {:ok, labels} <- mod.labels(db, Enum.map(rows, & &1.session_id)),
          {:ok, users} <- mod.users(db) do
       names = Map.new(users, &{&1.id, &1.name})
@@ -260,6 +263,40 @@ defmodule Helyx.Hub.Records do
        end)}
     end
   end
+
+  @doc false
+  # One row as the wire shows it, for a change of the records feed.
+  def view(row, user, state) do
+    with {:ok, [view]} <- views([row], user, state), do: {:ok, view}
+  end
+
+  @doc false
+  # A record of `views/3` as the wire shows it. The one shape for
+  # `hub.records.*` and the records feed.
+  def wire(view) do
+    %{
+      "session" => view.session,
+      "owner" => %{"id" => view.owner.id, "name" => view.owner.name},
+      "project" => view.project,
+      "title" => view.title,
+      "labels" => view.labels,
+      "visibility" => view.visibility,
+      "archived" => view.archived,
+      "created_at" => view.created_at,
+      "updated_at" => view.updated_at,
+      "cwd" => view.cwd,
+      "model" => view.model,
+      "prompt" => view.prompt,
+      "active_at" => view.active_at,
+      "parent" => wire_parent(view.parent),
+      "status" => view.status
+    }
+  end
+
+  # The parent link of a record as the wire shows it: the session and the
+  # kind of the link, or null.
+  defp wire_parent(nil), do: nil
+  defp wire_parent({session, kind}), do: %{"session" => session, "kind" => kind}
 
   defp parent_link(%{parent_id: nil}), do: nil
   defp parent_link(%{parent_id: id, parent_kind: kind}), do: {id, kind}

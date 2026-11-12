@@ -41,14 +41,22 @@ User stories:
   watch.
 - `max_feed_queue()` is the mailbox length of a watcher at which the feed
   drops its notices.
+- `sync(core)` sends one message to every session process of the Core, with no
+  call and no wait, and returns `:ok` at once. Each open session answers the
+  caller with one `Sync` notice. The caller must watch the feed of `core`, or
+  it gets `{:error, :not_watching}`.
 
-The process that watches gets two message shapes, each from the session
+The process that watches gets three message shapes, each from the session
 process:
 
 ```text
 {:helyx_feed, session_pid, %Helyx.Sessions.Live{}}
 {:helyx_feed, session_pid, %Helyx.Event{}}   # a type that the watcher named
+{:helyx_feed, session_pid, %Helyx.Sessions.Sync{}}
 ```
+
+A `Sync` holds the `Live` of the session and the ids of its open asks at its
+send. Its ask ids are those of the `:ask` and `:ask_end` events.
 
 The order rules:
 
@@ -56,16 +64,27 @@ The order rules:
   comes before every event of that instance, and a `Live` with a new status
   comes before the events of that status, such as `running` before
   `:turn_start`. Notices of two sessions have no order between them.
+- A `Sync` is the full state of the session at its send, so every notice of
+  that session that the watcher gets after it is newer. A `Sync` comes after
+  the notices that the session sent before `sync/1` reached it, and before the
+  notices that it sends after. A session before its open sends none, and a
+  session that does not handle messages now answers when it does.
 - There is no stop notice. A watcher monitors `session_pid`; the `:DOWN` comes
   after every end, a kill too, and `Helyx.Session.end_reason/1` maps its
   reason.
 - A watcher that starts late or restarts calls `watch/2` first, then
-  `list_live/1`. Notices that arrive during the list wait in the mailbox, and
-  a notice for a pid always follows the register, so it wins over the list for
-  that pid.
+  `list_live/1`, or calls `sync/1`. Notices that arrive during either wait in
+  the mailbox, and a notice for a pid always follows the register, so it wins
+  over the list for that pid.
 
 `Helyx.Event.types/0` gives every event type, the source of the check in
 `watch/2`.
+
+`Helyx.Hub` names `:ask` and `:ask_end` in its watch beside the `Live` of
+every session, so its records feed derives the `"waiting"` status of a
+session (`docs/features/live-records.md`). The feed sends those notices as
+any other event of a named type; a session with no subscriber that answers
+makes no ask, so an open ask has a client already.
 
 `Helyx.Sessions.Live` also carries `parent`: nil, or the session id and call
 id of the tool call that started a child session
@@ -85,6 +104,9 @@ feed sent, or nil. It is internal.
   the event that a session emits and at the end of each callback, because a
   status can change with no event, as at the end of a wait.
 - `event/2` sends the event to the watchers of its type.
+- `reply/2` sends one `Sync` to one watcher, through the same deliver rule as
+  every notice, and takes its key into `fed` so the same `Live` does not
+  follow. A session before its open sends nothing.
 - `live/1` builds the `Live` that `Calls.handle(:live, ...)` answers with, so
   the status has one definition.
 
@@ -95,7 +117,8 @@ the supervisor stops it after every session.
 ## Replaced mechanism
 
 None in Core. The Core code path that lists sessions for one consumer
-(`Helyx.Sessions.list_live/1`) stays, as the repair path and the seed.
+(`Helyx.Sessions.list_live/1`) stays, for the callers that need it. The Hub
+uses `sync/1` (`hub.md`; `docs/features/live-records.md`).
 
 The Hub changes are in `hub.md`: the rows that Hub writes at a start and at the
 scan of `sessions.saved`, the live set that holds every session of the Core,
@@ -111,6 +134,7 @@ the wire nor the store schema; the record shape of the wire is E.2
 | the mailbox of one watcher | `Helyx.Sessions.max_feed_queue/0` notices: a watcher that runs behind by that many is stuck, and its notices stay under about 256 KiB | the session drops the notice and adds one to the counter of the watch; `dropped/1` reports it, and the watcher repairs its view with `list_live/1` | the session process |
 | the notices of a watcher in flight | the bound above, plus at most one notice for each of the other sessions: the 64 sessions check and send with no lock between them, so the mailbox can pass the bound by at most 63 notices. Stated, not a defect | as above | the session processes |
 | the watchers of a Core | unbounded: a product starts its own, and Hub starts one. Each costs one `Process.info/2` and one send for each notice that it watches | n/a | the product |
+| the messages of one `sync/1` | one for each session of the Core, at most the Core cap of 64; the watcher gets at most one `Sync` for each session that is open, and a watcher bounds how often it calls | a `Sync` over the mailbox bound is dropped and counted as any notice | `Helyx.Sessions.sync/1` |
 | the types of one watch | at most `length(Helyx.Event.types())` | `{:error, :invalid_types}` | `Helyx.Sessions.watch/2` |
 | the cost of an event with no watcher of its type | one Registry lookup | n/a | the session process |
 | a send of the feed | none: the session never waits for a watcher, and holds no state for one | n/a | `Helyx.Session.Server.Feed` |
@@ -129,6 +153,6 @@ the wire nor the store schema; the record shape of the wire is E.2
 - Idle unload of a session: `docs/features/idle-unload.md`.
 - A stop notice: the monitor of the session process gives the end.
 - The `starters` actor semantics of `coordinator.md`, decision 3.
-- A reconcile scan at the start of Hub: the seed and the repair path cover it.
+- A reconcile scan at the start of Hub: `sync/1` and the repair path cover it.
 - The record shape on the wire: `docs/features/hub.md` and
   `docs/features/wire-protocol.md`, protocol 11.

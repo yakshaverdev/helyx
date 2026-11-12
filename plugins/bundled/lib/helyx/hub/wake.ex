@@ -29,6 +29,8 @@ defmodule Helyx.Hub.Wake do
   # put off.
   @retry_s 30
 
+  def poll_ms, do: @poll_ms
+
   def init(state) do
     {:ok, sup} = Task.Supervisor.start_link()
     Map.put(state, :wake, %{sup: sup, tasks: %{}, poll: nil})

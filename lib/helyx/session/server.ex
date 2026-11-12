@@ -224,6 +224,11 @@ defmodule Helyx.Session.Server do
   # in the sessions Registry would keep working where no client can reach it.
   defp info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
 
+  # `Helyx.Sessions.sync/1`: the full state to one watcher of the feed. The
+  # message comes from `sync/1` only, so it checks nothing; the feed sends only
+  # to a watcher that it finds in its Registry.
+  defp info({:helyx_sync, watcher}, state), do: {:noreply, Feed.reply(state, watcher)}
+
   # The lifecycle inputs (`TurnLoop.handle/2`). If the hands die, their
   # request's `:DOWN` is dropped and their `:EXIT` stops the session. Any
   # other message is a bug and crashes the session.
