@@ -19,6 +19,6 @@ pub use blocks::{answering, approval_answer, form_answer, read_block};
 pub use connection::{Connection, NetListener};
 pub use types::{
     Ask, Block, BlockView, FormAnswerItem, FormOption, FormQuestion, LiveSession, Message,
-    NetError, Outcome, Queue, RequestLine, RequestState, Role, Row, SavedSession, SendOutcome,
-    SessionState, Shown, Snapshot,
+    NetError, Outcome, Queue, Record, RequestLine, RequestState, Role, Row, SavedSession,
+    SendOutcome, SessionState, Shown, Snapshot, Status,
 };

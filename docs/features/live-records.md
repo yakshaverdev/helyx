@@ -14,8 +14,9 @@ device turns it back to `"running"`. A session that stops shows `"stopped"`.
 
 The client asks once, gets the ordered list, and applies one event for each
 change: new, changed, removed. This slice builds the server side, the wire
-contract with its fixtures, and the fold in the Rust client core. The sidebar
-views of the desktop app and of the iOS app are a later slice.
+contract with its fixtures, and the fold in the Rust client core. The desktop
+app shows the feed in its left column; the sidebar of the iOS app is a later
+slice.
 
 User stories:
 
@@ -226,7 +227,11 @@ which tells whether the notice is that start's.
 - `client`: the reply replaces the feed, a `record` frame applies it, and a
   `records` frame replaces it again. `Client::records()` reads it. The host
   sends the subscribe after a welcome, as it sends any operation; a
-  re-subscribe on a new connection is the host's call in this slice.
+  re-subscribe on a new connection is the host's call in this slice. The
+  desktop app's network layer sends the subscribe at each welcome, takes the
+  feed's rows for its left column, and subscribes again after a `records_end`
+  and on a new connection (`docs/features/client-kit.md`, "The network
+  layer").
 - `test/fixtures/wire/records.json` (new) holds the reply, the frames, and the
   folds. `clients/rust/core/tests/records.rs` runs them.
 
@@ -269,7 +274,7 @@ the older sessions of the user; the new feed neither pages nor filters.
 
 ## Out of scope
 
-- The sidebar views of the desktop app and of the iOS app.
+- The sidebar view of the iOS app: the desktop app shows the feed.
 - Push notifications (ticket #916 uses the same "waits for the user" fact).
 - A subscription to the records of other users, of a team, or of the `"hub"`
   sessions of other users.

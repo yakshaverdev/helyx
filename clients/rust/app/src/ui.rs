@@ -17,10 +17,11 @@ use gpui::{
 };
 use helyx_client_core::attention::{Seen, attention};
 use helyx_client_core::fold::State;
-use helyx_client_core::frame::SavedSession;
+use helyx_client_core::frame::{LiveSession, SavedSession};
 use helyx_client_core::json::Json;
 use helyx_client_core::message::{Ask, Block, Message, Role};
 use helyx_client_core::operation::Operation;
+use helyx_client_core::records::{Record, Status};
 use helyx_client_core::transcript::{Row, open_calls, rows};
 use helyx_client_core::ui_block::MAX_BYTES;
 use helyx_client_core::vocabulary::{
@@ -32,6 +33,7 @@ use helyx_desktop::controls::confirm_stop;
 use helyx_desktop::input::{Focus, Input, Intent, Press};
 use helyx_desktop::net::{self, Command, RequestLine, RequestState, Shared};
 use helyx_desktop::notify;
+use helyx_desktop::records::{saved_only, texts};
 use helyx_desktop::settings::Server;
 use std::collections::HashMap;
 use std::sync::mpsc::{Sender, channel, sync_channel};
@@ -44,6 +46,8 @@ const DIM: u32 = 0x9a9a9a;
 const OK: u32 = 0x8fce8f;
 const FAILED: u32 = 0xd06060;
 const UNKNOWN: u32 = 0xc0a060;
+/// The mark of a row that waits for the user.
+const WAITING: u32 = 0xffc857;
 /// The lines of the composer that the window shows, as the TUI.
 const COMPOSER_LINES: usize = 8;
 /// The request lines that the window shows; the rest are counted.
@@ -72,11 +76,13 @@ struct Desktop {
     /// on the same row inside `STOP_CONFIRM` sends the stop. A click
     /// elsewhere clears it.
     armed: Option<(String, Instant)>,
-    /// The number of the `stop` of a live row whose outcome asks for a fresh
-    /// live list: a stopped session leaves the list, and the server sends no
-    /// live list of its own.
+    /// The number of the `stop` of a row whose outcome asks for a fresh live
+    /// list on a server with no Hub: a stopped session leaves the live list,
+    /// and that server sends no live list of its own. With a records feed the
+    /// change comes as a record frame, and no list is asked again.
     stop_send: Option<SendId>,
-    /// Whether a stop was answered `ok` and the live list is due again.
+    /// Whether a stop was answered `ok` and the live list of a server with no
+    /// Hub is due again.
     live_due: bool,
     /// The facts of the state of the followed session that the last frame
     /// saw, from which a change posts a notification while the window is not
@@ -158,8 +164,9 @@ impl Desktop {
     }
 
     /// Asks the live sessions again after the server answered a `stop` with
-    /// `ok`: the stopped session already left the live list, and no push
-    /// carries the new one.
+    /// `ok` on a server with no Hub: the stopped session already left the
+    /// live list, and no push carries the new one. With a records feed the
+    /// feed sends the change, and no path sets `live_due`.
     fn refresh_live(&mut self) {
         if !self.live_due {
             return;
@@ -205,7 +212,8 @@ impl Desktop {
             .and_then(|session| shared.client.state(session))
             .map_or(&[], |state| &state.asks);
         // A stop whose reply asks for a fresh live list; a pending report
-        // waits, and a failed one stops the wait.
+        // waits, and a failed one stops the wait. A records feed sends the
+        // change itself, so only a server with no Hub asks again.
         if let Some(send) = self.stop_send
             // One read can hold the pending report and the reply: the last counts.
             && let Some((_, outcome)) = outcomes.iter().rev().find(|(id, _)| *id == send)
@@ -214,7 +222,9 @@ impl Desktop {
                 SendOutcome::Pending => {}
                 SendOutcome::Ok => {
                     self.stop_send = None;
-                    self.live_due = true;
+                    if !shared.records {
+                        self.live_due = true;
+                    }
                 }
                 SendOutcome::Failed(_) => self.stop_send = None,
             }
@@ -224,13 +234,17 @@ impl Desktop {
     }
 
     /// The folder of a new session, until the user gives one: the newest
-    /// saved session, else the first live one.
+    /// saved session, else the first live one, else the first record of the
+    /// feed.
     fn default_cwd(&mut self) {
         let cwd = {
             let shared = self.shared();
             (shared.saved.first())
                 .map(|session| session.cwd.clone())
                 .or_else(|| shared.live.first().map(|session| session.cwd.clone()))
+                .or_else(|| {
+                    (shared.client.records().rows().first()).map(|record| record.cwd.clone())
+                })
         };
         if let Some(cwd) = cwd {
             self.input.default_cwd(&cwd);
@@ -415,7 +429,20 @@ impl Render for Desktop {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.settle();
         self.default_cwd();
-        let (live, followed, line, running, saved, saved_next, requests, seen, posted) = {
+        let (
+            records_feed,
+            record_rows,
+            records_more,
+            live,
+            followed,
+            line,
+            running,
+            saved,
+            saved_next,
+            requests,
+            seen,
+            posted,
+        ) = {
             let shared = self.shared();
             let state = shared
                 .followed
@@ -437,6 +464,9 @@ impl Render for Desktop {
                 _ => None,
             };
             (
+                shared.records,
+                shared.client.records().rows().to_vec(),
+                shared.client.records().more(),
                 shared.live.clone(),
                 shared.followed.clone(),
                 line,
@@ -476,10 +506,15 @@ impl Render for Desktop {
                 }
             }))
             .child(self.sidebar(
-                &live,
-                &saved,
-                saved_next.as_deref(),
-                followed.as_deref(),
+                Sidebar {
+                    feed: records_feed,
+                    records: &record_rows,
+                    more: records_more,
+                    live: &live,
+                    saved: &saved,
+                    saved_next: saved_next.as_deref(),
+                    followed: followed.as_deref(),
+                },
                 cx,
             ))
             .child(
@@ -520,78 +555,114 @@ impl Render for Desktop {
     }
 }
 
+/// What a click on a row does.
+enum Click {
+    /// Follow the session of the row.
+    Follow(String),
+    /// Resume the stopped session of the row: its reply follows it.
+    Resume(String),
+}
+
+/// The state that the left column draws, as one snapshot.
+struct Sidebar<'a> {
+    /// Whether the connection has a records feed.
+    feed: bool,
+    records: &'a [Record],
+    more: bool,
+    live: &'a [LiveSession],
+    saved: &'a [SavedSession],
+    saved_next: Option<&'a str>,
+    followed: Option<&'a str>,
+}
+
 impl Desktop {
-    fn sidebar(
-        &self,
-        live: &[helyx_client_core::frame::LiveSession],
-        saved: &[SavedSession],
-        saved_next: Option<&str>,
-        followed: Option<&str>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let live_rows = (live.iter()).map(|session| {
-            let id = session.id.clone();
-            let chosen = followed == Some(id.as_str());
-            let armed = self.armed.as_ref().is_some_and(|(row, _)| row == &id);
-            let row_id = SharedString::from(format!("live-{id}"));
-            let stop = {
-                let stop_row = id.clone();
-                div()
-                    .id(SharedString::from(format!("stop-{stop_row}")))
-                    .px_1()
-                    .rounded_md()
-                    .bg(rgb(0x5a3030))
-                    .cursor_pointer()
-                    .child(if armed { "stop?" } else { "stop" })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        // The stop control takes the click, so the row below
-                        // does not follow it and the root does not clear it.
-                        cx.stop_propagation();
-                        let now = Instant::now();
-                        match confirm_stop(this.armed.as_ref(), &stop_row, now) {
-                            true => {
-                                this.armed = None;
-                                let send = this.input.send_number();
-                                this.stop_send = Some(send);
-                                this.send_operation(Some(send), Operation::stop(&stop_row));
-                            }
-                            false => this.armed = Some((stop_row.clone(), now)),
-                        }
-                        cx.notify();
-                    }))
-            };
-            div()
-                .id(row_id)
-                .p_2()
-                .flex()
-                .gap_2()
-                .items_center()
-                .when(chosen, |d| d.bg(rgb(0x3a3a4a)))
-                .child(
-                    div()
-                        .flex_1()
-                        .child(format!("{} · {}", session.cwd, session.model)),
+    fn sidebar(&self, state: Sidebar<'_>, cx: &mut Context<Self>) -> impl IntoElement {
+        let Sidebar {
+            feed,
+            records,
+            more,
+            live,
+            saved,
+            saved_next,
+            followed,
+        } = state;
+        // The core holds the order of the feed: the window draws it as it
+        // comes.
+        let rows: Vec<AnyElement> = if feed {
+            (records.iter())
+                .map(|record| {
+                    let id = record.session.clone();
+                    let chosen = followed == Some(id.as_str());
+                    let armed = self.armed.as_ref().is_some_and(|(row, _)| row == &id);
+                    let stop = (record.status != Status::Stopped)
+                        .then(|| self.stop_control(&id, armed, cx));
+                    let click = match record.status {
+                        Status::Stopped => Click::Resume(id.clone()),
+                        _ => Click::Follow(id.clone()),
+                    };
+                    let texts = texts(record, records);
+                    self.row_view(
+                        format!("record-{id}"),
+                        texts.title,
+                        Some(texts.detail),
+                        texts.parent,
+                        if texts.waiting { WAITING } else { 0xffffff },
+                        chosen,
+                        stop,
+                        click,
+                        cx,
+                    )
+                    .into_any_element()
+                })
+                .collect()
+        } else {
+            (live.iter())
+                .map(|session| {
+                    let id = session.id.clone();
+                    let chosen = followed == Some(id.as_str());
+                    let armed = self.armed.as_ref().is_some_and(|(row, _)| row == &id);
+                    let stop = Some(self.stop_control(&id, armed, cx));
+                    self.row_view(
+                        format!("live-{id}"),
+                        format!("{} · {}", session.cwd, session.model),
+                        None,
+                        None,
+                        0xdddddd,
+                        chosen,
+                        stop,
+                        Click::Follow(id),
+                        cx,
+                    )
+                    .into_any_element()
+                })
+                .collect()
+        };
+        // With a feed a session shows in one list only.
+        let shown: Vec<&SavedSession> = match feed {
+            true => saved_only(saved, records),
+            false => saved.iter().collect(),
+        };
+        let saved_rows: Vec<AnyElement> = (shown.into_iter())
+            .map(|session| {
+                let id = session.id.clone();
+                self.row_view(
+                    format!("saved-{id}"),
+                    session.prompt.clone(),
+                    Some(session.cwd.clone()),
+                    None,
+                    0xdddddd,
+                    false,
+                    None,
+                    Click::Resume(id),
+                    cx,
                 )
-                .child(stop)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.send_command(Command::Follow(id.clone()));
-                    cx.notify();
-                }))
-        });
-        let saved_rows = (saved.iter()).map(|session| {
-            let id = session.id.clone();
-            div()
-                .id(SharedString::from(format!("saved-{id}")))
-                .p_2()
-                .flex()
-                .flex_col()
-                .cursor_pointer()
-                .child(session.prompt.clone())
-                .child(dim(&session.cwd))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.send(Operation::resume(&id));
-                    cx.notify();
-                }))
+                .into_any_element()
+            })
+            .collect();
+        let records_more = (feed && more).then(|| {
+            div().px_2().text_color(rgb(DIM)).child(
+                "the owner has more sessions than this list shows; the saved list below holds them",
+            )
         });
         let more = saved_next.map(|next| {
             let next = next.to_owned();
@@ -619,16 +690,19 @@ impl Desktop {
             .w(px(280.))
             .border_r_1()
             .border_color(rgb(0x3a3a3a))
-            .child(dim_row("live"))
-            .children(live_rows)
-            .child(dim_row("saved"))
+            // One scroll area for both lists: the rows of the feed have no
+            // small bound, and the field of a new session stays in view.
             .child(
                 div()
-                    .id("saved-list")
+                    .id("session-lists")
                     .flex()
                     .flex_col()
                     .flex_1()
                     .overflow_y_scroll()
+                    .child(dim_row(if feed { "sessions" } else { "live" }))
+                    .children(rows)
+                    .when_some(records_more, |d, line| d.child(line))
+                    .child(dim_row("saved"))
                     .children(saved_rows)
                     .when_some(more, |d, more| d.child(more)),
             )
@@ -690,6 +764,87 @@ impl Desktop {
                             })),
                     ),
             )
+    }
+
+    /// One row of the left column: the lines of `title`, `detail`, and
+    /// `parent`, the highlight of the followed row, and the control of the
+    /// stop when the row has one. A click does `click`.
+    #[allow(clippy::too_many_arguments)]
+    fn row_view(
+        &self,
+        key: String,
+        title: String,
+        detail: Option<String>,
+        parent: Option<String>,
+        color: u32,
+        chosen: bool,
+        stop: Option<AnyElement>,
+        click: Click,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let mut lines = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .flex_1()
+            .child(div().text_color(rgb(color)).child(title));
+        // The parent of a child is the second line, dim; the folder, the
+        // model, and the status follow.
+        if let Some(parent) = parent {
+            lines = lines.child(dim(&parent));
+        }
+        if let Some(detail) = detail {
+            lines = lines.child(dim(&detail));
+        }
+        let mut row = div()
+            .id(SharedString::from(key))
+            .p_2()
+            .flex()
+            .gap_2()
+            .items_center()
+            .cursor_pointer()
+            .when(chosen, |d| d.bg(rgb(0x3a3a4a)))
+            .child(lines);
+        if let Some(stop) = stop {
+            row = row.child(stop);
+        }
+        row.on_click(cx.listener(move |this, _, _, cx| {
+            match &click {
+                Click::Follow(id) => this.send_command(Command::Follow(id.clone())),
+                Click::Resume(id) => this.send(Operation::resume(id)),
+            }
+            cx.notify();
+        }))
+    }
+
+    /// The **stop** control of a row: one click arms it as **stop?**, and a
+    /// second click inside `controls::STOP_CONFIRM` sends the stop.
+    fn stop_control(&self, session: &str, armed: bool, cx: &mut Context<Self>) -> AnyElement {
+        let stop_row = session.to_owned();
+        div()
+            .id(SharedString::from(format!("stop-{stop_row}")))
+            .px_1()
+            .rounded_md()
+            .bg(rgb(0x5a3030))
+            .cursor_pointer()
+            .child(if armed { "stop?" } else { "stop" })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                // The stop control takes the click, so the row below does not
+                // follow it and the root does not clear it.
+                cx.stop_propagation();
+                let now = Instant::now();
+                match confirm_stop(this.armed.as_ref(), &stop_row, now) {
+                    true => {
+                        this.armed = None;
+                        let send = this.input.send_number();
+                        this.stop_send = Some(send);
+                        this.send_operation(Some(send), Operation::stop(&stop_row));
+                    }
+                    false => this.armed = Some((stop_row.clone(), now)),
+                }
+                cx.notify();
+            }))
+            .into_any_element()
     }
 
     fn status(&self, requests: &[RequestLine]) -> gpui::Div {
