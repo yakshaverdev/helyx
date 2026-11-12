@@ -10,23 +10,25 @@ defmodule Helyx.Tool.Args do
   # `minLength` and `maxLength` count bytes, as the tool
   # descriptions state, not the code points of JSON Schema. Another keyword
   # raises, so a new tool cannot use a keyword that nothing checks.
+  # `additionalProperties: false` refuses a key that `properties` does not
+  # name, with `"<key> is not an argument"`.
 
-  @keywords ~w(type properties required enum minimum maximum minLength maxLength
-               items minItems maxItems default description additionalProperties)
+  @keywords ~w(type properties required additionalProperties enum minimum maximum
+               minLength maxLength items minItems maxItems default description)
   @types ~w(object array string integer number boolean)
 
   # Each keyword that states a rule, and the types that it fits.
   @constrained %{
     "properties" => ~w(object),
     "required" => ~w(object),
+    "additionalProperties" => ~w(object),
     "minimum" => ~w(integer number),
     "maximum" => ~w(integer number),
     "minLength" => ~w(string),
     "maxLength" => ~w(string),
     "minItems" => ~w(array),
     "maxItems" => ~w(array),
-    "items" => ~w(array),
-    "additionalProperties" => ~w(object)
+    "items" => ~w(array)
   }
 
   @doc false
@@ -66,7 +68,7 @@ defmodule Helyx.Tool.Args do
 
         key == "additionalProperties" and not is_boolean(value) ->
           raise ArgumentError,
-                "the schema keyword \"additionalProperties\" needs true or false at #{where(path)}"
+                "the schema keyword \"additionalProperties\" takes true or false at #{where(path)}"
 
         Map.has_key?(@constrained, key) and schema["type"] not in @constrained[key] ->
           raise ArgumentError,
@@ -166,31 +168,32 @@ defmodule Helyx.Tool.Args do
     properties = Map.get(schema, "properties", %{})
     required = Map.get(schema, "required", [])
 
-    checked =
-      Enum.reduce_while(properties, {:ok, value}, fn {name, sub}, {:ok, acc} ->
-        case property(sub, Map.get(value, name), name in required, path, name) do
-          :absent -> {:cont, {:ok, Map.delete(acc, name)}}
-          {:ok, checked} -> {:cont, {:ok, Map.put(acc, name, checked)}}
-          {:error, text} -> {:halt, {:error, text}}
-        end
-      end)
-
-    case checked do
-      {:ok, checked} -> unknown(schema, checked, path, properties)
+    case extra(schema, value, properties, path) do
+      :ok -> fields(properties, value, required, path)
       {:error, text} -> {:error, text}
     end
   end
 
-  # `additionalProperties: false` refuses a key that the properties do not
-  # name, so a misspelled argument of an object fails here, at its entry.
-  defp unknown(%{"additionalProperties" => false}, value, path, properties) do
-    case value |> Map.keys() |> Enum.sort() |> Enum.find(&(not Map.has_key?(properties, &1))) do
-      nil -> {:ok, value}
-      name -> {:error, "#{join(path, name)} is not a known argument"}
+  defp fields(properties, value, required, path) do
+    Enum.reduce_while(properties, {:ok, value}, fn {name, sub}, {:ok, acc} ->
+      case property(sub, Map.get(value, name), name in required, path, name) do
+        :absent -> {:cont, {:ok, Map.delete(acc, name)}}
+        {:ok, checked} -> {:cont, {:ok, Map.put(acc, name, checked)}}
+        {:error, text} -> {:halt, {:error, text}}
+      end
+    end)
+  end
+
+  # A key that the schema does not name is an error only when the schema
+  # says so, so a tool that keeps its unknown keys does not change.
+  defp extra(%{"additionalProperties" => false}, value, properties, path) do
+    case Enum.find(Enum.sort(Map.keys(value)), &(not Map.has_key?(properties, &1))) do
+      nil -> :ok
+      name -> {:error, "#{join(path, name)} is not an argument"}
     end
   end
 
-  defp unknown(_schema, value, _path, _properties), do: {:ok, value}
+  defp extra(_schema, _value, _properties, _path), do: :ok
 
   defp property(_sub, nil, true, path, name), do: {:error, "#{join(path, name)} is required"}
   defp property(%{"default" => default}, nil, false, _path, _name), do: {:ok, default}

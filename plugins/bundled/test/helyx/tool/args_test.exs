@@ -191,22 +191,54 @@ defmodule Helyx.Tool.ArgsTest do
     assert Args.check(%{"path" => "a"}, schema) == {:ok, %{"path" => "a"}}
   end
 
-  test "additionalProperties false refuses a key that the properties do not name" do
+  test "additionalProperties false refuses a key that properties does not name" do
     schema =
       schema(%{
-        "worktree" => %{
+        "item" => %{
           "type" => "object",
-          "properties" => %{"branch" => %{"type" => "string"}},
-          "required" => ["branch"],
+          "properties" => %{"label" => %{"type" => "string"}},
           "additionalProperties" => false
         }
       })
 
-    assert Args.check(%{"worktree" => %{"branch" => "a"}}, schema) ==
-             {:ok, %{"worktree" => %{"branch" => "a"}}}
+    assert Args.check(%{"item" => %{"label" => "a"}}, schema) ==
+             {:ok, %{"item" => %{"label" => "a"}}}
 
-    assert Args.check(%{"worktree" => %{"branch" => "a", "extra" => 1}}, schema) ==
-             {:error, "worktree.extra is not a known argument"}
+    assert Args.check(%{"item" => %{"label" => "a", "other" => 1}}, schema) ==
+             {:error, "item.other is not an argument"}
+  end
+
+  test "additionalProperties true keeps the unknown keys, as a schema without it does" do
+    schema =
+      schema(%{"path" => %{"type" => "string"}})
+      |> Map.put("additionalProperties", true)
+
+    assert Args.check(%{"path" => "a", "extra" => 1}, schema) ==
+             {:ok, %{"path" => "a", "extra" => 1}}
+  end
+
+  test "the first unknown key of a sorted order is the error" do
+    schema =
+      schema(%{"path" => %{"type" => "string"}})
+      |> Map.put("additionalProperties", false)
+
+    assert Args.check(%{"path" => "a", "b" => 1, "c" => 2}, schema) ==
+             {:error, "b is not an argument"}
+  end
+
+  test "a value of additionalProperties that is not a boolean, and the keyword on another type, raise" do
+    schema = schema(%{}) |> Map.put("additionalProperties", "no")
+
+    assert_raise ArgumentError, ~r/"additionalProperties" takes true or false/, fn ->
+      Args.check(%{}, schema)
+    end
+
+    assert_raise ArgumentError, ~r/"additionalProperties" does not fit the type "string"/, fn ->
+      Args.check(
+        %{"path" => "a"},
+        schema(%{"path" => %{"type" => "string", "additionalProperties" => false}})
+      )
+    end
   end
 
   test "an unknown keyword raises at the first call" do
