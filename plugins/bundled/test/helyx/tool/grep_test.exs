@@ -107,6 +107,16 @@ defmodule Helyx.Tool.GrepTest do
     assert run(%{"pattern" => "hit", "ignore_case" => true}, dir) == "a.txt:1:HIT\na.txt:2:hit"
   end
 
+  test "the glob filters the files of a folder", %{tmp_dir: dir} do
+    write(dir, "a.ex", "hit\n")
+    write(dir, "b.txt", "hit\n")
+    write(dir, "src/c.ex", "hit\n")
+
+    assert run(%{"pattern" => "hit", "glob" => "*.ex"}, dir) == "a.ex:1:hit\nsrc/c.ex:1:hit"
+    assert run(%{"pattern" => "hit", "glob" => "src/*.ex"}, dir) == "src/c.ex:1:hit"
+    assert run(%{"pattern" => "hit", "glob" => "*.rb"}, dir) == "no match"
+  end
+
   test "context shows the lines around a match, once", %{tmp_dir: dir} do
     write(dir, "a.txt", "one\ntwo\nHIT\nfour\nfive\n")
 

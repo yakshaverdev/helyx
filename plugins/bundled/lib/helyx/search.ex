@@ -27,6 +27,8 @@ defmodule Helyx.Search do
   @skipped ~w(.git _build deps node_modules target .elixir_ls)
   @cut_mark "…"
 
+  alias Helyx.Search.Glob
+
   @typedoc "The tool whose deadline and result this is."
   @type tool :: :grep | :find
 
@@ -127,14 +129,15 @@ defmodule Helyx.Search do
   def find(args, cwd) do
     with {:ok, root} <- folder(args["path"], cwd) do
       deadline = now() + deadline_ms(:find)
-      run = fn report -> walk(root, deadline, max_entries(:find), report) end
+      keep = file_filter(args["glob"], cwd)
+      run = fn report -> walk(root, deadline, max_entries(:find), report, keep) end
 
       case search(run, [], deadline) do
         {:done, {files, stop}} ->
-          {:ok, render_find(files, stop, cwd, args["glob"], args["limit"])}
+          {:ok, render_find(files, stop, cwd, args["limit"])}
 
         {:timeout, files} ->
-          {:ok, render_find(files, :deadline, cwd, args["glob"], args["limit"])}
+          {:ok, render_find(files, :deadline, cwd, args["limit"])}
       end
     end
   end
@@ -193,7 +196,8 @@ defmodule Helyx.Search do
   # The search in a Task of the tool call, so that a match that does not end
   # is killed at the deadline. The Task reports its state as it goes; past
   # the deadline the caller keeps the last report. The result is rendered in
-  # the caller, so the Task does no work past the deadline.
+  # the caller, so the Task does no work past the deadline; the caller does no
+  # glob match, because the walk keeps only the files that match.
   defp search(fun, empty, deadline) do
     tag = make_ref()
     parent = self()
@@ -241,7 +245,8 @@ defmodule Helyx.Search do
   end
 
   defp grep_run(report, :dir, root, cwd, regex, args, deadline) do
-    {files, stop} = walk(root, deadline, max_entries(:grep))
+    keep = file_filter(args["glob"], cwd)
+    {files, stop} = walk(root, deadline, max_entries(:grep), fn _files -> :ok end, keep)
     grep_files(Enum.sort(files), cwd, regex, args, deadline, stop, report, empty_grep())
   end
 
@@ -410,11 +415,10 @@ defmodule Helyx.Search do
 
   ## find
 
-  defp render_find(files, stop, cwd, glob, limit) do
+  defp render_find(files, stop, cwd, limit) do
     paths =
       files
       |> Enum.map(&rel(&1, cwd))
-      |> Enum.filter(&glob?(glob, &1))
       |> Enum.sort()
 
     total = length(paths)
@@ -445,55 +449,61 @@ defmodule Helyx.Search do
   ## the walk
 
   @doc """
-  Visits the files under `root` and returns `{files, stop}`: their full paths,
-  in the order of the walk, and `nil`, `:entries` past the `max_entries`
-  argument, or `:deadline` at `deadline`. `report` gets the list so far every
-  #{@progress_entries} entries. A link to a folder is not entered.
+  Visits the files under `root` and returns `{files, stop}`: the full paths
+  that `filter` accepts, in the order of the walk, and `nil`, `:entries` past
+  the `max_entries` argument, or `:deadline` at `deadline`. `report` gets the
+  list so far every #{@progress_entries} entries. A file that `filter` refuses
+  still counts for `max_entries`. A link to a folder is not entered.
   """
-  @spec walk(Path.t(), integer(), non_neg_integer(), ([Path.t()] -> any())) ::
-          {[Path.t()], nil | :entries | :deadline}
-  def walk(root, deadline, max_entries, report \\ fn _files -> :ok end) do
-    {files, stop, _visited} = walk_dir(root, [], report, deadline, max_entries, 0)
+  @spec walk(
+          Path.t(),
+          integer(),
+          non_neg_integer(),
+          ([Path.t()] -> any()),
+          (Path.t() -> boolean()) | nil
+        ) :: {[Path.t()], nil | :entries | :deadline}
+  def walk(root, deadline, max_entries, report \\ fn _files -> :ok end, filter \\ nil) do
+    {files, stop, _visited} = walk_dir(root, [], {deadline, max_entries, report, filter}, 0)
     {files, stop}
   end
 
-  defp walk_dir(dir, files, report, deadline, max, visited) do
+  defp walk_dir(dir, files, ctx, visited) do
     case File.ls(dir) do
-      {:ok, names} -> walk_entries(Enum.sort(names), dir, files, report, deadline, max, visited)
+      {:ok, names} -> walk_entries(Enum.sort(names), dir, files, ctx, visited)
       {:error, _reason} -> {files, nil, visited}
     end
   end
 
-  defp walk_entries([], _dir, files, _report, _deadline, _max, visited), do: {files, nil, visited}
+  defp walk_entries([], _dir, files, _ctx, visited), do: {files, nil, visited}
 
-  defp walk_entries([name | rest], dir, files, report, deadline, max, visited) do
+  defp walk_entries([name | rest], dir, files, {deadline, max, _report, _filter} = ctx, visited) do
     cond do
-      name in @skipped -> walk_entries(rest, dir, files, report, deadline, max, visited)
+      name in @skipped -> walk_entries(rest, dir, files, ctx, visited)
       visited >= max -> {files, :entries, visited}
       now() >= deadline -> {files, :deadline, visited}
-      true -> walk_entry(rest, dir, name, files, report, deadline, max, visited)
+      true -> walk_entry(rest, dir, name, files, ctx, visited)
     end
   end
 
-  defp walk_entry(rest, dir, name, files, report, deadline, max, visited) do
+  defp walk_entry(rest, dir, name, files, {_deadline, _max, report, filter} = ctx, visited) do
     full = Path.join(dir, name)
     next = visited + 1
 
     case type(full) do
       :dir ->
-        {files, stop, visited} = walk_dir(full, files, report, deadline, max, next)
+        {files, stop, visited} = walk_dir(full, files, ctx, next)
 
         if stop,
           do: {files, stop, visited},
-          else: walk_entries(rest, dir, files, report, deadline, max, visited)
+          else: walk_entries(rest, dir, files, ctx, visited)
 
       :file ->
-        files = [full | files]
+        files = if is_nil(filter) or filter.(full), do: [full | files], else: files
         files = if rem(next, @progress_entries) == 0, do: report_files(files, report), else: files
-        walk_entries(rest, dir, files, report, deadline, max, next)
+        walk_entries(rest, dir, files, ctx, next)
 
       :skip ->
-        walk_entries(rest, dir, files, report, deadline, max, next)
+        walk_entries(rest, dir, files, ctx, next)
     end
   end
 
@@ -530,6 +540,15 @@ defmodule Helyx.Search do
   """
   @spec glob?(String.t(), String.t()) :: boolean()
   defdelegate glob?(glob, path), to: Helyx.Search.Glob
+
+  # The glob of a search, compiled once. A glob with no `/` matches the name
+  # and one with a `/` matches the path from the folder, as `glob?/2` does.
+  defp file_filter(nil, _cwd), do: nil
+
+  defp file_filter(glob, cwd) do
+    compiled = Glob.compile(glob)
+    fn full -> Glob.match?(compiled, rel(full, cwd)) end
+  end
 
   ## helpers
 

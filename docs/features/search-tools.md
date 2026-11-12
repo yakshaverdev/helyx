@@ -54,13 +54,20 @@ Decisions:
    line is cut to `max_line_bytes/0` at a character boundary and ends in `…`, so
    one long line cannot fill the result. The whole result stays under
    `Helyx.Message.max_result_bytes/0` through `budget/0`.
-7. **The glob is a small function of the helper.** `Helyx.Search.glob?/2`
-   matches `*` (any run without `/`), `**` (any run, `/` too), `**/` (zero or
-   more whole folders), `?` (one character that is not `/`), and a literal.
-   Braces and classes are not part of it. A glob with no `/` matches the file
-   name, so `*.ex` names every `.ex` file at any depth; a glob with a `/`
-   matches the path relative to the session folder, so `src/*.ex` names the
-   files of `src` only.
+7. **The glob is a small function of the helper, and its match is linear.**
+   `Helyx.Search.Glob` compiles a glob once for a search and matches `*` (any
+   run without `/`), `**` (any run, `/` too), `**/` (zero or more whole
+   folders), `?` (one character that is not `/`), and a literal. Braces and
+   classes are not part of it. A glob with no `/` matches the file name, so
+   `*.ex` names every `.ex` file at any depth; a glob with a `/` matches the
+   path relative to the session folder, so `src/*.ex` names the files of `src`
+   only. The match keeps the set of positions in the token list that are live
+   and steps it one character of the path at a time, so it costs at most the
+   tokens of the glob times the characters of the path, with no backtracking.
+   The walk applies the compiled glob to each file before it keeps it, so the
+   match runs inside the deadline of the tool. Reason: a glob is an argument
+   from the model, and a match that backtracked on many `*` would hold a call
+   past its deadline.
 8. **A symbolic link to a file is searched; a symbolic link to a folder is
    not.** The walk classifies a link with `File.stat/1`: a link to a regular
    file is a file, as `read` follows it; any other link is left out, and the
@@ -92,11 +99,12 @@ Decisions:
   `glob` (required), `path` (optional folder; the session folder by default),
   `limit` (optional, 1 to `max_find_limit/0`, default `default_find_limit/0`).
 - `Helyx.Search`: the helper. Public for the tools and the tests:
-  `grep/2`, `find/2`, `glob?/2`, `walk/4`, and the bound functions that this
+  `grep/2`, `find/2`, `glob?/2`, `walk/5`, and the bound functions that this
   doc names.
 - `Helyx.Search.Glob`: the glob matcher, `@moduledoc false`, split from the
-  helper for the 400-line rule of `AGENTS.md`; `Helyx.Search.glob?/2`
-  delegates to it.
+  helper for the 400-line rule of `AGENTS.md`; `compile/1` holds the tokens of
+  a glob and `match?/2` matches a path with them, and `Helyx.Search.glob?/2`
+  is `compile/1` then `match?/2`.
 - `Helyx.Tool.Args`: the schema keyword `additionalProperties`, a boolean, on
   an object. With `false`, an argument key outside `properties` is an error,
   `"<key> is not an argument"`. A value that is not a boolean, or the keyword
@@ -123,6 +131,7 @@ tool checks its arguments as before.
 | `pattern` | a string of at most `Helyx.Search.max_pattern_bytes/0` bytes; required | an error result; nothing runs | `parameters/0` of `Helyx.Tool.Grep`, checked by `Helyx.Tool.Args` |
 | a pattern that does not compile | a regular expression that `Regex.compile/2` accepts | an error result with the text of the compile error | `Helyx.Search.grep/2` |
 | `glob` | a string of at most `Helyx.Search.max_glob_bytes/0` bytes | an error result | `parameters/0` of both tools |
+| the cost of one glob match | one step for each token and each unit of the path, so at most the tokens of a glob that `Helyx.Search.max_glob_bytes/0` bounds times the units of the path; no backtracking | no path runs past it; the walk stops at its own deadline | `Helyx.Search.Glob.match?/2`, in `Helyx.Search.walk/5` |
 | `context` | an integer from 0 to `Helyx.Search.max_context_lines/0`; a missing or `null` value is 0 | an error result | `parameters/0` of `Helyx.Tool.Grep` |
 | `grep` `limit` | an integer from 1 to `Helyx.Search.max_grep_limit/0`; a missing or `null` value is `Helyx.Search.default_grep_limit/0` | an error result | `parameters/0` of `Helyx.Tool.Grep` |
 | `find` `limit` | an integer from 1 to `Helyx.Search.max_find_limit/0`; a missing or `null` value is `Helyx.Search.default_find_limit/0` | an error result | `parameters/0` of `Helyx.Tool.Find` |

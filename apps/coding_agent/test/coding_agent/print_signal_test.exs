@@ -5,6 +5,7 @@ defmodule CodingAgent.PrintSignalTest do
 
   import Helyx.Test.Events, only: [wait_until: 3]
 
+  alias CodingAgent.Attach
   alias CodingAgent.Print
 
   @moduletag :slow
@@ -132,7 +133,7 @@ defmodule CodingAgent.PrintSignalTest do
     """
 
     launch(dir, "closed_stderr", @halt <> run)
-    assert await_file(Path.join(dir, "status"), @load_boot_ms) == "1\n"
+    assert await_file(Path.join(dir, "status"), run_ms()) == "1\n"
     assert File.read!(Path.join(dir, "halted")) == "1"
     assert File.read!(Path.join(dir, "out")) == ""
   end
@@ -143,14 +144,14 @@ defmodule CodingAgent.PrintSignalTest do
     """
 
     launch(dir, "plain", @halt <> run)
-    assert await_file(Path.join(dir, "status"), @load_boot_ms) == "1\n"
+    assert await_file(Path.join(dir, "status"), run_ms()) == "1\n"
     assert File.read!(Path.join(dir, "halted")) == "1"
     assert File.read!(Path.join(dir, "out")) == ""
   end
 
   test "stdin that is a folder ends the run with one error line and 1", %{tmp_dir: dir} do
     launch(dir, "dir_stdin", @run)
-    assert await_file(Path.join(dir, "status"), @load_boot_ms) == "1\n"
+    assert await_file(Path.join(dir, "status"), run_ms()) == "1\n"
     assert File.read!(Path.join(dir, "out")) == ""
 
     # The OTP log line of the crashed terminal reader also reaches stderr.
@@ -196,14 +197,36 @@ defmodule CodingAgent.PrintSignalTest do
     ])
   end
 
+  # A wait for the answer or the end of a run holds all of print mode: the
+  # VM, the start of the server of its VM (`Attach.start_ms/0`), the open of
+  # the session, and the turn. On the gate host of 2026-11-11, under the load
+  # of every project, the answer came 8.4 s, 10.2 s, and 12.4 s after the
+  # launch; this margin is for a loaded machine, on top of the bound of the
+  # start.
+  defp run_ms, do: Attach.start_ms() + @load_boot_ms
+
   # The session file holds the answer once the turn has ended; the write to
   # stdout comes next. The pid file comes before the apps and the session
-  # start, so this wait holds the rest of the boot.
+  # start, so this wait holds the rest of the boot. A run that ends first
+  # gives its own line, and the answer cannot come after it.
   defp await_answer(dir) do
-    await(@load_boot_ms, fn ->
+    answered = fn ->
       Path.wildcard(Path.join(dir, ".helyx/sessions/**/*.jsonl"))
       |> Enum.any?(&(File.read!(&1) =~ "assistant"))
-    end)
+    end
+
+    await(run_ms(), fn -> answered.() or File.exists?(Path.join(dir, "status")) end)
+
+    unless answered.(), do: flunk("the run ended before the answer:" <> run_error(dir))
+  end
+
+  # What the run wrote on stderr, for the failure of a run that ended.
+  defp run_error(dir) do
+    case File.read(Path.join(dir, "err")) do
+      {:ok, ""} -> ""
+      {:ok, text} -> "\n" <> text
+      {:error, _reason} -> ""
+    end
   end
 
   defp await_file(path, ms) do
