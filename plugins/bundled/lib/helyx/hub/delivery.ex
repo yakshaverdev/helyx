@@ -49,6 +49,9 @@ defmodule Helyx.Hub.Delivery do
   defp failed(:too_many_sessions), do: :wake_retry
   defp failed(:editing), do: :wake_retry
   defp failed(:open_timeout), do: :wake_retry
+  # A Hub that is busy or slow at the load says nothing about the session.
+  defp failed(:busy), do: :wake_retry
+  defp failed(:timeout), do: :wake_retry
   defp failed(:not_found), do: :wake_gone
   defp failed(:session_not_found), do: :wake_gone
   defp failed(_reason), do: :wake_refused

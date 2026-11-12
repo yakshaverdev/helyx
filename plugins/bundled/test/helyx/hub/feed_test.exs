@@ -246,7 +246,8 @@ defmodule Helyx.Hub.FeedTest do
     pid = Helyx.Session.pid(session)
     ref = Process.monitor(pid)
     :sys.suspend(pid)
-    Process.sleep(Idle.idle_ms() + Idle.load_ms())
+    # The timer message is in the mailbox before the prompt goes.
+    Events.wait_until(fn -> Process.info(pid, :message_queue_len) == {:message_queue_len, 1} end)
 
     request = Task.async(fn -> req(owner, "prompt", %{"session" => id, "text" => "again"}) end)
     Events.wait_until(fn -> Process.info(pid, :message_queue_len) == {:message_queue_len, 2} end)

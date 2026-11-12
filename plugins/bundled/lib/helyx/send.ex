@@ -35,6 +35,11 @@ defmodule Helyx.Send do
   end
 
   defp loaded(load, send) do
-    with {:ok, session} <- load.(), do: send.(session)
+    with {:ok, session} <- load.() do
+      case send.(session) do
+        {:error, {:stopped, _reason}} -> {:error, :session_not_found}
+        result -> result
+      end
+    end
   end
 end

@@ -63,6 +63,13 @@ defmodule Helyx.SendTest do
     assert count(counter, 1) == 1 and count(counter, 2) == 0
   end
 
+  test "a second send that meets a stop is session_not_found" do
+    send = fn _session -> {:error, {:stopped, :noproc}} end
+    load = fn -> {:ok, @session} end
+
+    assert Send.text(@session, send, load) == {:error, :session_not_found}
+  end
+
   test "a failed load is the error of the caller" do
     send = fn _session -> {:error, {:stopped, :noproc}} end
     load = fn -> {:error, :too_many_sessions} end
@@ -83,7 +90,8 @@ defmodule Helyx.SendTest do
     pid = Session.pid(session)
     ref = Process.monitor(pid)
     :sys.suspend(pid)
-    Process.sleep(idle_ms() + load_ms())
+    # The timer message is in the mailbox before the prompt goes.
+    Helyx.Test.Events.wait_until(fn -> mailbox(pid) == 1 end)
 
     call = Task.async(fn -> Session.send_text(session, :prompt, "hi", []) end)
     Helyx.Test.Events.wait_until(fn -> mailbox(pid) == 2 end)
