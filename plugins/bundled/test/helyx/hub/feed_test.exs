@@ -170,10 +170,12 @@ defmodule Helyx.Hub.FeedTest do
     :ok = :sys.suspend(hub)
     for _ <- 1..Helyx.Sessions.max_feed_queue(), do: send(hub, :filler)
     {:ok, session} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
-    :ok = :sys.resume(hub)
 
-    # The counter of the watch, which the session owns, counts the drop.
+    # The counter of the watch, which the session owns, counts the drop. The
+    # session can send its notice after `start/2` returns, so the Hub stays
+    # suspended until the drop.
     Events.wait_until(fn -> Helyx.Sessions.dropped(counter) > 0 end)
+    :ok = :sys.resume(hub)
     refute Live.running?(:sys.get_state(hub), session.id)
 
     # The poll reads the live sessions again, as the start of Hub does.
