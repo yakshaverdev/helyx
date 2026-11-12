@@ -84,11 +84,13 @@ defmodule Helyx.Transport.WebSocket.Authorize do
       else: Ops.load(core, op, params)
   end
 
-  # The load as the sender of a text op calls it, in the shape of the wire.
+  # The load as the sender of a text op calls it, with the session that the
+  # send addresses, in the shape of the wire. The one shape of both loaders:
+  # a function of one session (`Helyx.Send`).
   defp loader(core, op, params, authority, auth) do
-    fn ->
+    fn session ->
       case load(core, op, params, authority, auth) do
-        :ok -> {:ok, %Helyx.Session{id: params["session"], core: core}}
+        :ok -> {:ok, session}
         {:error, code, text} -> {:error, code, text}
         {:error, code} -> Ops.error(op, code)
         {:close, 4403} -> Outbound.error("failed")

@@ -85,7 +85,12 @@ defmodule Helyx.Tool.SessionSend do
     result =
       Helyx.Send.text(
         session,
-        &deliver(disposition, &1, text, Coordinator.origin(env)),
+        &Session.send_text(
+          &1,
+          String.to_existing_atom(disposition),
+          text,
+          Coordinator.origin(env)
+        ),
         fn -> Helyx.Hub.resume(env.hub, env.user, id) end
       )
 
@@ -106,8 +111,4 @@ defmodule Helyx.Tool.SessionSend do
       do: {:ok, session},
       else: Helyx.Hub.resume(env.hub, env.user, id)
   end
-
-  defp deliver("prompt", session, text, opts), do: Session.prompt(session, text, opts)
-  defp deliver("steer", session, text, opts), do: Session.steer(session, text, opts)
-  defp deliver("follow_up", session, text, opts), do: Session.follow_up(session, text, opts)
 end

@@ -125,7 +125,7 @@ whether it resumes a stopped session first:
 | Path | Resumes first |
 | ---- | ------------- |
 | the wire ops `prompt`, `steer`, and `follow_up` | yes: the authority's `load/4`, `Helyx.Hub.Access.load/4` under a Hub, runs before the operation and its deadline, in the worker of `Helyx.Transport.WebSocket.Connection` and in `Helyx.Transport.WebSocket.Authorize.checked/8`, through `Helyx.Hub.Access.resume/3`. The text check counts a session with a file as existing, so a session that stopped before its Hub saw it, one with a file and no row, loads too. A running session gives a Registry lookup. Without an authority that exports `load/4`, `Helyx.Transport.WebSocket.Ops.load/3` resumes the id. A missing file answers `session_not_found`; another resume error answers `failed` |
-| the Hub `Helyx.Hub.Delivery` | yes: `Delivery.running/4` takes a place of the live set, resumes the id, and records the starter before it sends (`docs/features/hub.md`, decision 12) |
+| the Hub `Helyx.Hub.Delivery` | yes: `Delivery.running/4` takes a place of the live set, resumes the id, and records the starter before it sends (`docs/features/hub.md`, decision 12); a send that proves the session took nothing and then finds it stopped loads it once more (`Helyx.Send.text/3`) |
 | a schedule | yes: a schedule sends through `Helyx.Hub.Delivery` |
 | a webhook | yes: a webhook writes a delivery row that `Helyx.Hub.Delivery` sends |
 | the coordinator tool `session_send` | yes: `Helyx.Hub.resume/3`, the same place and starter as the wire `resume` (`docs/features/coordinator.md`, decision 4) |
@@ -133,14 +133,22 @@ whether it resumes a stopped session first:
 
 A send can meet a stop that comes first: the idle timer message is in the
 front of the session's mailbox, the session stops, and the call answers
-`{:error, :session_not_found}` while its file is complete. One sender,
-`Helyx.Send.text/3`, loads the session once and sends again; every text
-sender uses it. So a caller sees the send's own error when the second send
-fails (`:turn_running`, `:queue_full`, ...), the load's error when the load
-fails (`session_not_found` for a missing file, `failed` for another cause
-on the wire), and not `session_not_found` for a session that its file
-brings back. A wire client that subscribes to a stopped session gets
-`session_not_found`, as before. The TUI ends with `{:session_down,
+`{:error, {:stopped, {:shutdown, :idle}}}` while its file is complete. One
+sender, `Helyx.Send.text/3`, sends again only when the first send proves
+that the session took nothing: no process held its id (`{:error, {:stopped,
+:noproc}}`), or it stopped for idleness (the reason above). Then it loads
+the session once and sends again; every text sender uses it, and all four
+pass a load of one shape, `fn session -> {:ok, session} | error end`. Any
+other end may have taken the text, so the sender returns
+`{:error, :session_not_found}` and loads nothing: a session that has
+written the user message of its turn can die before its reply, and a second
+send would repeat work that changes files (`docs/features/hub.md`,
+decision 12). So a caller sees the second send's own error (`:turn_running`,
+`:queue_full`, ...), the load's error when the load fails
+(`session_not_found` for a missing file, `failed` for another cause on the
+wire), and not `session_not_found` for a session that its file brings back
+and that took nothing. A wire client that subscribes to a stopped session
+gets `session_not_found`, as before. The TUI ends with `{:session_down,
 :session_not_found}` (`Helyx.TUI.Switch.subscribe!/2`), and the Rust app
 shows the failed subscribe with that code and follows nothing
 (`Output::Failed`), because a subscription is not a load. Neither client
@@ -174,9 +182,21 @@ the wire `resume` for a user with no token, the place of the live sessions,
 the resume, and the starter. `Helyx.Hub.Access.resume/3` is the one load
 that both call.
 
-`Helyx.Send.text/3` is new: a text send that loads the session once and
-sends again when it met a stop in flight. The wire's workers, `Helyx.Hub.Delivery`,
-and `Helyx.Tool.SessionSend` use it.
+`Helyx.Send.text/3` is new: a text send that sends again with a loaded
+session only when the first send proves that the session took nothing (no
+process, or the idle stop), and returns `{:error, :session_not_found}` for
+any other end. The wire's workers, `Helyx.Hub.Delivery`, and
+`Helyx.Tool.SessionSend` use it.
+
+`Helyx.Session.send_text/4` is new (`@doc false`): the prompt, steer, or
+follow-up whose missing session gives `{:error, {:stopped, reason}}`, and
+`Helyx.Session.Call.send/3` is its call. The other callers keep
+`Helyx.Session.prompt/3` and its `{:error, :session_not_found}`. A delivery
+Task whose load fails after the decide writes the outcome of a failed load
+before the send on the row as the decide left it (`{:wake_outcome, ...}`),
+so a `too_many_sessions` load gets its next try and another error gets
+`refused` (`Helyx.Hub.Delivery.abandoned/3`, `docs/features/hub.md`,
+decision 12).
 
 `Helyx.Session.resume/2` and `Helyx.Sessions.resume/2` return
 `{:ok, session, :started | :attached}`.

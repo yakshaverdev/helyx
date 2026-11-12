@@ -644,16 +644,17 @@ defmodule Helyx.Transport.WebSocketTest do
   @tag :tmp_dir
   test "a prompt that meets the idle stop of the session loads it and sends again",
        %{tmp_dir: dir} = context do
-    %{core: core, port: port} =
-      serve(context, [], sessions_dir: dir, idle_stop_ms: Idle.idle_ms())
-
+    %{core: core, port: port} = serve(context, [], sessions_dir: dir)
     _holder = block_holder(core, "block")
     socket = Client.open(port)
 
     %{"ok" => true, "result" => %{"session" => id}} =
       Client.request(socket, "1", "start", %{"cwd" => File.cwd!(), "model" => "fake/block"})
 
-    pid = Helyx.Session.pid(%Helyx.Session{id: id, core: core})
+    session = %Helyx.Session{id: id, core: core}
+    Idle.arm_timer(session)
+    pid = Helyx.Session.pid(session)
+    ref = Process.monitor(pid)
     :sys.suspend(pid)
     Process.sleep(Idle.idle_ms() + Idle.load_ms())
 
@@ -662,15 +663,44 @@ defmodule Helyx.Transport.WebSocketTest do
         Client.request(socket, "2", "prompt", %{"session" => id, "text" => "again"})
       end)
 
-    resumer =
+    # The timer message and the prompt call wait in the mailbox.
+    Events.wait_until(fn -> Process.info(pid, :message_queue_len) == {:message_queue_len, 2} end)
+    :sys.resume(pid)
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, :idle}}
+    assert %{"ok" => true} = Task.await(request)
+    assert_receive {:blocked, ^id}
+  end
+
+  # A session that dies with the prompt in its mailbox may have taken it: the
+  # sender sends no second prompt (docs/features/idle-unload.md).
+  @tag :tmp_dir
+  test "a prompt to a session that dies in flight gets no second prompt",
+       %{tmp_dir: dir} = context do
+    %{core: core, port: port} = serve(context, [], sessions_dir: dir)
+    _holder = block_holder(core, "block")
+    socket = Client.open(port)
+
+    %{"ok" => true, "result" => %{"session" => id}} =
+      Client.request(socket, "1", "start", %{"cwd" => File.cwd!(), "model" => "fake/block"})
+
+    session = %Helyx.Session{id: id, core: core}
+    pid = Helyx.Session.pid(session)
+    :sys.suspend(pid)
+
+    request =
       Task.async(fn ->
-        Process.sleep(20)
-        :sys.resume(pid)
+        Client.request(socket, "2", "prompt", %{"session" => id, "text" => "again"})
       end)
 
-    assert %{"ok" => true} = Task.await(request)
-    Task.await(resumer)
-    assert_receive {:blocked, ^id}
+    Events.wait_until(fn -> Process.info(pid, :message_queue_len) == {:message_queue_len, 1} end)
+    Process.exit(pid, :kill)
+
+    assert %{"ok" => false, "error" => %{"code" => "session_not_found"}} =
+             Task.await(request)
+
+    # No load ran: no process of the id is back.
+    assert Helyx.Session.pid(session) == nil
   end
 
   # A process of the test with the name that the blocked call reports to, and

@@ -53,11 +53,13 @@ defmodule Helyx.Hub.Delivery do
   defp failed(:session_not_found), do: :wake_gone
   defp failed(_reason), do: :wake_refused
 
-  # Step 3. Only `:turn_running` and `:queue_full` prove that the session
-  # took nothing. A session that stops while the prompt is in flight is
-  # loaded again through the Hub and gets the prompt, so the idle stop does
-  # not lose it (`Helyx.Send`, docs/features/idle-unload.md).
-  # `:session_not_found` and an exit of the call leave `unconfirmed`: the
+  # Step 3. `:turn_running` and `:queue_full` prove that the session took
+  # nothing, and so do the ends that `Helyx.Send` sends again for: no process
+  # (`:noproc`) or the idle stop (`{:shutdown, :idle}`). A session that
+  # stopped for idleness while the prompt was in flight is loaded again
+  # through the Hub and gets the prompt, so the stop does not lose it
+  # (`Helyx.Send`, docs/features/idle-unload.md). Any other end of the call
+  # (`:killed`, `:normal`, a crash) and an exit leave `unconfirmed`: the
   # session may have taken the prompt before it went down.
   # `:text_too_large`, `:invalid_utf8` and `:invalid_origin` cannot come (a
   # checked prompt, an origin id of 12 bytes); they crash the Task, which
@@ -78,7 +80,7 @@ defmodule Helyx.Hub.Delivery do
     case result do
       :ok -> Hub.call(hub, {:wake_outcome, row, {:delivered, Params.cut(row.prompt)}})
       {:error, busy} when busy in [:turn_running, :queue_full] -> back(hub, row)
-      {:error, {:load, reason}} -> Hub.call(hub, {failed(reason), row})
+      {:error, {:load, reason}} -> abandoned(hub, row, reason)
       {:error, :session_not_found} -> unconfirmed(hub, row)
       :exit -> unconfirmed(hub, row)
     end
@@ -87,10 +89,25 @@ defmodule Helyx.Hub.Delivery do
   defp back(hub, row), do: Hub.call(hub, {:wake_outcome, row, :back})
   defp unconfirmed(hub, row), do: Hub.call(hub, {:wake_outcome, row, :unconfirmed})
 
+  # A load that failed after the decide: the session took nothing, so the row
+  # gets the outcome of a load that failed before the send. The outcome goes
+  # through `{:wake_outcome, ...}`, which expects the row as the decide left
+  # it; the `{:wake_retry, ...}` and `{:wake_refused, ...}` calls expect the
+  # row of the start, whose `run` the decide already moved, so their writes
+  # stay stale (docs/features/hub.md, decision 12).
+  defp abandoned(hub, row, reason) do
+    case failed(reason) do
+      :wake_retry -> back(hub, row)
+      _gone_or_refused -> Hub.call(hub, {:wake_outcome, row, :refused})
+    end
+  end
+
   # The origin id is the delivery id of the pending wake-up, which names no
   # schedule and no run.
   defp prompt(session, row) do
-    Helyx.Session.prompt(session, row.prompt, origin: %{kind: :product, id: row.delivery_id})
+    Helyx.Session.send_text(session, :prompt, row.prompt,
+      origin: %{kind: :product, id: row.delivery_id}
+    )
   catch
     :exit, _reason -> :exit
   end

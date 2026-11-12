@@ -280,7 +280,7 @@ defmodule Helyx.Transport.WebSocket.Ops do
       Helyx.Send.text(
         session,
         fn current ->
-          apply(Session, String.to_existing_atom(op), [current, values["text"], origin(values)])
+          Session.send_text(current, String.to_existing_atom(op), values["text"], origin(values))
         end,
         fn -> load.(session) end
       )

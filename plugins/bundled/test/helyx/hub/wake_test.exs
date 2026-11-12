@@ -12,7 +12,8 @@ defmodule Helyx.Hub.WakeTest do
 
   @moduletag :tmp_dir
 
-  setup context, do: serve(context)
+  setup context,
+    do: serve(context, if(ms = context[:max_live], do: [max_live_sessions: ms], else: []))
 
   defp settled?(core, id) do
     snapshot = Events.snapshot(%Helyx.Session{id: id, core: core})
@@ -54,6 +55,36 @@ defmodule Helyx.Hub.WakeTest do
 
     wait_row(context.hub, id, &(&1.last_outcome == "delivered"))
     assert [{"wake up", _origin}] = woken(context.core, session.id)
+  end
+
+  # An outcome after the decide writes only on the row that the decide left,
+  # whose `run` it moved: the retry and the refusal of a delivery whose load
+  # failed after the decide go through `{:wake_outcome, ...}`, not the
+  # start-row writes of `{:wake_retry, ...}` and `{:wake_refused, ...}`
+  # (docs/features/idle-unload.md, docs/features/hub.md, decision 12).
+  test "an outcome after the decide writes on the row that the decide left", context do
+    {:ok, session} = Helyx.Sessions.start(context.core, cwd: File.cwd!(), model: "fake/echo")
+
+    # A retry: the row of the start, with a next try.
+    retry = due(context, context.owner, session.id)
+    row = row(context.hub, retry)
+    :ok = Helyx.Hub.call(context.hub, {:wake_decide, row})
+    %{run: run, last_outcome: "unconfirmed"} = row(context.hub, retry)
+    assert run == row.run + 1
+    :ok = Helyx.Hub.call(context.hub, {:wake_outcome, row, :back})
+    assert %{run: back, next_try_at: next} = row(context.hub, retry)
+    assert back == row.run and next > now()
+
+    # A refusal: the row of a refusal before the send, with no next try.
+    refused = due(context, context.owner, session.id)
+    row = row(context.hub, refused)
+    :ok = Helyx.Hub.call(context.hub, {:wake_decide, row})
+    :ok = Helyx.Hub.call(context.hub, {:wake_outcome, row, :refused})
+
+    assert %{last_outcome: "refused", next_try_at: nil, delivery_id: nil, run: run} =
+             row(context.hub, refused)
+
+    assert run == row.run + 1
   end
 
   test "a stopped session is resumed, enters the live set, and its record moves", context do

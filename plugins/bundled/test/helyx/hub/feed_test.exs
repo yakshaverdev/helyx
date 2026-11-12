@@ -220,6 +220,43 @@ defmodule Helyx.Hub.FeedTest do
     assert Helyx.Hub.actor(context.hub, id) == {:ok, owner_id}
   end
 
+  # A text op under a Hub that meets the idle stop: the authority's load is
+  # called by the sender of `Helyx.Send`, and it must be the shape of one
+  # session (docs/features/idle-unload.md).
+  test "a prompt that meets the idle stop under a Hub loads it and sends again", context do
+    context = serve(context)
+    holder = :"block_#{System.unique_integer([:positive])}"
+    Process.register(self(), holder)
+
+    :ok =
+      Fake.script(context.core, "block", [
+        [
+          %Helyx.Message.ToolCall{
+            id: "b1",
+            name: "block",
+            arguments: %{"to" => Atom.to_string(holder)}
+          }
+        ]
+      ])
+
+    owner = open(context.port)
+    %{"result" => %{"session" => id}} = start(owner, "fake/block")
+    session = %Helyx.Session{id: id, core: context.core}
+    Helyx.Test.Idle.arm_timer(session)
+    pid = Helyx.Session.pid(session)
+    ref = Process.monitor(pid)
+    :sys.suspend(pid)
+    Process.sleep(Idle.idle_ms() + Idle.load_ms())
+
+    request = Task.async(fn -> req(owner, "prompt", %{"session" => id, "text" => "again"}) end)
+    Events.wait_until(fn -> Process.info(pid, :message_queue_len) == {:message_queue_len, 2} end)
+    :sys.resume(pid)
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, :idle}}
+    assert %{"ok" => true} = Task.await(request)
+    assert_receive {:blocked, ^id}
+  end
+
   # A session that stopped before its Hub started has a file and no row; a
   # text op finds it by its file, as the wire `resume` does
   # (docs/features/idle-unload.md). Until a `sessions.saved` scan, no row

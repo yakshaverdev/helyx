@@ -295,6 +295,23 @@ defmodule Helyx.Session do
   defp send_text(session, request, text),
     do: with(:ok <- Input.text(text), do: call(session, request))
 
+  @doc false
+  # A prompt, steer, or follow-up whose missing session tells whether it took
+  # nothing: `{:error, {:stopped, reason}}`, where `reason` is `:noproc` for
+  # no process, or the exit reason of a call that got no reply. `Helyx.Send`
+  # sends again only for `:noproc` and the idle stop; the other callers keep
+  # `prompt/3` and its `{:error, :session_not_found}`
+  # (docs/features/idle-unload.md).
+  @spec send_text(t(), :prompt | :steer | :follow_up, String.t(), keyword()) ::
+          :ok | {:error, {:stopped, term()}} | {:error, send_error()}
+  def send_text(%__MODULE__{} = session, op, text, opts)
+      when op in [:prompt, :steer, :follow_up] and is_binary(text) and is_list(opts) do
+    with {:ok, origin} <- Input.origin(opts),
+         :ok <- Input.text(text) do
+      Call.send(session, {op, text, origin}, @call_timeout_ms)
+    end
+  end
+
   @doc """
   Switches the session's model. The ref is parsed and its provider resolved like
   the `:model` of `start/2`, and each error is a `t:model_error/0`: the model
