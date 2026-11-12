@@ -87,6 +87,21 @@ defmodule CodingAgent.HandsTest do
     refute err =~ Base.encode64(token)
   end
 
+  test "a link in the place of another argument is not printed", context do
+    {_server, link} = start_server(context)
+    "helyx-pair:1:" <> body = link
+
+    for argv <- [
+          ["hands", "--pair", link, "--folder", link],
+          ["hands", "--pair", link, "-="],
+          ["hands", "--pair", link, "--port", link]
+        ] do
+      {status, _out, err} = run(argv)
+      assert status == 1
+      refute err =~ body
+    end
+  end
+
   test "a second --pair over an existing state file refuses and keeps it", context do
     {_server, link} = start_server(context)
     {task, io} = start_hands(["--pair", link, "--folder", context.project])

@@ -189,16 +189,18 @@ defmodule CodingAgent.CLI.Hands do
   defp error_text({:state_file, path, reason}, _opts),
     do: "the runner state #{path}: #{Helyx.Reason.text(reason)}"
 
+  defp error_text({:state_write, path, reason}, _opts),
+    do:
+      "the runner state #{path} was not saved: #{Helyx.Reason.text(reason)}; " <>
+        "the link is used, so make a new one with helyx pair"
+
   defp error_text({:folder, :missing}, _opts), do: "hands needs --folder <dir> when it pairs"
 
   defp error_text({:folder, :too_long, _folder}, _opts),
     do: "the folder is over #{Pairing.max_folder_bytes()} bytes"
 
-  defp error_text({:folder, :not_a_directory, folder}, _opts) do
-    if String.starts_with?(folder, Link.scheme()),
-      do: "the folder is not a directory",
-      else: "not a directory: #{inspect(folder)}"
-  end
+  defp error_text({:folder, :not_a_directory, folder}, _opts),
+    do: "not a directory: #{inspect(folder)}"
 
   defp error_text({:folder, :not_a_directory}, _opts), do: "the folder is not a directory"
 

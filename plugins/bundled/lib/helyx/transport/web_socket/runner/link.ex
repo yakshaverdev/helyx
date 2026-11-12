@@ -15,6 +15,15 @@ defmodule Helyx.Transport.WebSocket.Runner.Link do
   @spec scheme() :: String.t()
   def scheme, do: @scheme
 
+  @doc """
+  The text with every pairing link in it cut to its prefix, for a printed
+  line. The prefix alone, as a fault line names it, stays: a link has at
+  least 16 bytes after it.
+  """
+  @spec hide(String.t()) :: String.t()
+  def hide(text),
+    do: String.replace(text, ~r/#{Regex.escape(@scheme)}[^\s"']{16,}/, @scheme <> "...")
+
   # The longest link that `Pairing.create/3` makes through the `--public`
   # argument: a host of at most 255 bytes, a port of 5 digits and 2 brackets,
   # the 43-byte token, the 43-byte pin, the kind, and a 64-byte name are 453

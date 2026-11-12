@@ -3,7 +3,7 @@ defmodule Helyx.Transport.WebSocket.Runner.State do
   # The saved state of a paired runner, `<home>/hands/<name>.json`
   # (`docs/features/remote-hands.md`, "The runner state"). The folder has
   # mode 0700 and the file mode 0600 before its first byte. A write goes
-  # through a temporary file and a rename, so a crash leaves the old file or
+  # through a temporary file and a link, so a crash leaves no file or
   # the new one. A read checks the type, the mode, the size, the JSON, and
   # the name, and every error carries the path and never the content.
   #
@@ -162,7 +162,9 @@ defmodule Helyx.Transport.WebSocket.Runner.State do
   end
 
   # The file is 0600 before its first byte: the chmod runs on the open file,
-  # which holds no key yet. The rename replaces the old state at once.
+  # which holds no key yet. The link fails when the state file exists, so a
+  # write never replaces a saved key, also when two pairings of one name run
+  # at the same time.
   defp write_file(dir, name, path, data) do
     tmp = Path.join(dir, ".#{name}.#{System.unique_integer([:positive])}.tmp")
 
@@ -176,7 +178,7 @@ defmodule Helyx.Transport.WebSocket.Runner.State do
           end
 
         case result do
-          :ok -> rename(tmp, path)
+          :ok -> place(tmp, path)
           {:error, reason} -> remove(tmp, reason)
         end
 
@@ -185,10 +187,14 @@ defmodule Helyx.Transport.WebSocket.Runner.State do
     end
   end
 
-  defp rename(tmp, path) do
-    case File.rename(tmp, path) do
+  defp place(tmp, path) do
+    result = File.ln(tmp, path)
+    _ = File.rm(tmp)
+
+    case result do
       :ok -> :ok
-      {:error, reason} -> remove(tmp, reason)
+      {:error, :eexist} -> {:error, :exists}
+      {:error, reason} -> {:error, reason}
     end
   end
 

@@ -359,6 +359,17 @@ defmodule Helyx.Transport.WebSocket.RunnerTest do
       %{home: home, name: name, path: State.path(home, name)}
     end
 
+    test "a second write never replaces the saved key", %{home: home, name: name, path: path} do
+      before = File.read!(path)
+      fields = %{address: "127.0.0.1:4041", pin: "pin2", folder: "/other"}
+
+      assert State.write(home, name, fields, fn -> :crypto.strong_rand_bytes(32) end) ==
+               {:error, {:state_file, path, :exists}}
+
+      assert File.read!(path) == before
+      assert File.ls!(Path.dirname(path)) == [Path.basename(path)]
+    end
+
     test "a good file reads its fields", %{home: home, name: name, path: path} do
       assert {:ok, read} = State.read(home, name)
       assert read.address == "127.0.0.1:4040"

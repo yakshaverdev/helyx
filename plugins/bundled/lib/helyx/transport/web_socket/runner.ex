@@ -357,8 +357,12 @@ defmodule Helyx.Transport.WebSocket.Runner do
         # the write succeeds: a drop before the registration answer
         # reconnects with the key, not the used link.
         case write_state(prepared) do
-          :ok -> register(%{state | prepared: after_register(prepared)})
-          {:error, reason} -> {:error, reason, state}
+          :ok ->
+            register(%{state | prepared: after_register(prepared)})
+
+          # The server took the key of this pairing and the link is used.
+          {:error, {:state_file, path, reason}} ->
+            {:error, {:state_write, path, reason}, state}
         end
 
       {:error, reason, cache} ->

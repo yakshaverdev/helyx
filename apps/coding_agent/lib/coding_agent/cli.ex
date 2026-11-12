@@ -157,7 +157,9 @@ defmodule CodingAgent.CLI do
   defp result(status) when is_integer(status), do: status
 
   defp result({:error, text}) do
-    IO.puts(:stderr, "helyx: " <> text)
+    # An argument can be a pairing link in the wrong place; its token never
+    # reaches a printed line.
+    IO.puts(:stderr, "helyx: " <> Helyx.Transport.WebSocket.Runner.Link.hide(text))
     1
   end
 
