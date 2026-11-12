@@ -177,6 +177,33 @@ final class StoreTests: XCTestCase {
         XCTAssertTrue(store.pending.isEmpty)
     }
 
+    func testAnOutcomeOutlivesASnapshotThatReplacesItsOwn() {
+        let (store, _) = makeStore()
+        store.use(settings)
+        store.receive(snapshot(session: state()))
+        store.drain()
+        store.composer = "hello"
+        store.send()
+        // Two snapshots before one draw: the second has no outcome.
+        store.receive(snapshot(outcomes: [Outcome(send: 1, outcome: .ok)]))
+        store.receive(snapshot(session: state()))
+        store.drain()
+        XCTAssertTrue(store.pending.isEmpty)
+    }
+
+    func testAFailedSendKeepsTheDraftTypedAfterIt() {
+        let (store, _) = makeStore()
+        store.use(settings)
+        store.receive(snapshot(session: state()))
+        store.drain()
+        store.composer = "first"
+        store.send()
+        store.composer = "draft"
+        store.receive(snapshot(outcomes: [Outcome(send: 1, outcome: .failed(reason: "stopped"))]))
+        store.drain()
+        XCTAssertEqual(store.composer, "first\ndraft")
+    }
+
     func testAnActiveAppWakesTheConnectionOnce() {
         let (store, fakes) = makeStore()
         store.use(settings)

@@ -32,13 +32,16 @@ struct PendingSend: Equatable {
 
 /// The one snapshot that the store has not drawn yet. The network thread puts
 /// each change, and the main actor takes the newest, so a draw that is slow
-/// skips the states between.
+/// skips the states between. A snapshot carries each outcome once, so the
+/// newest one keeps the outcomes of the snapshots that it replaces.
 final class SnapshotMailbox: @unchecked Sendable {
     private let lock = NSLock()
     private var newest: Snapshot?
 
     func put(_ snapshot: Snapshot) {
         lock.lock()
+        var snapshot = snapshot
+        snapshot.outcomes = (newest?.outcomes ?? []) + snapshot.outcomes
         newest = snapshot
         lock.unlock()
     }
@@ -331,8 +334,8 @@ final class Store: ObservableObject {
     }
 
     /// Settles the send of `outcome`: `ok` removes its mark, and a failure
-    /// puts the text of a message back in the field, or opens its ask again,
-    /// with the reason.
+    /// puts the text of a message back in the field, before a draft that the
+    /// user typed after the send, or opens its ask again, with the reason.
     private func settle(_ outcome: Outcome) {
         guard let at = pending.firstIndex(where: { $0.send == outcome.send }) else {
             return
@@ -345,7 +348,7 @@ final class Store: ObservableObject {
         case .failed(let reason):
             let send = pending.remove(at: at)
             if send.askId == nil {
-                composer = send.text
+                composer = composer.isEmpty ? send.text : send.text + "\n" + composer
             }
             notice = reason
         }
